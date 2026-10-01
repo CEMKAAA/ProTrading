@@ -7,6 +7,7 @@
 #property strict
 #property version "3.53"
 #include <Trade/Trade.mqh>
+#include "NativeRiskBalance.mqh"
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
@@ -1990,7 +1991,7 @@ bool FixedReferenceRiskMode(){return g_orbMoneyRisk||InpRiskCapitalMode==ORB_RIS
 double RiskSizingCapital(){if(g_orbMoneyRisk)return MathMax(0.0,AccountInfoDouble(ACCOUNT_BALANCE));return FixedReferenceRiskMode()?(InpFixedRiskReferenceCapital>0.0?InpFixedRiskReferenceCapital:0.0):MathMax(0.0,AccountInfoDouble(ACCOUNT_EQUITY));}
 double RiskReferenceCapitalForBridge(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE?MathMax(0.0,InpFixedRiskReferenceCapital):0.0;}
 string RiskCapitalBasisCode(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENCE?"FIXED_REFERENCE":"CURRENT_EQUITY";}
-bool RiskEnabled(){return InpAccountRiskEnabled||ManagedRiskMode()||FixedReferenceRiskMode();}
+bool RiskEnabled(){return NativeBalanceEnabled()||InpAccountRiskEnabled||ManagedRiskMode()||FixedReferenceRiskMode();}
 double ClampRiskPerTradePct(double value){return NormalizeDouble(MathMax(0.01,MathMin(100.0,value)),4);}
 string RuntimeRiskPctKey()
 {
@@ -2018,7 +2019,8 @@ bool SetRuntimeRiskPct(double value)
    g_rtRiskPerTradePct=next;GlobalVariablesFlush();return true;
 }
 double EffRiskPerTradePct(){if(g_orbMoneyRisk){double b=AccountInfoDouble(ACCOUNT_BALANCE);return b>0?OrbMoneyBudget()/b*100.0:0;}return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
-double RiskBudgetMoney(){if(g_orbMoneyRisk)return OrbMoneyBudget();double capital=RiskSizingCapital();return capital>0.0?MathMin(MathMax(0.0,AccountInfoDouble(ACCOUNT_BALANCE)),capital*MathMax(0.01,EffRiskPerTradePct())/100.0):0.0;}
+double AccountRiskBudgetMoney(){if(g_orbMoneyRisk)return OrbMoneyBudget();double capital=RiskSizingCapital();return capital>0.0?MathMin(MathMax(0.0,AccountInfoDouble(ACCOUNT_BALANCE)),capital*MathMax(0.01,EffRiskPerTradePct())/100.0):0.0;}
+double RiskBudgetMoney(){if(NativeBalanceEnabled()&&!g_orbMoneyRisk)return NativeBalanceBudget(g_rtRiskPerTradePct);return AccountRiskBudgetMoney();}
 // Publishing remains percentage-based even when native orders use a money budget.
 double BridgeRiskPerTradePct(){return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
 double BridgeRiskBudgetMoney()
@@ -2031,7 +2033,7 @@ double EffMaxPortfolioPct(){return g_ftmoMode?4.0:InpMaxPortfolioPct;}
 double EffDailyLossLimitPct(){return g_ftmoMode?5.0:InpDailyLossLimitPct;}
 double EffMaxDrawdownPct(){return g_ftmoMode?10.0:InpMaxDrawdownPct;}
 double EffMaxMarginUsagePct(){return g_ftmoMode?40.0:InpMaxMarginUsagePct;}
-double CalculateLot(double entry,double sl){if(!InpUseAutoRiskLot&&!ManagedRiskMode()&&!FixedReferenceRiskMode())return NormalizeVolume(InpFixedLot);double rd=MathAbs(entry-sl);double vpu=ValuePerPriceUnitPerLot();double rm=RiskBudgetMoney();if(rd<=0||vpu<=0||rm<=0)return FixedReferenceRiskMode()?0.0:NormalizeVolume(InpFixedLot);return NormalizeVolume(rm/(rd*vpu));}
+double CalculateLot(double entry,double sl){if(!InpUseAutoRiskLot&&!ManagedRiskMode()&&!FixedReferenceRiskMode()&&!NativeBalanceEnabled())return NormalizeVolume(InpFixedLot);double rd=MathAbs(entry-sl);double vpu=ValuePerPriceUnitPerLot();double rm=RiskBudgetMoney();if(rd<=0||vpu<=0||rm<=0)return FixedReferenceRiskMode()?0.0:NormalizeVolume(InpFixedLot);return NormalizeVolume(rm/(rd*vpu));}
 int CurrentSpreadPoints(){MqlTick t;if(!SymbolInfoTick(_Symbol,t))return 0;double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)return 0;return(int)MathRound((t.ask-t.bid)/pt);}
 bool SpreadAllowed(){if(InpMaxSpreadPoints<=0)return true;return CurrentSpreadPoints()<=InpMaxSpreadPoints;}
 double NormalizeLegVolume(double total,int legs){double st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);if(st<=0)st=0.01;if(mn<=0)mn=0.01;double leg=MathFloor(total/(double)legs/st+1e-7)*st;return NormalizeDouble(leg,8)<mn?0:NormalizeDouble(leg,8);}
@@ -2106,6 +2108,7 @@ string TargetOutcomeLabel(int leg)
 }
 double SimMoneyPnl(double netR)
 {
+   if(NativeBalanceEnabled()&&!g_orbMoneyRisk)return netR*RiskBudgetMoney();
    if(g_orbMoneyRisk)return netR*OrbMoneyBudget();
    double base=FixedReferenceRiskMode()?MathMax(0.01,InpFixedRiskReferenceCapital):(InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE)));
    return netR*base*MathMax(0,EffRiskPerTradePct())/100.0;
@@ -3672,6 +3675,8 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    double raw=FixedReferenceRiskMode()?tradeBudget/slMpl:MathMin(tradeBudget/slMpl,MathMin(atrBudget/atrMpl,avail/slMpl));
    double vol=NormalizeVolume(raw);
    double projectedRisk=slMpl*vol;
+   if(NativeBalanceEnabled()&&NativeBalanceOverBudget(projectedRisk,tradeBudget))
+   {detail="reference_balance_min_volume_exceeds_budget";return 0;}
    if(FixedReferenceRiskMode()&&projectedRisk>tradeBudget+(g_orbMoneyRisk?0.0:MathMax(0.0,InpFixedRiskMaxOvershootMoney)))
    {detail="fixed_reference_min_volume_exceeds_budget projected="+DoubleToString(projectedRisk,2)+" budget="+DoubleToString(tradeBudget,2);return 0;}
    double margin=0;bool mc=OrderCalcMargin(ot,_Symbol,vol,entry,margin);
@@ -7601,6 +7606,15 @@ void DrawDashboard()
    UpdateDashboard();
 }
 
+void RenderNativeBalance()
+{
+   int x=InpDashboardX+644,y=InpDashboardY+530;
+   CreateLabel("DASH_NATIVE_BALANCE",x,y+4,"BALANCE (0=ACCOUNT)",C'184,196,210',8);
+   CreateEdit("EDIT_NATIVE_BALANCE",x+158,y,108,22,DoubleToString(g_nativeRiskBalance,2));
+   CreateButton("BTN_NATIVE_BALANCE",x+274,y,98,22,"APPLY BAL",C'38,101,176');
+   CreateLabel("DASH_NATIVE_BUDGET",x,y+29,"NATIVE 1R BUDGET: "+DoubleToString(RiskBudgetMoney(),2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",C'80,255,180',8);
+   ObjectSetString(0,PREFIX+"EDIT_NATIVE_BALANCE",OBJPROP_TOOLTIP,"Native MT5 percentage-risk reference capital in account currency. 0 restores the existing account basis. MONEY mode takes priority. Future entries only; risk settings stay separate from strategies.");
+}
 void UpdateDashboard()
 {
    if(!InpShowDashboard)return;
@@ -7611,7 +7625,7 @@ void UpdateDashboard()
 
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
-   OrbUserDraw(); OrbClockUiDraw();
+   OrbUserDraw();RenderNativeBalance(); OrbClockUiDraw();
    TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
@@ -9472,7 +9486,7 @@ int OnInit()
    g_rtFilteredWindowReverseExit=InpFilteredWindowReverseExitDefault;
    g_rtPostTradeDispBlockExit=InpExitOnPostTradeSameDirectionDispBlockDefault;
    g_ftmoMode=InpFtmoModeDefault;g_riskLotOnlyMode=(!g_ftmoMode&&InpRiskLotOnlyModeDefault);g_runtimeMagic=0;
-   LoadRuntimeRiskPct();OrbLoadMoneyRisk();
+   LoadRuntimeRiskPct();NativeBalanceLoad("orb");OrbLoadMoneyRisk();
    LoadRuntimeInvertMode();
    LoadRuntimeInverseMaxGapPct();
    LoadRuntimeUtcSession();
@@ -9699,6 +9713,14 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       UpdateDashboard();ChartRedraw(0);return;
    }
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
+   if(sparam==PREFIX+"BTN_NATIVE_BALANCE")
+   {
+      bool applied=NativeBalanceApply(ObjectGetString(0,PREFIX+"EDIT_NATIVE_BALANCE",OBJPROP_TEXT));
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      if(applied){g_lastExecStatus="NATIVE_BALANCE_APPLIED";CancelHistoricalAuditBuild();QueueHistoricalRedraw(0);}
+      else g_lastExecStatus="BALANCE_INVALID_OR_SAVE_FAILED";
+      UpdateDashboard();ChartRedraw(0);return;
+   }
 
    bool needRedraw=false;
    if(sparam==PREFIX+"BTN_USER_TZ")

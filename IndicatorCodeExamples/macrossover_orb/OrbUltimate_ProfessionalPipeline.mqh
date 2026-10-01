@@ -198,7 +198,7 @@ bool OrbProWriteInitMarker()
 {
    if(!g_orbBridgeEnabled||IsTesterMode())return false;
    string eventId="orb_bridge_init|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+OrbProTime(TimeGMT());
-   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=AccountRiskBudgetMoney();
    string riskBasis=RiskCapitalBasisCode();
    bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,"INIT",0,0,0,"bridge_initiated|CH"+IntegerToString(g_orbBridgeChannel),0,"init",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,"INIT",0,0,0,"bridge_initiated",0,"init",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
@@ -217,7 +217,7 @@ bool OrbProPublishSignal(string dir,datetime signalTime,double entry,double sl,d
    }
    string eventId="MACROSS|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+MaCrossModeText(g_rtMaCrossMode)+"|PAIR"+MaCrossPairText(g_rtMaCrossPair)+"|"+dir+"|"+StringFormat("%I64d",signalTime);
    string source=OrbProBridgeSource();
-   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=AccountRiskBudgetMoney();
    string riskBasis=RiskCapitalBasisCode();
    bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,dir,entry,sl,tp,source,halfTrigger,halfLabel,signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
@@ -244,7 +244,7 @@ bool OrbProPublishCloseOnly(int dir,string reason,bool forcePublish=false)
    string source="MaCrossOver|CloseOnly|"+MaCrossModeText(g_rtMaCrossMode)+"|PAIR"+MaCrossPairText(g_rtMaCrossPair)+"|"+reason+"|CH"+IntegerToString(g_orbBridgeChannel);
    MqlTick tick;ZeroMemory(tick);SymbolInfoTick(_Symbol,tick);
    double entry=g_tradeEntry>0?g_tradeEntry:(dir>0?tick.bid:tick.ask);
-   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+   double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=AccountRiskBudgetMoney();
    string riskBasis=RiskCapitalBasisCode();
    bool genericOk=OrbProWriteLatest(OrbProGenericLatestFile(),eventId,direction,entry,0,0,source,0,"OFF",signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
    bool scopedOk=OrbProWriteLatest(OrbProScopedLatestFile(),eventId,direction,entry,0,0,source,0,"OFF",signalTime,riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
@@ -485,7 +485,7 @@ void OrbProApplyChannel(int value)
    if(g_orbBridgeEnabled)
    {
       string detached="channel_detached|"+_Symbol+"|"+OrbProTf(g_rtSignalTf)+"|"+OrbProTime(TimeGMT());
-      double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=RiskBudgetMoney();
+      double riskPct=EffRiskPerTradePct(),riskReferenceCapital=RiskReferenceCapitalForBridge(),riskBudgetMoney=AccountRiskBudgetMoney();
       string riskBasis=RiskCapitalBasisCode();
       OrbProWriteLatest(OrbProGenericLatestFile(),detached,"INIT",0,0,0,"bridge_channel_detached|CH"+IntegerToString(g_orbBridgeChannel),0,"detached",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);
       OrbProWriteLatest(OrbProScopedLatestFile(),detached,"INIT",0,0,0,"bridge_channel_detached|CH"+IntegerToString(g_orbBridgeChannel),0,"detached",TimeGMT(),riskPct,riskBasis,riskReferenceCapital,riskBudgetMoney);

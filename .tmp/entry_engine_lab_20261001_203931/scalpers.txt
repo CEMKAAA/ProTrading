@@ -1,0 +1,2 @@
+engine	trades	wins	losses	open	data	net_R	rule_exits	time_exits	elapsed_seconds
+01 Slow EMA + ADX Trend Scalper	0	0	0	0	0	0.00000000	0	0	15.046

@@ -20,7 +20,7 @@ string OrbUserMetricKey(const string symbol,int tf,const string inputs,const str
    }
    return OrbMlSha256(ORB_ML_SOURCE+symbol+(string)tf+"MA_EXIT_FILTERED3"+inverseRevision+inputs+runtime+switches);
 }
-string MaEntryMetricMeta(bool independent,int maximum){return !independent&&maximum==1?"":"|MAENTRY1="+(independent?"1":"0")+","+(string)maximum;}
+string MaEntryMetricMeta(bool independent,int maximum){if(independent)return "|MAENTRY2_TOTAL_OPEN="+(string)maximum;return maximum==1?"":"|MAENTRY1=0,"+(string)maximum;}
 string OrbUserRuntimeMetricKey()
 {
    OrbStrategyPreset p;OrbCustomCapturePreset(p);

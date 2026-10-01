@@ -1,0 +1,1 @@
+legacy_same=true checks=35 failed=0 legacy_hash=ee3fac005a2c32fc1194e1aa3f0d4a3d226cff4762cfb565208a464d66f44101 legacy_trades=138 max10_open=10 max3_open=3

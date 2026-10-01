@@ -1,0 +1,1 @@
+checks=10293 failed=0 trades=52 audit_same=true rsi_error=0.0000000000 adx_error=0.0000000000 history_source=BROKER_SYNCHRONIZED

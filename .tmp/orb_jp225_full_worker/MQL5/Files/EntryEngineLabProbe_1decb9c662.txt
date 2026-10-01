@@ -1,0 +1,1 @@
+checks=10270 failed=0 trades=54 audit_same=true rsi_error=0.0000000000 adx_error=0.0000000000 history_source=LOCAL_FIXED profile=PIP_FOCUSED

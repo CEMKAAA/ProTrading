@@ -7,6 +7,7 @@
 #property strict
 #property version "1.00"
 #include <Trade/Trade.mqh>
+#include "NativeRiskBalance.mqh"
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
@@ -15,7 +16,7 @@
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
-#define ORB15_BUILD "MaCrossORB-0.14-Trender-preview"
+#define ORB15_BUILD "MaCrossORB-0.15-OpenCapacity"
 
 enum ORB_SESSION_PROFILE
 {
@@ -46,7 +47,7 @@ input MA_CROSS_SIGNAL_MODE InpMaCrossMode   = MA_CROSS_ORIGINAL_MTF;
 input MA_CROSS_PAIR InpMaCrossPair           = MA_CROSS_PAIR_FAST;
 input group "MA independent native entries (hedging, fixed SL/TP only)"
 input bool InpIndependentEntries=false;
-input int InpMaxConsecutiveEntries=1; // 1..1000; same-direction series, not concurrent positions
+input int InpMaxConsecutiveEntries=1; // 1..1000; total concurrently open instance-owned native positions
 input int             InpMaFastLength       = 9;
 input int             InpMaMediumLength     = 27;
 input int             InpMaSlowLength       = 200;
@@ -2065,7 +2066,7 @@ bool FixedReferenceRiskMode(){return InpRiskCapitalMode==ORB_RISK_FIXED_REFERENC
 double RiskSizingCapital(){return FixedReferenceRiskMode()?(InpFixedRiskReferenceCapital>0.0?InpFixedRiskReferenceCapital:0.0):MathMax(0.0,AccountInfoDouble(ACCOUNT_EQUITY));}
 double RiskReferenceCapitalForBridge(){return FixedReferenceRiskMode()?MathMax(0.0,InpFixedRiskReferenceCapital):0.0;}
 string RiskCapitalBasisCode(){return FixedReferenceRiskMode()?"FIXED_REFERENCE":"CURRENT_EQUITY";}
-bool RiskEnabled(){return InpAccountRiskEnabled||ManagedRiskMode()||FixedReferenceRiskMode();}
+bool RiskEnabled(){return NativeBalanceEnabled()||InpAccountRiskEnabled||ManagedRiskMode()||FixedReferenceRiskMode();}
 double ClampRiskPerTradePct(double value){return NormalizeDouble(MathMax(0.01,MathMin(100.0,value)),4);}
 string RuntimeRiskPctKey()
 {
@@ -2091,13 +2092,14 @@ bool SetRuntimeRiskPct(double value)
    return GlobalVariableSet(RuntimeRiskPctKey(),g_rtRiskPerTradePct)>0;
 }
 double EffRiskPerTradePct(){return ClampRiskPerTradePct(g_rtRiskPerTradePct);}
-double RiskBudgetMoney(){double capital=RiskSizingCapital();return capital>0.0?capital*MathMax(0.01,EffRiskPerTradePct())/100.0:0.0;}
+double AccountRiskBudgetMoney(){double capital=RiskSizingCapital();return capital>0.0?capital*MathMax(0.01,EffRiskPerTradePct())/100.0:0.0;}
+double RiskBudgetMoney(){return NativeBalanceEnabled()?NativeBalanceBudget(EffRiskPerTradePct()):AccountRiskBudgetMoney();}
 double EffAtrExposurePct(){return ManagedRiskMode()?2.0:InpAtrExposurePct;}
 double EffMaxPortfolioPct(){return g_ftmoMode?4.0:InpMaxPortfolioPct;}
 double EffDailyLossLimitPct(){return g_ftmoMode?5.0:InpDailyLossLimitPct;}
 double EffMaxDrawdownPct(){return g_ftmoMode?10.0:InpMaxDrawdownPct;}
 double EffMaxMarginUsagePct(){return g_ftmoMode?40.0:InpMaxMarginUsagePct;}
-double CalculateLot(double entry,double sl){if(!InpUseAutoRiskLot&&!ManagedRiskMode()&&!FixedReferenceRiskMode())return NormalizeVolume(InpFixedLot);double rd=MathAbs(entry-sl);double vpu=ValuePerPriceUnitPerLot();double rm=RiskBudgetMoney();if(rd<=0||vpu<=0||rm<=0)return FixedReferenceRiskMode()?0.0:NormalizeVolume(InpFixedLot);return NormalizeVolume(rm/(rd*vpu));}
+double CalculateLot(double entry,double sl){if(!InpUseAutoRiskLot&&!ManagedRiskMode()&&!FixedReferenceRiskMode()&&!NativeBalanceEnabled())return NormalizeVolume(InpFixedLot);double rd=MathAbs(entry-sl);double vpu=ValuePerPriceUnitPerLot();double rm=RiskBudgetMoney();if(rd<=0||vpu<=0||rm<=0)return FixedReferenceRiskMode()?0.0:NormalizeVolume(InpFixedLot);return NormalizeVolume(rm/(rd*vpu));}
 int CurrentSpreadPoints(){MqlTick t;if(!SymbolInfoTick(_Symbol,t))return 0;double pt=SymbolInfoDouble(_Symbol,SYMBOL_POINT);if(pt<=0)return 0;return(int)MathRound((t.ask-t.bid)/pt);}
 bool SpreadAllowed(){if(InpMaxSpreadPoints<=0)return true;return CurrentSpreadPoints()<=InpMaxSpreadPoints;}
 double NormalizeLegVolume(double total,int legs){double st=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_STEP);double mn=SymbolInfoDouble(_Symbol,SYMBOL_VOLUME_MIN);if(st<=0)st=0.01;if(mn<=0)mn=0.01;double leg=MathFloor(total/(double)legs/st+1e-7)*st;return NormalizeDouble(leg,8)<mn?0:NormalizeDouble(leg,8);}
@@ -2172,6 +2174,7 @@ string TargetOutcomeLabel(int leg)
 }
 double SimMoneyPnl(double netR)
 {
+   if(NativeBalanceEnabled())return netR*RiskBudgetMoney();
    double base=FixedReferenceRiskMode()?MathMax(0.01,InpFixedRiskReferenceCapital):(InpInitialBalanceOverride>0?InpInitialBalanceOverride:MathMax(0.01,AccountInfoDouble(ACCOUNT_BALANCE)));
    return netR*base*MathMax(0,EffRiskPerTradePct())/100.0;
 }
@@ -3718,7 +3721,7 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    double sf=MathMax(1,MathMin(100,InpSafetyBufferPct))/100.0;
    double mu=cap>0?AccountInfoDouble(ACCOUNT_MARGIN)/cap*100.0:100.0;
    if(cap<=0||(EffDailyLossLimitPct()>0&&dp>=EffDailyLossLimitPct()*sf)||(EffMaxDrawdownPct()>0&&tp>=EffMaxDrawdownPct()*sf)||(EffMaxMarginUsagePct()>0&&mu>=EffMaxMarginUsagePct()))
-   {detail="risk_block cap="+DoubleToString(cap,2)+" daily="+DoubleToString(dp,2)+" dd="+DoubleToString(tp,2);return InpFailClosed?0:fallback;}
+   {detail="risk_block cap="+DoubleToString(cap,2)+" daily="+DoubleToString(dp,2)+" dd="+DoubleToString(tp,2);return (NativeBalanceEnabled()||InpFailClosed)?0:fallback;}
    ENUM_ORDER_TYPE ot=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    bool fixedReference=FixedReferenceRiskMode();
    double slRes=0,atrRes=0,atr=ClosedDailyAtr();
@@ -3726,9 +3729,9 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    bool slCalcOk=OrderCalcProfit(ot,_Symbol,1.0,entry,sl,slRes);
    bool atrCalcOk=fixedReference||((atr>0.0)&&OrderCalcProfit(ot,_Symbol,1.0,entry,atrExit,atrRes));
    if(!slCalcOk||!atrCalcOk)
-   {detail="risk_calc_fail";return InpFailClosed?0:fallback;}
+   {detail="risk_calc_fail";return (NativeBalanceEnabled()||InpFailClosed)?0:fallback;}
    double slMpl=MathAbs(slRes),atrMpl=fixedReference?MathAbs(slRes):MathAbs(atrRes);
-   if(slMpl<=0||(!fixedReference&&atrMpl<=0)){detail="risk_zero_mpl";return InpFailClosed?0:fallback;}
+   if(slMpl<=0||(!fixedReference&&atrMpl<=0)){detail="risk_zero_mpl";return (NativeBalanceEnabled()||InpFailClosed)?0:fallback;}
    double tradeBudget=RiskBudgetMoney();
    if(FixedReferenceRiskMode()&&tradeBudget<=0.0){detail="fixed_reference_capital_invalid";return 0;}
    double atrBudget=cap*MathMax(0,EffAtrExposurePct())/100.0;
@@ -3738,6 +3741,8 @@ double ResolveLot(string dir,double entry,double sl,string &detail)
    double raw=FixedReferenceRiskMode()?tradeBudget/slMpl:MathMin(tradeBudget/slMpl,MathMin(atrBudget/atrMpl,avail/slMpl));
    double vol=NormalizeVolume(raw);
    double projectedRisk=slMpl*vol;
+   if(NativeBalanceEnabled()&&NativeBalanceOverBudget(projectedRisk,tradeBudget))
+   {detail="reference_balance_min_volume_exceeds_budget";return 0;}
    if(FixedReferenceRiskMode()&&projectedRisk>tradeBudget+MathMax(0.0,InpFixedRiskMaxOvershootMoney))
    {detail="fixed_reference_min_volume_exceeds_budget projected="+DoubleToString(projectedRisk,2)+" budget="+DoubleToString(tradeBudget,2);return 0;}
    double margin=0;bool mc=OrderCalcMargin(ot,_Symbol,vol,entry,margin);
@@ -6797,7 +6802,7 @@ bool EnsureOrbAuditHistoryCoverage(int days,string &detail,bool &hardBlocked)
 void OrbResetHistoricalStats()
 {
    AxReset();
-   g_maHistSeriesDir=0;g_maHistSeriesCount=0;
+   g_maHistSeriesDir=0;g_maHistSeriesCount=0;MaHistoricalCapacityReset();
    g_histAuditRunning=false;
    g_histAuditStage="";
    g_histAuditTotalDays=RuntimeHistoricalDays();
@@ -6893,10 +6898,8 @@ void ProcessHistoricalCalcDay(const int back)
          return;
       }
 
-      // Exhausted same-direction candidates cannot become trades. Keep the raw
-      // event stream for reversal detection, but skip entry resolution and replay.
-      if(g_maIndependent&&g_maHistSeriesDir==(EffectiveOrbDirection(dir)=="BUY"?1:-1)
-         &&g_maHistSeriesCount>=g_maMaxConsecutive)
+      // Preserve raw signals for exits; reject entries when all concurrent slots are occupied.
+      if(g_maIndependent&&!MaHistoricalCapacityAllows(OrbSignalAvailableTime(sigT)))
       {g_histFiltered++;return;}
       if(!EntryDirectionAllows(EffectiveOrbDirection(dir)=="BUY"?1:-1)){g_histFiltered++;return;}
       datetime entryT=sigT;
@@ -6946,7 +6949,7 @@ void ProcessHistoricalCalcDay(const int back)
       {
          string independentReason="";
          if(!MaIndependentShape(independentReason)
-            ||!MaSeriesAllows(isBuy?1:-1,g_maHistSeriesDir,g_maHistSeriesCount,g_maMaxConsecutive))
+            ||!MaHistoricalCapacityAllows(OrbSignalAvailableTime(entryT)))
          {
             g_lastExecStatus=independentReason;g_histFiltered++;
             g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
@@ -7048,7 +7051,8 @@ void ProcessHistoricalCalcDay(const int back)
       }
       if(g_maIndependent)
       {
-         if(sim.valid)g_maHistSeriesCount++;
+         // Missing exit evidence conservatively occupies a slot through the audit cutoff.
+         MaHistoricalCapacityOccupy(sim.valid&&sim.outcome!="open"&&sim.exitTime>0?sim.exitTime:g_histRunNow+1);
       }
       if(!g_maIndependent)
          g_maAuditPositionUntil=MaLegacyAuditPositionUntil(sim,g_histRunNow,forcedExitAt,forcedExitOutcome);
@@ -7508,7 +7512,7 @@ void DrawHistoricalSignals()
    g_histAuditTotalDays=days;g_histAuditProcessedDays=0;
    SetHistoricalAuditProgress("NAS",0.0,1.0,0,1);
    g_histPrepBack=0;g_histCalcBack=0;g_maAuditPositionUntil=0;g_maAuditHeldCandidates=0;g_histNasOverlayIndex=0;g_histOverlayIndex=0;
-   g_maHistSeriesDir=0;g_maHistSeriesCount=0;
+   g_maHistSeriesDir=0;g_maHistSeriesCount=0;MaHistoricalCapacityReset();
    g_histRejectedWindowRaw=0;g_histDrawnWindowCount=0;g_histDrawnNasSignals=0;
    g_histChecked=0;g_histDrawn=0;g_histFiltered=0;
    OrbResetHistoricalStats();
@@ -7887,6 +7891,15 @@ void DrawDashboard()
       if(ObjectFind(0,ofKeys[i])>=0)ObjectSetString(0,ofKeys[i],OBJPROP_TEXT,ofValues[i]);
 }
 
+void RenderNativeBalance()
+{
+   int x=InpDashboardX+644,y=InpDashboardY+530;
+   CreateLabel("DASH_NATIVE_BALANCE",x,y+4,"BALANCE (0=ACCOUNT)",C'184,196,210',8);
+   CreateEdit("EDIT_NATIVE_BALANCE",x+158,y,108,22,DoubleToString(g_nativeRiskBalance,2));
+   CreateButton("BTN_NATIVE_BALANCE",x+274,y,98,22,"APPLY BAL",C'38,101,176');
+   CreateLabel("DASH_NATIVE_BUDGET",x,y+29,"NATIVE 1R BUDGET: "+DoubleToString(RiskBudgetMoney(),2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",C'80,255,180',8);
+   ObjectSetString(0,PREFIX+"EDIT_NATIVE_BALANCE",OBJPROP_TOOLTIP,"Native MT5 percentage-risk reference capital in account currency. 0 restores the existing account basis. MONEY mode takes priority. Future entries only; risk settings stay separate from strategies.");
+}
 void UpdateDashboard()
 {
    if(g_maOfRankOpen)return;
@@ -7901,7 +7914,7 @@ void UpdateDashboard()
    CreateButton("BTN_OF_SETTINGS",InpDashboardX+558,InpDashboardY+10,48,17,"OF SET",C'38,101,176');
    ObjectSetString(0,PREFIX+"BTN_ORDERFLOW",OBJPROP_TOOLTIP,"Cycle OFF / BREAKOUT / REJECTION / EITHER / PROFILE / ACTIVITY / DELTA. Quote-tick proxy, not exchange flow. "+g_mcOfStatus);
    OrbStrategyPresetSyncSelection();
-   OrbUserDraw();
+   OrbUserDraw();RenderNativeBalance();
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');
@@ -8034,6 +8047,7 @@ void UpdateDashboard()
    CreateLabel("DASH_MA_REV_WAIT",x+160,rootY+313,"WAIT HH:MM",C'134,158,182',7);
    CreateEdit("EDIT_MA_REV_WAIT",x+245,rootY+309,60,18,DurationMinutesText(g_maReverseWait));
    CreateButton("BTN_MA_REV_APPLY",x+313,rootY+309,90,18,"APPLY EXIT",C'38,101,176');
+   MaRenderOpenCounter(true);
    y=rootY+312;
 
    // Status line
@@ -8872,9 +8886,8 @@ void DispatchAcceptedOrbSignal(string dir,datetime bt,double signalClose,string 
       if(!AdvancedReverseShape(reason)||OwnPositionExists())
       {g_lastExecStatus="ADV_REV_SIGNAL_BLOCKED_"+(reason!=""?reason:"ACTIVE_POSITION");return;}
    }
-   if(g_maIndependent&&g_maSeriesDir==(EffectiveOrbDirection(dir)=="BUY"?1:-1)
-      &&g_maSeriesCount>=g_maMaxConsecutive)
-   {g_lastExecStatus="CONSECUTIVE LIMIT";return;}
+   if(g_maIndependent&&!MaOpenCapacityAllows(MaNativeOpenCount(),g_maMaxConsecutive))
+   {g_lastExecStatus="OPEN POSITION LIMIT";return;}
    if(!g_rtAdvancedReverse)DrawAcceptedLiveSignal(dir,bt,signalClose,detail);
    if(g_rtEntryMode==ORB_ENTRY_PULLBACK_RETEST)
    {
@@ -9784,7 +9797,7 @@ int OnInit()
    g_rtFilteredWindowReverseExit=InpFilteredWindowReverseExitDefault;
    g_rtPostTradeDispBlockExit=InpExitOnPostTradeSameDirectionDispBlockDefault;
    g_ftmoMode=InpFtmoModeDefault;g_riskLotOnlyMode=(!g_ftmoMode&&InpRiskLotOnlyModeDefault);g_runtimeMagic=0;
-   LoadRuntimeRiskPct();
+   LoadRuntimeRiskPct();NativeBalanceLoad("macrossover_orb");
    LoadRuntimeInvertMode();
    LoadRuntimeAdvancedReverse();
    LoadRuntimeMaCrossMode();
@@ -9909,6 +9922,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 {
    OrbTesterAudit_WriteDeal(trans, request, result);
    OrbProOnTradeTransaction(trans);
+   MaRenderOpenCounter();
    if(IsTesterMode()||trans.type!=TRADE_TRANSACTION_DEAL_ADD||trans.deal==0||!HistoryDealSelect(trans.deal))return;
    if(HistoryDealGetString(trans.deal,DEAL_SYMBOL)!=_Symbol||!MagicOwned((long)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)))return;
    ENUM_DEAL_ENTRY dealEntry=(ENUM_DEAL_ENTRY)HistoryDealGetInteger(trans.deal,DEAL_ENTRY);
@@ -9951,6 +9965,7 @@ void OnTimer()
          if(!g_histAuditRunning&&!g_histRedrawQueued)RefreshNasSignalOverlay();
          DrawOrbLiveTradeLevels();
       }
+      if(coreDue)MaRenderOpenCounter();
       ProcessQueuedHistoricalRedraw();
       ProcessHistoricalAuditStep();
       if(g_histAuditRunning||g_histRedrawQueued)RenderHistoricalAuditProgress();
@@ -10022,6 +10037,14 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       UpdateDashboard();ChartRedraw(0);return;
    }
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
+   if(sparam==PREFIX+"BTN_NATIVE_BALANCE")
+   {
+      bool applied=NativeBalanceApply(ObjectGetString(0,PREFIX+"EDIT_NATIVE_BALANCE",OBJPROP_TEXT));
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      if(applied){g_lastExecStatus="NATIVE_BALANCE_APPLIED";CancelHistoricalAuditBuild();QueueHistoricalRedraw(0);}
+      else g_lastExecStatus="BALANCE_INVALID_OR_SAVE_FAILED";
+      UpdateDashboard();ChartRedraw(0);return;
+   }
    if(sparam==PREFIX+"BTN_ATR"||sparam==PREFIX+"BTN_DELAY"||sparam==PREFIX+"BTN_UTC_SESSION")return;
 
    if(sparam==PREFIX+"BTN_MA_REV_EXIT"||sparam==PREFIX+"BTN_MA_REV_APPLY")

@@ -7,6 +7,7 @@
 #property version "1.13"
 
 #include <Trade/Trade.mqh>
+#include "NativeRiskBalance.mqh"
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "LiqNarrativeMacroRegime.mqh"
 #include "TradeDayCalendarPublisher.mqh"
@@ -712,7 +713,7 @@ double DirectionalStopGuard(int dir, double entry, double rawSl, double fallback
 double ClampRiskPerTradePct(double pct) { return MathMax(0.0, MathMin(10.0, pct)); }
 bool ManagedRiskMode() { return g_ftmoMode || g_riskLotOnlyMode; }
 string RuntimeRiskModeLabel() { if(g_ftmoMode) return "FTMO"; if(g_riskLotOnlyMode) return "RISKLOT"; return "NORMAL"; }
-bool RiskEnabled() { return InpAccountRiskEnabled || ManagedRiskMode(); }
+bool RiskEnabled() { return NativeBalanceEnabled() || InpAccountRiskEnabled || ManagedRiskMode(); }
 double RiskPerTradePct()
 {
    double pct = ClampRiskPerTradePct(g_riskPerTradePct);
@@ -725,6 +726,7 @@ double MaxDrawdownPct() { return g_ftmoMode ? 10.0 : InpMaxDrawdownPct; }
 
 double ApproxMoneyFromR(double r)
 {
+   if(NativeBalanceEnabled())return r*NativeBalanceBudget(RiskPerTradePct());
    double base = InpInitialBalanceOverride > 0.0 ? InpInitialBalanceOverride : MathMax(0.01, AccountInfoDouble(ACCOUNT_BALANCE));
    return r * base * MathMax(0.0, RiskPerTradePct()) / 100.0;
 }
@@ -3288,9 +3290,11 @@ bool RiskGateAllows(double entry, double sl, double &lot, string &reason)
          return false;
       }
 
-      double riskMoney = equity * MathMax(0.01, RiskPerTradePct()) / 100.0;
+      double riskMoney = NativeBalanceEnabled() ? NativeBalanceBudget(RiskPerTradePct()) : equity * MathMax(0.01, RiskPerTradePct()) / 100.0;
       lot = NormalizeVolume(riskMoney / (riskDistance * valuePerUnit));
       double actualRiskMoney = RiskMoneyForLot(lot, sl < entry ? 1 : -1, entry, sl);
+      if(NativeBalanceEnabled()&&NativeBalanceOverBudget(actualRiskMoney,riskMoney))
+      {reason="reference_balance_min_volume_exceeds_budget";return false;}
       double portfolioCap = equity * MathMax(0.01, MaxPortfolioRiskPct()) / 100.0;
       if(actualRiskMoney <= 0.0)
       {
@@ -5986,7 +5990,7 @@ int OnInit()
    g_fileBridgeOnlyMode = InpFileBridgeOnlyMode;
    g_nativeTradeWithBridgeOnly = InpNativeTradeWithBridgeOnlyDefault;
    g_allowDuplicateEntries = InpAllowDuplicateEntriesDefault;
-   g_riskPerTradePct = ClampRiskPerTradePct(InpRiskPerTradePct);
+   g_riskPerTradePct = ClampRiskPerTradePct(InpRiskPerTradePct);NativeBalanceLoad("SolAdvanced");
    g_histWeeks = ClampHistWeeks(InpHistoricalWeeks > 0 ? InpHistoricalWeeks : (int)MathCeil((double)MathMax(1, InpHistoricalDays) / 7.0));
    g_btWeeks = InpBacktestWeeks;
    g_btFillMode = InpBacktestFillMode;

@@ -1,0 +1,1 @@
+checks=10062 failed=2 trades=0 audit_same=true rsi_error=0.0000000000 adx_error=0.0000000000

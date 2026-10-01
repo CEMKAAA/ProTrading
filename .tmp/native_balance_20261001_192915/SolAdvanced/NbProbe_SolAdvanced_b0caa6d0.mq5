@@ -1,0 +1,30 @@
+#property strict
+#define OnInit UnusedInit
+#define OnDeinit UnusedDeinit
+#define OnTick UnusedTick
+#define OnTimer UnusedTimer
+#define OnChartEvent BalanceChartEvent
+#define OnTradeTransaction UnusedTransaction
+#include "LiqNarrativeSol_Advanced.mq5"
+#include "NativeBalanceChecks.mqh"
+void OnStart()
+{
+   if(StringFind(TerminalInfoString(TERMINAL_DATA_PATH),"orb_jp225_full_worker")<0)return;
+   NbChecks();
+   g_riskPerTradePct=1.0;g_ftmoMode=false;g_nativeRiskBalance=0;
+   double baseline=ApproxMoneyFromR(2);
+   g_nativeRiskBalance=30;NbCheck(MathAbs(ApproxMoneyFromR(2)-2*NativeBalanceBudget(1))<1e-10,"Sol audit money reference");
+   NbCheck(RiskEnabled(),"reference enables risk sizing");g_nativeRiskBalance=0;
+   NbCheck(ApproxMoneyFromR(2)==baseline,"default money parity");
+   g_liqLibraryPanel=true;g_liqLibraryOpen=false;g_liqLibraryRPicker=false;g_liqLibraryOpenedAt=0;
+   LiqLibraryDraw();string edit=LiqLibraryObject("BAL_VALUE"),button=LiqLibraryObject("BAL_APPLY");
+   NbCheck(ObjectFind(0,edit)>=0&&ObjectFind(0,button)>=0,"balance UI visible");
+   ObjectSetString(0,edit,OBJPROP_TEXT,"30");LiqLibraryDraw();
+   NbCheck(ObjectGetString(0,edit,OBJPROP_TEXT)=="30"&&g_nativeRiskBalance==0,"draft not reset or applied");
+   long x=ObjectGetInteger(0,button,OBJPROP_XDISTANCE)+4;double y=(double)ObjectGetInteger(0,button,OBJPROP_YDISTANCE)+4;
+   BalanceChartEvent(CHARTEVENT_CLICK,x,y,"");NbCheck(g_nativeRiskBalance==30,"actual Sol raw-click apply route");
+   ChartScreenShot(0,"NbProbe_SolAdvanced_b0caa6d0.png",1600,900);
+   GlobalVariableDel(g_nativeRiskBalanceKey);EventKillTimer();
+   int report=FileOpen("NbProbe_SolAdvanced_b0caa6d0.txt",FILE_WRITE|FILE_TXT|FILE_ANSI);
+   if(report!=INVALID_HANDLE){FileWriteString(report,"checks="+(string)nbChecks+" failed="+(string)nbFailed+"\n");FileClose(report);}
+}

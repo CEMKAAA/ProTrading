@@ -1,0 +1,11 @@
+engine	trades	wins	losses	open	data	net_R	rule_exits	time_exits	elapsed_seconds
+01 Slow EMA + ADX Trend Scalper	974	244	729	1	0	-403.46151436	0	0	6.719
+02 EMA Pullback Continuation	1747	360	1387	0	0	-924.34295668	0	0	11.984
+03 RSI 50-Line Momentum Scalper	1022	197	825	0	0	-582.27916825	1	0	6.688
+04 Fast EMA + RSI Momentum	6211	1078	5132	1	0	-3761.31271586	0	1	26.954
+05 Bollinger Band Mean-Reversion Scalper	935	170	765	0	0	-560.85660391	0	0	6.312
+06 ATR Micro-Breakout	1782	330	1452	0	0	-1048.69193089	0	0	12.640
+07 EMA + RSI Re-Entry Scalper	5285	942	4343	0	0	-3145.11050316	0	1	24.843
+08 Ultra-Fast EMA State Scalper	3822	603	3219	0	0	-2532.37948241	0	0	30.500
+09 One-Minute Candle Momentum Machine	1482	224	1258	0	0	-997.11779251	0	0	22.360
+10 Hyperactive Directional Flip System	654	115	539	0	0	-395.19912071	0	0	30.906

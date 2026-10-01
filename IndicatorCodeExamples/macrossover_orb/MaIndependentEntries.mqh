@@ -11,6 +11,62 @@ int g_maSeriesLock=INVALID_HANDLE;
 string g_maSeriesFile="",g_maSeriesIdentity="";
 int g_maHistSeriesDir=0,g_maHistSeriesCount=0;
 
+datetime g_maHistOpenUntil[1000];
+int g_maHistOpenCount=0;
+void MaHistoricalCapacityReset(){g_maHistOpenCount=0;}
+bool MaOpenCapacityAllows(int opened,int maximum){return maximum>=1&&maximum<=1000&&opened>=0&&opened<maximum;}
+int MaNativeOpenCount(int &buys,int &sells)
+{
+   buys=0;sells=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(PositionGetTicket(i)==0||!IsOwnPosition())continue;
+      if(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)buys++;else sells++;
+   }
+   return buys+sells;
+}
+int MaNativeOpenCount(){int buys=0,sells=0;return MaNativeOpenCount(buys,sells);}
+// A bounded exit-time heap releases real closed trades; direction changes never reset capacity.
+void MaHistoricalCapacityRelease(datetime at)
+{
+   while(g_maHistOpenCount>0&&g_maHistOpenUntil[0]<=at)
+   {
+      g_maHistOpenCount--;if(g_maHistOpenCount==0)break;
+      g_maHistOpenUntil[0]=g_maHistOpenUntil[g_maHistOpenCount];int i=0;
+      while(2*i+1<g_maHistOpenCount)
+      {
+         int child=2*i+1;
+         if(child+1<g_maHistOpenCount&&g_maHistOpenUntil[child+1]<g_maHistOpenUntil[child])child++;
+         if(g_maHistOpenUntil[i]<=g_maHistOpenUntil[child])break;
+         datetime value=g_maHistOpenUntil[i];g_maHistOpenUntil[i]=g_maHistOpenUntil[child];g_maHistOpenUntil[child]=value;i=child;
+      }
+   }
+}
+bool MaHistoricalCapacityAllows(datetime at)
+{MaHistoricalCapacityRelease(at);return MaOpenCapacityAllows(g_maHistOpenCount,g_maMaxConsecutive);}
+void MaHistoricalCapacityOccupy(datetime until)
+{
+   if(g_maHistOpenCount>=1000)return;
+   int i=g_maHistOpenCount++;g_maHistOpenUntil[i]=until;
+   while(i>0)
+   {
+      int parent=(i-1)/2;if(g_maHistOpenUntil[parent]<=g_maHistOpenUntil[i])break;
+      datetime value=g_maHistOpenUntil[parent];g_maHistOpenUntil[parent]=g_maHistOpenUntil[i];g_maHistOpenUntil[i]=value;i=parent;
+   }
+}
+string MaOpenCounterText(int opened){return "OPEN "+(string)opened+"/"+(string)(g_maIndependent?g_maMaxConsecutive:1);}
+void MaRenderOpenCounter(bool force=false)
+{
+   if(IsTesterMode()||!InpShowDashboard)return;
+   int buys=0,sells=0,opened=MaNativeOpenCount(buys,sells),limit=g_maIndependent?g_maMaxConsecutive:1;
+   string text=MaOpenCounterText(opened),name=PREFIX+"DASH_MA_OPEN";
+   string tip="Instance-owned native MT5 positions: BUY="+(string)buys+", SELL="+(string)sells
+      +". MAX SERIES is TOTAL simultaneously open positions, not consecutive signals. Applied limit="+(string)limit+".";
+   if(!force&&ObjectFind(0,name)>=0&&ObjectGetString(0,name,OBJPROP_TEXT)==text&&ObjectGetString(0,name,OBJPROP_TOOLTIP)==tip)return;
+   CreateLabel("DASH_MA_OPEN",InpDashboardX+420,InpDashboardY+313,text,opened>=limit?clrTomato:C'80,255,180',8);
+   ObjectSetString(0,name,OBJPROP_TOOLTIP,tip);
+}
+
 bool MaSeriesAllows(int direction,int &seriesDirection,int &count,int maximum)
 {
    if(direction!=1&&direction!=-1)return false;
@@ -169,6 +225,8 @@ bool MaIndependentInit()
 bool MaIndependentApply(bool enabled,int maximum)
 {
    if(maximum<1||maximum>1000)return false;
+   if(enabled&&MaNativeOpenCount()>maximum)
+   {g_lastExecStatus="MAX SERIES below current OPEN count; close exposure first";return false;}
    if(enabled!=g_maIndependent&&(OwnPositionExists()||MaIndependentOrdersPending()
       ||g_maSeriesUncertain||g_orbBridgePlanActive||g_nasPending
       ||g_retestPending||g_imbPending||g_newDayReverseRetryPending))
@@ -194,15 +252,15 @@ bool MaIndependentOpen(string direction,datetime signalBar,double entry,double s
    if(g_maSeriesUncertain){g_lastExecStatus="ORDER RECONCILIATION REQUIRED";return false;}
    if(OrbSignalAvailableTime(signalBar)<=g_instanceStartedAt){g_lastExecStatus="STALE SIGNAL BLOCK";return false;}
    int dir=direction=="BUY"?1:-1;
-   int nextDirection=g_maSeriesDir,nextCount=g_maSeriesCount;
-   if(!MaSeriesAllows(dir,nextDirection,nextCount,g_maMaxConsecutive))
-   {g_lastExecStatus="CONSECUTIVE LIMIT";return false;}
+   if(MaIndependentOrdersPending()||!MaOpenCapacityAllows(MaNativeOpenCount(),g_maMaxConsecutive))
+   {g_lastExecStatus="OPEN POSITION LIMIT / ORDER PENDING";return false;}
+   int nextDirection=dir,nextCount=dir==g_maSeriesDir?g_maSeriesCount:0;
    string lotDetail="";double lot=ResolveLot(direction,entry,sl,lotDetail);
    if(lot<=0||!ValidateOpenStops(direction,entry,sl,tp,reason))
    {g_lastExecStatus="INDEPENDENT RISK/STOPS BLOCK";return false;}
    // Reserve BEFORE broker I/O: a crash or ambiguous response must not duplicate
    // the order. Ambiguous attempts conservatively consume one allowance.
-   g_maSeriesDir=nextDirection;g_maSeriesCount=nextCount+1;
+   g_maSeriesDir=nextDirection;g_maSeriesCount=MathMin(1000,nextCount+1);
    g_maSeriesBar=signalBar;g_maSeriesUncertain=true;
    if(!MaIndependentWrite()){g_lastExecStatus="SERIES WRITE FAILED";return false;}
    trade.SetAsyncMode(false);trade.SetExpertMagicNumber(RuntimeMagic());
@@ -215,12 +273,12 @@ bool MaIndependentOpen(string direction,datetime signalBar,double entry,double s
    bool rejected=!filled&&MaIndependentDefiniteRejection(rc);
    if(filled||rejected)
    {
-      if(rejected)g_maSeriesCount--;
+      if(rejected)g_maSeriesCount=nextCount;
       g_maSeriesUncertain=false;
       if(!MaIndependentWrite())
       {
          g_maSeriesUncertain=true;
-         if(rejected)g_maSeriesCount++; // Keep the persisted reservation on I/O failure.
+         if(rejected)g_maSeriesCount=MathMin(1000,nextCount+1); // Keep the persisted reservation on I/O failure.
       }
    }
    g_lastExecStatus=filled?"INDEPENDENT OPENED":"INDEPENDENT ORDER NOT CONFIRMED (reserved)";

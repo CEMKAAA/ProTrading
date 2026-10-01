@@ -333,6 +333,16 @@ void LiqLibraryDraw()
    LiqLibraryWidget("FAV",OBJ_BUTTON,x+12,y+70,130,24,g_liqLibraryFavorites?"FAVORITES ON":"FAVORITES OFF",button);
    LiqLibraryWidget("SELECTED",OBJ_LABEL,x+12,y+106,w-24,20,"Selected: "+StringSubstr(g_liqLibraryName,0,50),bg);
    if(!g_liqLibraryOpen)TCalCsvLauncher(PFX,x+12,y+138,1.0,DASH_Z+60,true);
+   if(!g_liqLibraryOpen)
+   {
+      LiqLibraryWidget("BAL_LABEL",OBJ_LABEL,x+12,y+226,180,20,"BALANCE (0=ACCOUNT)",bg);
+      LiqLibraryWidget("BAL_VALUE",OBJ_EDIT,x+198,y+220,100,24,DoubleToString(g_nativeRiskBalance,2),C'38,46,60');
+      LiqLibraryWidget("BAL_APPLY",OBJ_BUTTON,x+306,y+220,100,24,"APPLY BAL",button);
+      double budget=NativeBalanceEnabled()?NativeBalanceBudget(RiskPerTradePct()):AccountInfoDouble(ACCOUNT_EQUITY)*RiskPerTradePct()/100.0;
+      LiqLibraryWidget("BAL_BUDGET",OBJ_LABEL,x+12,y+254,w-24,20,"NATIVE 1R BUDGET: "+DoubleToString(budget,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",bg);
+      ObjectSetString(0,LiqLibraryObject("BAL_VALUE"),OBJPROP_TOOLTIP,"Native percentage-risk reference capital; 0 restores account sizing. Future entries only. Risk controls remain separate from saved strategies.");
+   }
+   else {string balanceKeys[]={"BAL_LABEL","BAL_VALUE","BAL_APPLY","BAL_BUDGET"};for(int b=0;b<ArraySize(balanceKeys);b++)ObjectDelete(0,LiqLibraryObject(balanceKeys[b]));}
    LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+303,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
    LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+330,w-190,24,g_liqLibraryName,C'38,46,60');
    LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+330,158,24,"SAVE STRATEGY",button);
@@ -448,6 +458,13 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
       if(action=="NAV_LEFT")g_liqDashHorizontal-=200;
       if(action=="NAV_RIGHT")g_liqDashHorizontal+=200;
       LiqFitClamp();g_liqLibraryOpen=false;DeleteByPrefix(LiqLibraryObject(""));LiqLibraryRedrawPreserve();return true;
+   }
+   if(action=="BAL_APPLY")
+   {
+      bool applied=NativeBalanceApply(ObjectGetString(0,LiqLibraryObject("BAL_VALUE"),OBJPROP_TEXT));
+      g_liqLibraryStatus=applied?"Native balance applied; listener risk unchanged":"Invalid balance or save failed";
+      if(applied)RefreshAfterConfigChange(false);
+      LiqLibraryDraw();ChartRedraw(0);return true;
    }
    if(action=="CLOSE_PANEL")
    {g_liqLibraryPanel=g_liqLibraryOpen=false;DeleteByPrefix(LiqLibraryObject(""));LiqLibraryRedrawPreserve();return true;}
