@@ -16,7 +16,7 @@
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
-#define ORB15_BUILD "MaCrossORB-0.15-OpenCapacity"
+#define ORB15_BUILD "MaCrossORB-0.18-PipNoCeiling"
 
 enum ORB_SESSION_PROFILE
 {
@@ -2353,7 +2353,7 @@ double ScaleSlFromEntry(bool isBuy,double entry,double rawSl)
    return NormalizeTradePrice(isBuy?entry-dist:entry+dist);
 }
 
-double ClampPipSlPips(double pips){return MathMax(0.1,MathMin(1000000.0,pips));}
+double ClampPipSlPips(double pips){return MathIsValidNumber(pips)?MathMax(0.1,pips):0.1;}
 void SetPipSlPips(double pips){g_rtPipSlPips=ClampPipSlPips(pips);}
 double OrbPipSize()
 {
@@ -2603,7 +2603,7 @@ bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
    if(p.id==""||p.name==""){reason="EMPTY_PRESET";return false;}
    if(p.signalTf!=PERIOD_M1&&p.signalTf!=PERIOD_M5&&p.signalTf!=PERIOD_M15){reason="UNSUPPORTED_TF";return false;}
    if(p.delayMinutes<0||p.delayMinutes>1440){reason="INVALID_DELAY";return false;}
-   if(p.pipSlMode&&(!MathIsValidNumber(p.pipSlPips)||p.pipSlPips<0.1||p.pipSlPips>1000000.0))
+   if(p.pipSlMode&&(!MathIsValidNumber(p.pipSlPips)||p.pipSlPips<0.1))
       {reason="INVALID_PIP_SL";return false;}
    if(!MathIsValidNumber(p.volumeMultiplier)||p.volumeMultiplier<0.05||p.volumeMultiplier>20.0)
       {reason="INVALID_ORB_VOL_X";return false;}
@@ -7891,6 +7891,7 @@ void DrawDashboard()
       if(ObjectFind(0,ofKeys[i])>=0)ObjectSetString(0,ofKeys[i],OBJPROP_TEXT,ofValues[i]);
 }
 
+#include "../NativeMarginPreview.mqh"
 void RenderNativeBalance()
 {
    int x=InpDashboardX+644,y=InpDashboardY+530;
@@ -7914,7 +7915,7 @@ void UpdateDashboard()
    CreateButton("BTN_OF_SETTINGS",InpDashboardX+558,InpDashboardY+10,48,17,"OF SET",C'38,101,176');
    ObjectSetString(0,PREFIX+"BTN_ORDERFLOW",OBJPROP_TOOLTIP,"Cycle OFF / BREAKOUT / REJECTION / EITHER / PROFILE / ACTIVITY / DELTA. Quote-tick proxy, not exchange flow. "+g_mcOfStatus);
    OrbStrategyPresetSyncSelection();
-   OrbUserDraw();RenderNativeBalance();
+   OrbUserDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+400);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');

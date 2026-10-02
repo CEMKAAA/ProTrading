@@ -291,6 +291,52 @@ void LiqLibraryNavigation()
    ResearchLbLauncher(348,8);
 #endif
 }
+#ifdef LN_SOL_ADV_NAS_READY
+void LiqMarginDraw(int x,int y,int w,color bg)
+{
+   MqlTick tick;bool ready=g_pipSlMode&&g_pipSlPips>0&&TerminalInfoInteger(TERMINAL_CONNECTED)
+      &&SymbolInfoTick(_Symbol,tick)&&tick.bid>0&&tick.ask>=tick.bid;
+   double budget=NativeBalanceEnabled()?NativeBalanceBudget(RiskPerTradePct())
+      :AccountInfoDouble(ACCOUNT_EQUITY)*MathMax(0.01,RiskPerTradePct())/100.0;
+   string currency=AccountInfoString(ACCOUNT_CURRENCY);bool warning=false;
+   bool minValid[2];double minLoss[2];
+   ArrayInitialize(minValid,false);ArrayInitialize(minLoss,0.0);
+   LiqLibraryWidget("MARGIN_TITLE",OBJ_LABEL,x,y,w,20,"GEREKLI TEMINAT / "+currency+" / 1:"
+      +(string)AccountInfoInteger(ACCOUNT_LEVERAGE),bg);
+   ObjectSetInteger(0,LiqLibraryObject("MARGIN_TITLE"),OBJPROP_COLOR,C'255,187,92');
+   for(int i=0;i<2;i++)
+   {
+      bool buy=i==0;string side=buy?"BUY":"SELL",id=buy?"MARGIN_BUY":"MARGIN_SELL";
+      NativeMarginQuote quote;quote.valid=false;quote.reason=!g_pipSlMode?"Apply PIP SL to preview margin":"Connect broker / valid pip geometry unavailable";
+      if(ready)
+      {
+         double entry=NormTradePrice(buy?tick.ask:tick.bid),stop=ApplyRuntimeSlDistance(buy?1:-1,entry,entry);
+         minValid[i]=NativeMinimumSlLoss(buy,entry,stop,minLoss[i]);
+         double distance=MathAbs(entry-stop),value=ValuePerPriceUnitPerLot(),lots=NormalizeVolume(InpFixedLot);
+         if(RiskEnabled()&&distance>0&&value>0)lots=NormalizeVolume(budget/(distance*value));
+         if(RiskEnabled()&&budget<=0)quote.reason="Risk budget is zero";
+         else NativeMarginCalculate(_Symbol,buy,entry,stop,lots,quote);
+      }
+      bool bad=quote.valid&&(quote.margin>MathMax(0.0,AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+         ||(RiskEnabled()&&NativeBalanceOverBudget(quote.slRisk,budget)));
+      warning=warning||bad;
+      LiqLibraryWidget(id,OBJ_LABEL,x,y+20+i*17,w,20,side+" TEMINAT: "
+         +(quote.valid?DoubleToString(quote.margin,2)+" "+currency+" | LOT "+DoubleToString(quote.lots,4):"N/A"),bg);
+      ObjectSetInteger(0,LiqLibraryObject(id),OBJPROP_COLOR,bad?clrOrange:(quote.valid?C'80,255,180':C'184,196,210'));
+      ObjectSetString(0,LiqLibraryObject(id),OBJPROP_TOOLTIP,NativeMarginTooltip(quote,side,budget,RiskEnabled()));
+   }
+   LiqLibraryWidget("MARGIN_MIN",OBJ_LABEL,x,y+55,w,20,NativeMinimumMarginText(),bg);
+   ObjectSetString(0,LiqLibraryObject("MARGIN_MIN"),OBJPROP_TOOLTIP,"Standalone margin for the broker minimum lot; fees, spread, stop-out buffer and existing exposure can require additional funds.");
+   LiqLibraryWidget("MARGIN_MIN_SL",OBJ_LABEL,x,y+73,w,20,NativeMinimumSlText(minValid[0],minLoss[0],minValid[1],minLoss[1]),bg);
+   ObjectSetInteger(0,LiqLibraryObject("MARGIN_MIN_SL"),OBJPROP_COLOR,C'80,255,180');
+   ObjectSetString(0,LiqLibraryObject("MARGIN_MIN_SL"),OBJPROP_TOOLTIP,NativeMinimumSlTooltip());
+   LiqLibraryWidget("MARGIN_MIN_CAPITAL",OBJ_LABEL,x,y+91,w,20,NativeMinimumCapitalText(minValid[0],minLoss[0],minValid[1],minLoss[1],RiskPerTradePct()),bg);
+   ObjectSetInteger(0,LiqLibraryObject("MARGIN_MIN_CAPITAL"),OBJPROP_COLOR,C'255,187,92');
+   ObjectSetString(0,LiqLibraryObject("MARGIN_MIN_CAPITAL"),OBJPROP_TOOLTIP,NativeMinimumCapitalTooltip());
+   LiqLibraryWidget("MARGIN_NOTE",OBJ_LABEL,x,y+109,w,20,warning?"UYARI: Risk butcesi / serbest teminat. Detay icin tutara gel.":"Tahmini degerler; komisyon/kayma ve guvenlik payi haric.",bg);
+   ObjectSetInteger(0,LiqLibraryObject("MARGIN_NOTE"),OBJPROP_COLOR,warning?clrOrange:C'184,196,210');
+}
+#endif
 void LiqLibraryDraw()
 {
    int x=LiqLibraryLeft(),y=42,w=LiqLibraryWidth();color bg=C'24,30,42',button=C'38,101,176';
@@ -324,7 +370,11 @@ void LiqLibraryDraw()
 #endif
       return;
    }
-   LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,410,"",bg);
+   int marginSpace=0;
+#ifdef LN_SOL_ADV_NAS_READY
+   marginSpace=120;
+#endif
+   LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,410+marginSpace,"",bg);
    LiqLibraryWidget("TITLE",OBJ_LABEL,x+12,y+10,w-50,20,"STRATEGIES // "+_Symbol,bg);
    LiqLibraryWidget("CLOSE_PANEL",OBJ_BUTTON,x+w-38,y+5,30,24,"X",clrMaroon);
    LiqLibraryWidget("QUERY",OBJ_EDIT,x+12,y+38,w-260,24,g_liqLibraryQuery,C'38,46,60');
@@ -341,12 +391,15 @@ void LiqLibraryDraw()
       double budget=NativeBalanceEnabled()?NativeBalanceBudget(RiskPerTradePct()):AccountInfoDouble(ACCOUNT_EQUITY)*RiskPerTradePct()/100.0;
       LiqLibraryWidget("BAL_BUDGET",OBJ_LABEL,x+12,y+254,w-24,20,"NATIVE 1R BUDGET: "+DoubleToString(budget,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",bg);
       ObjectSetString(0,LiqLibraryObject("BAL_VALUE"),OBJPROP_TOOLTIP,"Native percentage-risk reference capital; 0 restores account sizing. Future entries only. Risk controls remain separate from saved strategies.");
+#ifdef LN_SOL_ADV_NAS_READY
+      LiqMarginDraw(x+12,y+275,w-24,bg);
+#endif
    }
-   else {string balanceKeys[]={"BAL_LABEL","BAL_VALUE","BAL_APPLY","BAL_BUDGET"};for(int b=0;b<ArraySize(balanceKeys);b++)ObjectDelete(0,LiqLibraryObject(balanceKeys[b]));}
-   LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+303,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
-   LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+330,w-190,24,g_liqLibraryName,C'38,46,60');
-   LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+330,158,24,"SAVE STRATEGY",button);
-   LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+368,w-24,20,StringSubstr(g_liqLibraryStatus,0,75),bg);
+   else {string balanceKeys[]={"BAL_LABEL","BAL_VALUE","BAL_APPLY","BAL_BUDGET","MARGIN_TITLE","MARGIN_BUY","MARGIN_SELL","MARGIN_MIN","MARGIN_MIN_SL","MARGIN_MIN_CAPITAL","MARGIN_NOTE"};for(int b=0;b<ArraySize(balanceKeys);b++)ObjectDelete(0,LiqLibraryObject(balanceKeys[b]));}
+   LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+303+marginSpace,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
+   LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+330+marginSpace,w-190,24,g_liqLibraryName,C'38,46,60');
+   LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+330+marginSpace,158,24,"SAVE STRATEGY",button);
+   LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+368+marginSpace,w-24,20,StringSubstr(g_liqLibraryStatus,0,75),bg);
    if(g_liqLibraryOpen)
    {
       int py=y+132;
@@ -407,7 +460,7 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
       g_liqLibraryOpenedAt=GetTickCount64();LiqLibraryDraw();ChartRedraw(0);return true;
    }
    bool covers=(g_liqLibraryRPicker||g_liqLibraryOpen||
-      (g_liqLibraryPanel&&mx>=LiqLibraryLeft()&&mx<LiqLibraryLeft()+LiqLibraryWidth()&&my>=42&&my<452));
+      (g_liqLibraryPanel&&mx>=LiqLibraryLeft()&&mx<LiqLibraryLeft()+LiqLibraryWidth()&&my>=42&&my<ObjectGetInteger(0,LiqLibraryObject("BG"),OBJPROP_YDISTANCE)+ObjectGetInteger(0,LiqLibraryObject("BG"),OBJPROP_YSIZE)));
    if(id==CHARTEVENT_OBJECT_CLICK)
    {
       if(StringFind(name,LiqLibraryObject(""))==0||covers)

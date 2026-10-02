@@ -98,6 +98,10 @@ maximum candles and maximum minutes. `APPLY TO ENGINE DRAFT` commits the
 current edit fields; PREVIEW evaluates without saving, SAVE ENGINE writes
 the definition. Select the saved engine to activate it.
 
+The pip SL input has no application-level upper ceiling (release 1.10).
+This also applies to the ordinary dashboard pip SL and strategy save/load.
+Broker-valid price geometry, available margin and native risk guards still apply.
+
 Policy engines now use **PIP ON only**. Enter the stop distance and click APPLY.
 The separate ATR geometry branch and forced engine-ratio target are removed.
 Use the ordinary R picker to change the actual target: SL=10 pips and R=0.5
@@ -149,6 +153,39 @@ is explicit and separately extendable.
 Limits: 4096 rules per direction, periods 1-5000, 64 distinct parameterized
 indicator/period pairs and 1024 saved engines. Large rule sets need a separate
 performance benchmark; this is not an unlimited-memory promise.
+
+## Native Margin And Minimum SL Panel (1.09)
+
+The lower part of the right STRATEGIES panel contains BALANCE (0=ACCOUNT)
+and APPLY BAL. This is percentage-risk reference capital in account currency,
+not a deposit or a replacement for broker free margin. A reference of 30 and
+1% risk requests 0.30 of SL risk, subject to native risk/volume constraints.
+Zero restores the account-based risk budget.
+
+Above the balance inputs, GEREKLI TEMINAT shows standalone BUY and SELL
+margin in account currency. MIN LOT separately shows the broker minimum-volume
+margin, even when PIP SL is off. Applied pip distance and the existing CalculateLot
+helper determine volume. The native OrderCalcMargin API uses connected broker
+specifications; leverage is not hardcoded to 1:500. Hover for lot, SL risk,
+risk budget, account leverage and actual free margin. Orange indicates a
+minimum/step-volume risk overrun or insufficient free margin; N/A indicates
+  missing live quotes, connection, valid pip geometry or broker calculation.
+
+This is an estimate before ATR/portfolio/entry caps, not a fee or guaranteed
+order acceptance or minimum safe account equity. Fees, spread and a stop-out
+buffer are additional considerations. Existing exposure, fill prices and broker margin changes
+can alter requirements. It does not load history or submit orders. Unapplied
+SL edits do not alter the preview; APPLY commits the distance. Signal kernels,
+tick audit mathematics, publisher contracts and strategy definitions are
+unchanged by this display-only feature.
+
+MIN LOT SL KAYBI shows the broker minimum lot's BUY/SELL cash price loss at
+the applied pip SL via OrderCalcProfit. RISK BAKIYESI shows the reference
+capital needed for that loss at the applied risk percent (loss / fraction),
+rounded upwards to cents. This is not a safe deposit recommendation; margin,
+fees, slippage, exposure and a stop-out buffer are separate considerations.
+Both rows are N/A without a valid applied pip geometry. No history is loaded
+and no balances or sizing settings are changed by these display calculations.
 
 ## Isolation And Verification
 

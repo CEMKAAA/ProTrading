@@ -1,6 +1,97 @@
-# Verification: 2026-10-01
+# Verification: 2026-10-03
 
-## Current Release: 1.06 Independent Policy
+## Current Release: 1.10 Pip SL Ceiling Removed
+
+Build: `EntryEngineLab-1.10-PipNoCeiling`. Evidence:
+`.tmp/native_balance_20261003_004942`. All four production EAs and their
+test probes compiled with 0 errors and 0 warnings. The four-family run
+passed 339 checks: Orb 87, MaCross 85, EntryLab 92, SolAdvanced 75.
+
+Tests exercise the real pip Apply event, former-ceiling values 1000001,
+2500000.5 and 10000000000000, preset serialization, custom-engine Apply
+and engine serialization. SolAdvanced uses its actual strategy file
+writer/reader and deletes its test-owned record. Test-only startup defaults
+are initialized without calling the production EA OnInit or submitting orders.
+
+The hidden 1e12 generic strategy-parser limit is bypassed only for pip SL;
+other numeric fields and the balance parser retain their existing limits.
+Native margin/profit and existing balance checks passed on USDJPYm.
+Broker price geometry, margin, lot sizing and risk guards remain enforced.
+The prior historical audit campaign was not rerun for this input change.
+
+Published to the four existing DEMO EA folders; workspace EX5 files match
+the verified builds. Full details: `reports/pip_sl_ceiling_20261003.md`.
+
+## Previous Release: 1.09 Minimum Lot SL Panel
+
+Build: `EntryEngineLab-1.09-MinLotRisk`. Evidence is the four-family stage
+`.tmp/native_balance_20261002_222144`, with clean production/probe logs,
+USDJPYm and JP225m reports and right-panel screenshots. The minimum-lot
+cash SL loss is computed with OrderCalcProfit at the existing applied pip SL.
+The separate percentage-risk reference capital is rounded upwards to cents.
+Margin and cash SL loss remain distinct. Unknown geometry is N/A.
+
+This release does not send test orders or change execution, audit, publishers
+or lot sizing. Native account currency is retained (USC on a cent account,
+not forcibly USD). A real cent-account forward order test has not been run.
+The earlier ten-engine audit campaign was not repeated for this display change.
+
+## Previous Release: 1.08 Four-Family Margin Panel
+
+Build: `EntryEngineLab-1.08-MarginPanel`. Evidence is the four-family stage
+`.tmp/native_balance_20261002_204222`, including production/probe compile logs,
+per-family reports and normal-viewport screenshots. The margin panel is now
+in the right STRATEGIES column above BALANCE; it is not in the narrow SL row.
+MIN LOT separately shows the broker minimum-volume standalone margin even
+with PIP SL disabled. The same native calculations and margin/risk tooltips
+are used in Orb, MaCross and SolAdvanced. No execution/audit logic changed.
+
+The four-family checks cover numeric rendering, standalone margin/profit API
+comparison, minimum volume, unapplied pip drafts, risk-overrun warning,
+coordinates, save-row separation and existing balance/bridge/default-money
+parity. The hidden worker's test-only viewport is 1600x900; rates, tick quotes,
+profit and margin APIs are not mocked. Test scripts submit no orders.
+
+## Previous Release: 1.07 Margin Preview
+
+Build: `EntryEngineLab-1.07-MarginPreview`.
+Evidence: `.tmp/entry_engine_lab_20261002_114940/result.txt`.
+Normal-scale widget QA: `EntryEngineLabMargin.png` in the same stage.
+
+```
+checks=10333 failed=0 trades=41 audit_same=true
+rsi_error=0.0000000000 adx_error=0.0000000000
+history_source=BROKER_SYNCHRONIZED profile=PIP_FOCUSED
+```
+
+Production and full-EA probe compile: 0 errors, 0 warnings. Broker API
+comparisons passed on EURUSDm, USDJPYm, XAUUSDm and BTCUSDm, both directions.
+Margin matches OrderCalcMargin; SL cash risk separately matches OrderCalcProfit.
+The isolated Exness-MT5Trial15 worker reported USD and account leverage 1:200;
+the implementation does not assume the user's separate account is also 1:200
+or hardcode a requested 1:500. No order or publisher message was submitted.
+
+Invalid geometry/volume is rejected. Applied reference balance 30 and risk
+1% produce budget 0.30; an unapplied pip edit does not change applied sizing.
+The preview leaves engine identity and the complete audit identity unchanged.
+Warm/cold audit parity, entry formulas, strategy restoration, policy exits
+and open-position capacity checks remain in the regression above.
+
+The first run failed only a test assertion that assumed an unscaled worker
+dashboard. The corrected scale-aware assertion passed. A separate QA image
+renders the actual production margin/balance widgets at normal scale because
+the hidden worker reports a narrow chart viewport; it is not a full-dashboard
+render at that scale. Its test-only background/widget recreation is not in
+the production EA. Final production widgets are placed beside the progress
+bar below the SL buttons and use existing dashboard coordinate scaling.
+
+The preview is a standalone margin estimate before ATR/portfolio/entry caps,
+not a guarantee of actual order acceptance or incremental portfolio margin.
+Minimum-volume risk overruns and insufficient free margin are orange; absent
+quotes/connection/valid pip geometry are N/A. No risk, signal, audit, bridge,
+listener or strategy mathematics changed for this display-only feature.
+
+## Previous Release: 1.06 Independent Policy
 
 Build: `EntryEngineLab-1.06-IndependentPolicy`.
 Evidence: `.tmp/entry_engine_lab_20261001_232313/result.txt`.

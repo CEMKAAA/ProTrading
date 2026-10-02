@@ -111,7 +111,7 @@ void LabUiDraw()
    {
       LabButton("P_ON",x+14,y+48,220,g_labDraft.policy?"ENGINE POLICY: ON":"ENGINE POLICY: OFF",g_labDraft.policy?C'30,120,70':C'70,70,70');
       string fields[]={"SL","TP","COOLDOWN","BARS","MINUTES"};
-      string labels[]={"SL (pips, 0.1 - 1000000)","Default target (R)","Cooldown (closed candle boundaries)","Maximum hold (candles, 0=OFF)","Maximum hold (minutes, 0=OFF)"};
+      string labels[]={"SL (pips, min 0.1, no ceiling)","Default target (R)","Cooldown (closed candle boundaries)","Maximum hold (candles, 0=OFF)","Maximum hold (minutes, 0=OFF)"};
       string val[]={StringFormat("%.12g",g_labDraft.pipSlPips),StringFormat("%.12g",g_labDraft.tpAtr/g_labDraft.slAtr),(string)g_labDraft.cooldown,(string)g_labDraft.maxBars,(string)g_labDraft.maxMinutes};
       for(int i=0;i<5;i++){LabLabel("PL_"+fields[i],x+14,y+92+i*34,labels[i]);LabEdit("P_"+fields[i],x+w-140,y+86+i*34,120,val[i]);}
       LabLabel("P_INFO",x+14,y+307,"Classic PIP SL + dashboard R. Native MT5 only: PUB OFF / NAT ON.");

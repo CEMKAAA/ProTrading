@@ -58,7 +58,8 @@ if(!$p.WaitForExit(600000)){throw 'Probe timeout'}
 $report=Join-Path $worker ('MQL5/Files/'+$name+'.txt')
 if(!(Test-Path $report) -or (Get-Item $report).LastWriteTime -lt $started.AddSeconds(-2)){throw 'Fresh report missing'}
 $result=Get-Content $report -Raw;$result|Set-Content (Join-Path $stage 'result.txt');Write-Output $result
-foreach($image in @('EntryEngineLabEngines.png','EntryEngineLabFeatures.png')){
+foreach($image in @('EntryEngineLabEngines.png','EntryEngineLabFeatures.png','EntryEngineLabMargin.png')){
+  if($UiOnly -and $image -eq 'EntryEngineLabMargin.png'){continue}
   Copy-Item -LiteralPath (Join-Path $worker ('MQL5/Files/'+$image)) -Destination (Join-Path $stage $image)
 }
 if($UiOnly){

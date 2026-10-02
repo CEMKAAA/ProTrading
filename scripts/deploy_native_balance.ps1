@@ -7,6 +7,10 @@ if((Get-Content (Join-Path $stage 'balance_verified.txt') -Raw)-notmatch 'failed
 $entries=@{orb='OrbUltimateEA_StrategyLibrary.mq5';macrossover_orb='MaCrossOverOrbEA.mq5';entry_engine_lab='EntryEngineLabEA.mq5';SolAdvanced='LiqNarrativeSol_Advanced.mq5'}
 $folders=@{orb='orb';macrossover_orb='MaCrossOverOrb';entry_engine_lab='EntryEngineLab';SolAdvanced='SolAdvanced'}
 $experts='C:\MT5\DEMO\MQL5\Experts'
+$sharedPrevious=@{
+ 'NativeMarginQuote.mqh'='AA54A08FFF80135C36B5139730A8AFDD1FBC65922931B4C7C96D20211A7FE6C3'
+ 'NativeMarginPreview.mqh'='81F233949AB4B7B4D6C07E9CDBD18E328F8382F9F9408F63062FE223F73D408B'
+}
 if(Get-Process terminal64 -ErrorAction SilentlyContinue|Where-Object {$_.Path-eq 'C:\MT5\DEMO\terminal64.exe'}){throw 'Close DEMO before publishing'}
 $seen=@{}
 function Collect([string]$path){
@@ -33,7 +37,9 @@ foreach($path in $seen.Keys){
  if($folders.ContainsKey($pieces[0])){$pieces[0]=$folders[$pieces[0]];$targetRelative=$pieces-join '\'}
  $target=[IO.Path]::GetFullPath((Join-Path $experts $targetRelative))
  if(!$target.StartsWith($experts+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Target escaped Experts'}
- if($pieces.Length-eq 1-and (Test-Path $target)-and (Get-FileHash $path).Hash-ne (Get-FileHash $target).Hash){throw 'Shared dependency differs'}
+ if($pieces.Length-eq 1-and (Test-Path $target)-and (Get-FileHash $path).Hash-ne (Get-FileHash $target).Hash){
+  if(!$sharedPrevious.ContainsKey($relative)-or (Get-FileHash $target).Hash-ne $sharedPrevious[$relative]){throw 'Shared dependency differs from known release'}
+ }
  $plan+=@{Source=$path;Target=$target}
 }
 $backup=Join-Path $root ('.tmp/native_balance_deploy_backup_'+(Get-Date -Format yyyyMMdd_HHmmss));New-Item -ItemType Directory -Path $backup -Force|Out-Null

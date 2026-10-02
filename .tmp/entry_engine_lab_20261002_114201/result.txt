@@ -1,0 +1,2 @@
+checks=10333 failed=1 trades=41 audit_same=true rsi_error=0.0000000000 adx_error=0.0000000000 history_source=BROKER_SYNCHRONIZED profile=PIP_FOCUSED
+

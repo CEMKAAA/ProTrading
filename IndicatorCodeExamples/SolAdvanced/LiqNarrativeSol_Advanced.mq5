@@ -14,7 +14,7 @@
 #include "TradeCalendarMatrix.mqh"
 #include "AuditTradeCsv.mqh"
 
-#define LN_BUILD "2026-09-24.sol-advanced-image-library-ui-v1"
+#define LN_BUILD "2026-10-02.sol-advanced-pip-no-ceiling"
 #define LN_PREFIX "LIQNARRSOL_"
 #define LN_PERIOD_H90 ((ENUM_TIMEFRAMES)90)
 #define LN_H90_SECONDS 5400
@@ -666,7 +666,7 @@ double ApplySlDistancePct(int dir, double entry, double rawSl)
 
 double ClampPipSlPips(double pips)
 {
-   return MathMax(0.0, MathMin(1000000.0, pips));
+   return MathIsValidNumber(pips)?MathMax(0.0,pips):0.0;
 }
 
 double PipSize()
@@ -6538,6 +6538,7 @@ g_inverseMaxGapPct=ArraySize(v)>41 ? v[41] : 100.0;
 }
 #define LN_SOL_ADV_NAS_READY
 #include "LiqSolAdvancedNas.mqh"
+#include "../NativeMarginQuote.mqh"
 #include "LiqStrategyLibrary.mqh"
 #include "ResearchFiveYearData.mqh"
 string ResearchLaunchKey(){return PFX+"BTN_FY_RESEARCH";}

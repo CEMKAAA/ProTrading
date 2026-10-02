@@ -13,7 +13,7 @@
 #include "NasUltimate_Core.mqh"
 #include "TradeCalendarMatrix.mqh"
 #include "AuditTradeCsv.mqh"
-#define ORB15_BUILD "2026-09-10.v6.89-native-entry-gate"
+#define ORB15_BUILD "2026-10-02.v6.92-pip-no-ceiling"
 
 enum ORB_SESSION_PROFILE
 {
@@ -2287,7 +2287,7 @@ double ScaleSlFromEntry(bool isBuy,double entry,double rawSl)
    return NormalizeTradePrice(isBuy?entry-dist:entry+dist);
 }
 
-double ClampPipSlPips(double pips){return MathMax(0.1,MathMin(1000000.0,pips));}
+double ClampPipSlPips(double pips){return MathIsValidNumber(pips)?MathMax(0.1,pips):0.1;}
 void SetPipSlPips(double pips){g_rtPipSlPips=ClampPipSlPips(pips);}
 double OrbPipSize()
 {
@@ -2537,7 +2537,7 @@ bool OrbStrategyPresetValuesValid(const OrbStrategyPreset &p,string &reason)
    if(p.id==""||p.name==""){reason="EMPTY_PRESET";return false;}
    if(p.signalTf!=PERIOD_M1&&p.signalTf!=PERIOD_M5&&p.signalTf!=PERIOD_M15){reason="UNSUPPORTED_TF";return false;}
    if(p.delayMinutes<0||p.delayMinutes>1440){reason="INVALID_DELAY";return false;}
-   if(p.pipSlMode&&(!MathIsValidNumber(p.pipSlPips)||p.pipSlPips<0.1||p.pipSlPips>1000000.0))
+   if(p.pipSlMode&&(!MathIsValidNumber(p.pipSlPips)||p.pipSlPips<0.1))
       {reason="INVALID_PIP_SL";return false;}
    if(!MathIsValidNumber(p.volumeMultiplier)||p.volumeMultiplier<0.05||p.volumeMultiplier>20.0)
       {reason="INVALID_ORB_VOL_X";return false;}
@@ -3788,7 +3788,7 @@ void RenderHistoricalAuditProgress(const bool force=false)
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
-   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+306,progressText,
+   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+145,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
    ChartRedraw(0);
 }
@@ -7606,6 +7606,7 @@ void DrawDashboard()
    UpdateDashboard();
 }
 
+#include "../NativeMarginPreview.mqh"
 void RenderNativeBalance()
 {
    int x=InpDashboardX+644,y=InpDashboardY+530;
@@ -7625,7 +7626,7 @@ void UpdateDashboard()
 
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
-   OrbUserDraw();RenderNativeBalance(); OrbClockUiDraw();
+   OrbUserDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+400,false,!g_orbMoneyRisk); OrbClockUiDraw();
    TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
@@ -7909,7 +7910,7 @@ void UpdateDashboard()
    }
    else if(g_histRedrawQueued)progressText="AUD QUEUED 0.0%";
    else if(g_histCoveragePending)progressText=g_histCoverageHardBlocked?"HIST BLOCK":"HIST WAIT";
-   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+306,progressText,
+   CreateLabel("DASH_AUD_PROGRESS",InpDashboardX+644,InpDashboardY+145,progressText,
       g_histCoverageHardBlocked?C'255,80,110':C'90,178,255',7);
 
    // Separator

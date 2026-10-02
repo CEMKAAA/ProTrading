@@ -155,7 +155,7 @@ void OnStart()
    for(int i=0;i<n;i++){ema.Push(rates[i]);sma.Push(rates[i]);double currentE=ema.Current(),currentS=sma.Current();int expected=0;
       if(prevE!=EMPTY_VALUE&&prevS!=EMPTY_VALUE&&currentE!=EMPTY_VALUE&&currentS!=EMPTY_VALUE)expected=currentE>currentS&&prevE<=prevS?1:(currentE<currentS&&prevE>=prevS?-1:0);
       Check(stream.Push(rates[i])==expected,"EMA/SMA crossover stream");prevE=currentE;prevS=currentS;}
-   CheckScalperFormulas(rates);CheckScalperPolicy();
+   CheckScalperFormulas(rates);CheckScalperPolicy();CheckNativeMarginPreview();
    e=MakeEngine();e.name="Audit probe";e.buy[0].feature=4;e.buy[0].compare=6;e.buy[0].threshold=50;e.sell[0]=e.buy[0];e.sell[0].compare=7;
    g_labEngine=e;g_rtMaCrossMode=MA_CROSS_LAB_RULES;g_rtSignalTf=PERIOD_M5;g_rtNasConfirmation=false;g_rtNasStateGate=false;g_rtNasExitOnOppositeSignal=false;g_rtNasAdditionalExit=false;
    g_maIndependent=true;g_maMaxConsecutive=2;g_maReverseExit=false;g_rtPipSlMode=true;g_rtPipSlPips=30;g_mcOf.mode=0;g_rtInvertMode=false;

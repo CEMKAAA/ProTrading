@@ -33,7 +33,7 @@ string OrbMlSha256(string value)
    ArrayResize(bytes,n-1);return OrbMlBytesSha256(bytes);
 }
 
-bool OrbMlNumber(string text,double &value)
+bool OrbMlNumber(string text,double &value,double maximum=1e12)
 {
    int n=StringLen(text);if(n==0)return false;
    int i=0,digits=0;
@@ -54,7 +54,7 @@ bool OrbMlNumber(string text,double &value)
    }
    if(i!=n)return false;
    value=StringToDouble(text);
-   return MathIsValidNumber(value)&&MathAbs(value)<1e12;
+   return MathIsValidNumber(value)&&(maximum==DBL_MAX||MathAbs(value)<maximum);
 }
 
 struct OrbMlNetwork

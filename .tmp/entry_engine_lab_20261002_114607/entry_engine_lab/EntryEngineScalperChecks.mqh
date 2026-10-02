@@ -1,0 +1,333 @@
+// Test-only formulas independent of builder rows/comparators.
+void CheckScalperFormulas(const MqlRates &rates[])
+{
+   double stops[]={.9,.7,.65,.55,.5,.45,.55,.35,.3,.2},targets[]={1.2,.9,.8,.7,.6,.55,.7,.4,.35,.25};
+   int cooldown[]={5,3,2,1,1,1,1,0,0,0},hold[]={0,0,0,10,0,8,0,6,4,3};
+   for(int k=0;k<10;k++)
+   {
+      LabEngine e,d;Check(LabScalperPreset(k,e),"valid preset "+(string)k);
+      Check(e.policy&&!e.edge&&e.slAtr==stops[k]&&e.tpAtr==targets[k]&&e.cooldown==cooldown[k]
+         &&e.maxBars==hold[k]&&e.maxMinutes==(k==6?12:0),"recipe policy "+e.name);
+      Check(LabEngineRead(LabEngineText(e),d)&&LabEngineText(e)==LabEngineText(d),"LAB3 round trip "+e.name);
+      e.policy=false;Check(LabEngineRead(LabEngineText(e),d)&&LabEngineText(e)==LabEngineText(d),"disabled policy settings retained "+e.name);e.policy=true;
+      LabRuleStream engine;engine.Reset(e);LabOperandStream fast,slow,rsi,adx,sma,atr,bbTop,bbBottom,hh,ll;
+      int fp=k==0?12:(k==1?8:(k==7||k==9?3:(k==8?20:5)));
+      int sp=k==0?26:(k==1?21:(k==6?12:(k==7?8:13))),rp=k==0?14:(k==1?9:(k==7?5:(k==9?3:7)));
+      fast.Reset(32,fp);slow.Reset(32,sp);rsi.Reset(34,rp);adx.Reset(36,k==0?14:7);sma.Reset(33,50);atr.Reset(35,e.atrPeriod);
+      bbTop.Reset(38,20);bbBottom.Reset(39,20);hh.Reset(41,5);ll.Reset(42,5);
+      bool same=true,exitSame=true,atrSame=true,bbSame=true,breakoutSame=true;
+      for(int i=0;i<ArraySize(rates);i++)
+      {
+         MqlRates b=rates[i];fast.Push(b);slow.Push(b);rsi.Push(b);adx.Push(b);sma.Push(b);atr.Push(b);
+         bbTop.Push(b);bbBottom.Push(b);hh.Push(b);ll.Push(b);
+         double f=fast.Current(),s=slow.Current(),r=rsi.Current(),a=adx.Current(),m=sma.Current(),v=atr.Current();
+         bool buy=false,sell=false;int exits=0;
+         if(i>=200)switch(k)
+         {
+            case 0:buy=f>s&&r>55&&a>22;sell=f<s&&r<45&&a>22;break;
+            case 1:buy=f>s&&b.low<=f&&b.close>f&&r>50;sell=f<s&&b.high>=f&&b.close<f&&r<50;break;
+            case 2:buy=b.close>m&&r>52&&rsi.Previous()<=52;sell=b.close<m&&r<48&&rsi.Previous()>=48;exits=(r<48?1:0)|(r>52?2:0);break;
+            case 3:buy=f>s&&r>52;sell=f<s&&r<48;break;
+            case 4:{double mean=0,variance=0;for(int j=i-19;j<=i;j++)mean+=rates[j].close;mean/=20;
+               for(int j=i-19;j<=i;j++)variance+=(rates[j].close-mean)*(rates[j].close-mean);
+               double upper=mean+1.5*MathSqrt(variance/20),lower=mean-1.5*MathSqrt(variance/20);
+               buy=b.low<lower&&r<40&&b.close>lower;sell=b.high>upper&&r>60&&b.close<upper;
+               if(MathAbs(bbTop.Current()-upper)>1e-8||MathAbs(bbBottom.Current()-lower)>1e-8)bbSame=false;break;}
+            case 5:{double highest=rates[i-1].high,lowest=rates[i-1].low;
+               for(int j=i-5;j<i;j++){highest=MathMax(highest,rates[j].high);lowest=MathMin(lowest,rates[j].low);}
+               buy=b.close>highest;sell=b.close<lowest;if(hh.Current()!=highest||ll.Current()!=lowest)breakoutSame=false;break;}
+            case 6:buy=f>s&&b.close>m&&r>52&&a>12;sell=f<s&&b.close<m&&r<48&&a>12;break;
+            case 7:buy=f>s&&r>51;sell=f<s&&r<49;exits=(f<s?1:0)|(f>s?2:0);break;
+            case 8:buy=b.close>b.open&&b.close>f&&MathAbs(b.close-b.open)>.2*v;sell=b.close<b.open&&b.close<f&&MathAbs(b.close-b.open)>.2*v;break;
+            case 9:buy=b.close>f&&r>50;sell=b.close<f&&r<50;break;
+         }
+         int actual=engine.Push(b);if(i>=200){if(actual!=(buy==sell?0:(buy?1:-1)))same=false;
+            if(engine.ExitMask()!=exits)exitSame=false;if(MathAbs(engine.PolicyAtr()-v)>1e-10)atrSame=false;}
+      }
+      Check(same,"independent entry formula "+e.name);Check(exitSame,"independent exit formula "+e.name);
+      Check(atrSame,"frozen ATR "+e.name);Check(bbSame,"two-pass BB variance "+e.name);Check(breakoutSame,"prior five excludes current "+e.name);
+   }
+}
+void LabDashboardClick(string name)
+{long x=0;double y=0;UnusedChartEvent(CHARTEVENT_OBJECT_CLICK,x,y,name);}
+void CheckScalperPolicy()
+{
+   LabScalperPreset(3,g_labEngine);g_rtMaCrossMode=MA_CROSS_LAB_RULES;g_rtSignalTf=PERIOD_M1;
+   LabPolicyBar bars[];ArrayResize(bars,12);datetime opened=D'2026.09.01 09:00';
+   for(int i=0;i<12;i++){bars[i].time=opened+(i-1)*60;bars[i].atr=.2;bars[i].exits=0;}
+   string reason="";bars[0].exits=1;
+   Check(LabPolicyExitFrom(bars,opened,1,opened+3600,reason)==opened+600&&reason=="LAB_TIME_EXIT","hold ignores pre-entry rule");
+   bars[4].exits=1;Check(LabPolicyExitFrom(bars,opened,1,opened+3600,reason)==opened+240&&reason=="LAB_RULE_EXIT","first post-entry exit beats hold");
+   Check(LabPolicyExitFrom(bars,opened,-1,opened+3600,reason)==opened+600,"separate long/short exits");
+   bars[4].exits=0;g_labEngine.maxMinutes=2;Check(LabPolicyExitFrom(bars,opened,1,opened+3600,reason)==opened+120,"earliest minutes vs candles");
+   Check(LabPolicyExitFrom(bars,opened,1,opened+30,reason)==0,"no premature exit");
+   g_labEngine.exitsEnabled=false;
+   Check(LabPolicyExitFrom(bars,opened,1,opened+3600,reason)==0&&reason=="","exit toggle suppresses rule and holding exits");
+   LabEngine exitSaved;Check(LabEngineRead(LabEngineText(g_labEngine),exitSaved)&&!exitSaved.exitsEnabled,"LAB5 preserves exits OFF");
+   g_labEngine.exitsEnabled=true;
+   g_labEngine.cooldown=5;datetime last=iTime(_Symbol,PERIOD_M1,10);
+   Check(last>0&&!LabCooldownAllows(iTime(_Symbol,PERIOD_M1,6),last)&&LabCooldownAllows(iTime(_Symbol,PERIOD_M1,5),last),"five candle cooldown boundaries");
+   g_labEngine.cooldown=0;Check(LabCooldownAllows(last,last),"zero cooldown");
+   g_maIndependent=true;g_maMaxConsecutive=10;MaHistoricalCapacityReset();g_labEngine.cooldown=5;
+   datetime candidate=iTime(_Symbol,PERIOD_M1,5);
+   MaHistoricalCapacityOccupy(candidate+3600);g_labHistLastClose=candidate+3600;
+   Check(LabHistoricalCooldownAllows(candidate),"independent ignores future simulated close");
+   MaHistoricalCapacityOccupy(iTime(_Symbol,PERIOD_M1,6));
+   Check(!LabHistoricalCooldownAllows(candidate),"independent cooldown sees actual earlier close");
+   Check(LabHistoricalCooldownAllows(iTime(_Symbol,PERIOD_M1,1)),"independent cooldown recovers after five candles");
+   g_maIndependent=false;MaHistoricalCapacityReset();g_labHistLastClose=0;g_labEngine.cooldown=0;
+   g_rtPipSlMode=true;g_rtPipSlPips=10;g_rtTargetMode=ORB_TARGET_R_LEG;g_rtTargetLeg=(int)ORB_TARGET_CUSTOM;g_rtCustomR=.5;
+   g_rtEntryMode=ORB_ENTRY_BREAKOUT;g_rtExitMode=ORB_EXIT_FIXED_TARGET;g_rtHalfBeLeg=0;g_rtBEOnTp1=false;
+   g_maIndependent=true;Check(LabPolicyShape(reason),"custom policy accepts Independent shape");g_maIndependent=false;
+   double entry=150,sl=ApplyRuntimeSlFromEntry(true,entry,0),tp=0,r=0,tick=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+   Check(MathAbs(entry-sl-10*OrbPipSize())<=tick,"custom stop uses classic runtime pip geometry");
+   Check(ResolveSourceTargetPriceAndR(true,entry,entry-sl,tp,r,reason)&&MathAbs(tp-entry-(entry-sl)*.5)<=tick,"custom target uses selected dashboard R");
+   string old=LabEngineText(g_labEngine);LabEngine restored;
+   restored.pipSl=true;restored.pipSlPips=10;
+   Check(LabEngineRead(old,restored)&&!restored.pipSl&&restored.pipSlPips==500,"old LAB3 does not inherit pip override");
+   g_labPreviewOnly=true;UpdateDashboard();LabDashboardClick(PREFIX+"BTN_SL_MODE");
+   Check(LabPolicyPipSl()&&g_labUi==0&&!ObjectGetInteger(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_READONLY),"custom mode toggles editable pip SL without opening modal");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"10");LabDashboardClick(PREFIX+"BTN_SL_APPLY");
+   Check(g_labEngine.pipSlPips==10,"pip Apply uses current field");
+   g_labGeometryAtr=0;sl=ApplyRuntimeSlFromEntry(true,entry,0);
+   Check(MathAbs(entry-sl-10*OrbPipSize())<=tick,"buy pip SL independent of ATR");
+   double sellSl=ApplyRuntimeSlFromEntry(false,entry,0);
+   Check(MathAbs(sellSl-entry-10*OrbPipSize())<=tick,"sell pip SL independent of ATR");
+   Check(ResolveSourceTargetPriceAndR(true,entry,entry-sl,tp,r,reason)
+      &&MathAbs(tp-entry-(entry-sl)*.5)<=tick,"pip target follows dashboard R, not engine ATR ratio");
+   LabDashboardClick(PREFIX+"BTN_TP");ObjectSetString(0,PREFIX+"R_PICK_VALUE",OBJPROP_TEXT,"0.1");LabDashboardClick(PREFIX+"R_PICK_APPLY");
+   Check(ResolveSourceTargetPriceAndR(true,entry,entry-sl,tp,r,reason)&&MathAbs(r-.1)<.00001,"R picker 0.1 changes actual custom target");
+   LabDashboardClick(PREFIX+"BTN_TP");ObjectSetString(0,PREFIX+"R_PICK_VALUE",OBJPROP_TEXT,"0.5");LabDashboardClick(PREFIX+"R_PICK_APPLY");
+   Check(ResolveSourceTargetPriceAndR(true,entry,entry-sl,tp,r,reason)&&MathAbs(r-.5)<.00001,"R picker 0.5 changes actual custom target");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"0.1");LabDashboardClick(PREFIX+"BTN_SL_APPLY");double smallStop=ApplyRuntimeSlFromEntry(true,entry,0);
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"0.5");LabDashboardClick(PREFIX+"BTN_SL_APPLY");double largerStop=ApplyRuntimeSlFromEntry(true,entry,0);
+   Check(MathAbs(entry-smallStop-.1*OrbPipSize())<tick*.51&&MathAbs(entry-largerStop-.5*OrbPipSize())<tick*.51&&smallStop!=largerStop,"pip 0.1 and 0.5 change actual SL distance");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"10");LabDashboardClick(PREFIX+"BTN_SL_APPLY");
+   string encoded=LabEngineText(g_labEngine);
+   Check(StringFind(encoded,"LAB4~")==0&&LabEngineRead(encoded,restored)&&restored.pipSl&&restored.pipSlPips==10,"pip engine serialization");
+   Check(!LabEngineRead(encoded+"extra",restored),"malformed pip settings rejected");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"0");LabDashboardClick(PREFIX+"BTN_SL_APPLY");
+   Check(g_labEngine.pipSlPips==10,"zero pip input rejected without mutating geometry");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"12.5");UpdateDashboard();
+   Check(ObjectGetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT)=="12.5"&&g_labEngine.pipSlPips==10,"dashboard refresh preserves unapplied pip edit");
+   Check(LabPersistActive(),"pip active engine persisted");g_labEngine=MakeEngine();LabRestoreActive();
+   Check(LabEngineIdentity()==encoded,"active engine restores pip settings");FileDelete(LabActiveFile(),FILE_COMMON);
+   LabDashboardClick(PREFIX+"BTN_SL_MODE");g_labGeometryAtr=.2;
+   Check(LabPolicyPipSl()&&MathAbs(entry-ApplyRuntimeSlFromEntry(true,entry,0)-10*OrbPipSize())<=tick,"ATR mode cannot reactivate for custom engines");
+   Check(!LabPolicyQuoteAllows(true,150.01,150.10,150,150.02)&&LabPolicyQuoteAllows(true,149.95,150.10,150,150.02),"unplaceable stop inside spread is blocked");
+   g_labEngine=MakeEngine();Check(StringFind(LabEngineText(g_labEngine),"LAB2~")==0,"legacy serialization unchanged");
+   LabScalperPreset(2,g_labEngine);LabOpenBuilder();Click(LabUiPrefix()+"POLICY");
+   Check(ObjectGetInteger(0,LabUiPrefix()+"P_APPLY",OBJPROP_ZORDER)>DASH_Z+100
+      &&ObjectGetInteger(0,LabUiPrefix()+"P_SL",OBJPROP_ZORDER)>ObjectGetInteger(0,LabUiPrefix()+"BG",OBJPROP_ZORDER),"modal is above dashboard and background");
+   ChartRedraw();ChartScreenShot(0,"EntryEngineLabPolicy.png",1600,900);
+   ObjectSetString(0,LabUiPrefix()+"P_COOLDOWN",OBJPROP_TEXT,"8");ObjectSetString(0,LabUiPrefix()+"P_SL",OBJPROP_TEXT,"75");Click(LabUiPrefix()+"P_APPLY");
+   Check(g_labUi==2&&g_labDraft.cooldown==8&&g_labDraft.pipSlPips==75&&g_labDraft.pipSl,"policy Apply reads current pip edits");
+   Click(LabUiPrefix()+"LONGEXIT");ObjectSetString(0,LabUiPrefix()+"VALUE_0",OBJPROP_TEXT,"47");Click(LabUiPrefix()+"SHORTEXIT");
+   Check(g_labDraft.exitBuy[0].threshold==47&&g_labDraft.exitSell[0].threshold==52,"independent exit editing");Click(LabUiPrefix()+"CLOSE");
+}
+void RunScalperAudits()
+{
+   g_probeClock=TimeCurrent();
+   string report="engine\ttrades\twins\tlosses\topen\tdata\tnet_R\trule_exits\ttime_exits\telapsed_seconds\n";bool all=true;
+   int firstRecipe=0;
+#ifdef LAB_PIP_ONLY
+   // Keep formula checks and pip/exit/capacity replay; omit the repeated ATR campaign.
+   firstRecipe=10;all=false;
+#endif
+   for(int k=firstRecipe;k<10&&!IsStopped();k++)
+   {
+      LabScalperPreset(k,g_labEngine);g_labPreviewOnly=true;g_rtMaCrossMode=MA_CROSS_LAB_RULES;g_rtSignalTf=PERIOD_M1;
+      g_maIndependent=false;g_maReverseExit=false;g_rtCustomR=g_labEngine.tpAtr/g_labEngine.slAtr;g_rtTargetLeg=(int)ORB_TARGET_CUSTOM;
+      g_rtPipSlMode=true;g_rtPipSlPips=25;
+      g_orbReplayMemo.Reset("SCALPER_"+(string)k);MaCrossAuditInvalidate();DeleteHist();ulong started=GetTickCount64();bool ok=RunAudit(2);
+      int rules=0,times=0;bool overlap=false,spacing=true,geometry=true;datetime priorExit=0;double tick=SymbolInfoDouble(_Symbol,SYMBOL_TRADE_TICK_SIZE);
+      for(int i=0;i<ArraySize(g_axTrades);i++){AxTrade t=g_axTrades[i];if(!t.valid){Print("SCALPER_DATA ",g_labEngine.name," signal=",TimeToString(t.signalTime)," reason=",t.reason," ATR=",g_labGeometryAtr," SL=",t.plannedSl," entry=",t.plannedEntry);continue;}
+         if(t.entryTime<priorExit)overlap=true;if(!LabCooldownAllows(t.availableTime,priorExit))spacing=false;
+         priorExit=t.closed?t.exitTime:g_histRunNow;if(t.outcome=="LAB_RULE_EXIT")rules++;if(t.outcome=="LAB_TIME_EXIT")times++;
+         if(!LabPolicyGeometryAt(t.signalTime))geometry=false;
+         else if(MathAbs(MathAbs(t.plannedEntry-t.plannedSl)-25*OrbPipSize())>tick*1.01)geometry=false;}
+      Check(ok,"M1 2W tick audit "+g_labEngine.name);Check(!overlap,"single position "+g_labEngine.name);
+      Check(spacing,"audit cooldown "+g_labEngine.name);Check(geometry,"audit pip geometry "+g_labEngine.name);all=all&&ok&&!overlap&&spacing&&geometry;
+      report+=g_labEngine.name+"\t"+(string)g_histTotal+"\t"+(string)g_histWins+"\t"+(string)g_histLosses+"\t"+(string)(g_histTotal-g_histWins-g_histLosses-g_histInvalid)
+         +"\t"+(string)g_histInvalid+"\t"+DoubleToString(g_histNetR,8)+"\t"+(string)rules+"\t"+(string)times+"\t"+DoubleToString((GetTickCount64()-started)/1000.0,3)+"\n";
+      Print("SCALPER_RESULT ",g_labEngine.name," trades=",g_histTotal," DATA=",g_histInvalid," rules=",rules," times=",times);if(!ok)break;
+   }
+   if(all){bool broad=RunAudit(5),warm=RunAudit(2);string identity=AuditIdentity();g_orbReplayMemo.Reset("SCALPER_FORCE_COLD");MaCrossAuditInvalidate();DeleteHist();bool cold=RunAudit(2);
+      Check(broad&&warm&&cold&&identity==AuditIdentity(),"policy 5W -> 2W warm/cold parity");
+      string name="LAB_POLICY_SNAPSHOT_"+(string)GetTickCount64(),snapshot=LabEngineIdentity();Check(OrbUserSaveLocked(name),"policy strategy save");
+      int index=g_strategyPresetIndex;OrbStrategyPreset p;bool loaded=OrbStrategyPresetLoad(index,p);Check(loaded,"policy strategy load");
+      if(loaded){g_labEngine=MakeEngine();g_maRestoringPreset=true;bool restored=OrbUserApply(p);g_maRestoringPreset=false;
+         Check(restored&&snapshot==LabEngineIdentity(),"strategy restores all policy fields");FileDelete(OrbUserFile(index),FILE_COMMON);FileDelete("EntryEngineLabStrategyLibrary\\"+p.id+".metrics",FILE_COMMON);}}
+   int f=FileOpen("EntryEngineLabScalpers.txt",FILE_WRITE|FILE_TXT|FILE_ANSI);if(f!=INVALID_HANDLE){FileWriteString(f,report);FileClose(f);}else Check(false,"scalper report written");
+   FileDelete(LabActiveFile(),FILE_COMMON);
+   // Pip override must share live/history geometry, preserve policy exits and round-trip in strategies.
+   LabScalperPreset(2,g_labEngine);g_labEngine.pipSl=true;g_labEngine.pipSlPips=25;g_labPreviewOnly=true;
+   g_rtPipSlMode=true;g_rtPipSlPips=25;g_rtCustomR=.5;g_rtTargetLeg=(int)ORB_TARGET_CUSTOM;
+   g_rtSignalTf=PERIOD_M1;g_maIndependent=false;g_maReverseExit=false;
+   g_orbReplayMemo.Reset("PIP_POLICY");MaCrossAuditInvalidate();DeleteHist();
+   Check(RunAudit(2),"custom pip policy exact tick audit");bool pipGeometry=true;int pipClosed=0;
+   for(int i=0;i<ArraySize(g_axTrades);i++){AxTrade item=g_axTrades[i];if(!item.valid)continue;
+      double distance=MathAbs(item.entry-item.sl),size=TickSize();
+      if(MathAbs(distance-25*OrbPipSize())>size*1.01
+         ||MathAbs(MathAbs(item.tp-item.entry)-distance*.5)>size*1.01)
+      {pipGeometry=false;Print("PIP_GEOMETRY_MISMATCH entry=",item.entry," SL=",item.sl," TP=",item.tp," pip=",OrbPipSize());}
+      if(item.closed)pipClosed++;}
+   Check(pipGeometry&&pipClosed>0,"audited pip SL/TP matches live geometry helper");
+   string halfR=AuditIdentity();LabDashboardClick(PREFIX+"BTN_TP");ObjectSetString(0,PREFIX+"R_PICK_VALUE",OBJPROP_TEXT,"0.1");LabDashboardClick(PREFIX+"R_PICK_APPLY");
+   Check(RunAudit(2)&&halfR!=AuditIdentity(),"changing R 0.5 to 0.1 updates cached audit");bool tenthGeometry=true;int tenthCount=0;
+   for(int i=0;i<ArraySize(g_axTrades);i++){AxTrade t=g_axTrades[i];if(!t.valid)continue;tenthCount++;
+      if(MathAbs(MathAbs(t.tp-t.entry)-MathAbs(t.entry-t.sl)*.1)>TickSize()*1.01)tenthGeometry=false;}
+   Check(tenthGeometry&&tenthCount>0,"0.1R uses actual tenth-risk target in tick audit");
+   LabDashboardClick(PREFIX+"BTN_TP");ObjectSetString(0,PREFIX+"R_PICK_VALUE",OBJPROP_TEXT,"0.5");LabDashboardClick(PREFIX+"R_PICK_APPLY");
+   Check(RunAudit(2)&&halfR==AuditIdentity(),"returning to R 0.5 restores same audit");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"10");LabDashboardClick(PREFIX+"BTN_SL_APPLY");
+   Check(RunAudit(2)&&halfR!=AuditIdentity(),"pip Apply changes cached audit without manual cache reset");
+   bool tenGeometry=true;int tenCount=0;for(int i=0;i<ArraySize(g_axTrades);i++){AxTrade t=g_axTrades[i];if(!t.valid)continue;tenCount++;
+      if(MathAbs(MathAbs(t.entry-t.sl)-10*OrbPipSize())>TickSize()*1.01)tenGeometry=false;}
+   Check(tenGeometry&&tenCount>0,"pip 25 to 10 changes actual audited SL distance");
+   string pipIdentity=AuditIdentity();g_orbReplayMemo.Reset("PIP_COLD");MaCrossAuditInvalidate();DeleteHist();
+   Check(RunAudit(2)&&pipIdentity==AuditIdentity(),"pip warm/cold outcome parity");
+   string pipName="LAB_PIP_SNAPSHOT_"+(string)GetTickCount64(),pipSnapshot=LabEngineIdentity();
+   Check(OrbUserSaveLocked(pipName),"pip strategy save");int pipIndex=g_strategyPresetIndex;OrbStrategyPreset pipPreset;
+   bool pipLoaded=OrbStrategyPresetLoad(pipIndex,pipPreset);Check(pipLoaded,"pip strategy reload");
+   if(pipLoaded){g_labEngine.pipSl=false;g_labEngine.pipSlPips=300;g_maRestoringPreset=true;
+      Check(OrbStrategyPresetApplyValues(pipPreset)&&LabEngineIdentity()==pipSnapshot,"strategy restores pip mode and distance");g_maRestoringPreset=false;
+      UpdateDashboard();Check(ObjectGetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT)=="10.0"
+         &&!ObjectGetInteger(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_READONLY),"strategy restore shows actual engine pip value, not global SL");
+      ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"77");LabActivate(g_labEngine,true);
+      Check(ObjectGetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT)=="10.0","explicit engine activation replaces stale SL draft");
+      CancelHistoricalAuditBuild();EventKillTimer();
+      FileDelete(OrbUserFile(pipIndex),FILE_COMMON);FileDelete("EntryEngineLabStrategyLibrary\\"+pipPreset.id+".metrics",FILE_COMMON);}
+   FileDelete(LabActiveFile(),FILE_COMMON);
+   // A deliberately wider test-only fixture exercises exits before SL/TP.
+   LabScalperPreset(2,g_labEngine);g_labEngine.name="Wide exit verification fixture";
+   g_labEngine.slAtr=3;g_labEngine.tpAtr=3;g_labEngine.maxBars=3;g_labPreviewOnly=true;
+   g_maIndependent=false;g_maReverseExit=false;g_rtSignalTf=PERIOD_M1;g_rtCustomR=1;
+   g_rtPipSlMode=true;g_rtPipSlPips=100;
+   g_orbReplayMemo.Reset("WIDE_POLICY");MaCrossAuditInvalidate();DeleteHist();
+   Check(RunAudit(2),"wide exit fixture tick coverage");int forced=0;bool exact=true,clock=true;
+   Check(MaExitLoadKernel(g_histRunNow-14*86400),"native policy cache ready without orders");
+   for(int i=0;i<ArraySize(g_axTrades);i++){AxTrade t=g_axTrades[i];
+      if(t.outcome!="LAB_RULE_EXIT"&&t.outcome!="LAB_TIME_EXIT")continue;forced++;
+      double risk=MathAbs(t.entry-t.sl),expected=SimSignedR(t.direction>0,t.entry,t.exitPrice,risk)-t.costR;
+      if(risk<=0||MathAbs(expected-t.netR)>1e-8)exact=false;
+      string a="",b="";datetime auditAt=LabPolicyExitFrom(g_labPolicyBars,t.entryTime,t.direction,g_histRunNow,a);
+      datetime nativeAt=LabPolicyExitFrom(g_labLivePolicyBars,t.entryTime,t.direction,g_histRunNow,b);
+      if(auditAt!=nativeAt||a!=b||t.exitTime<auditAt)clock=false;}
+   Check(forced>0&&exact,"forced exits use actual price R, not the TP R");Check(clock,"native and audit exit clocks agree");
+   string legacy=AuditIdentity();g_rtAdvancedAuditEngine=true;g_orbReplayMemo.Reset("WIDE_ADV_POLICY");DeleteHist();
+   Check(RunAudit(2)&&legacy==AuditIdentity(),"advanced / legacy policy replay exact parity");g_rtAdvancedAuditEngine=false;
+   g_labEngine.exitsEnabled=false;
+   Check(RunAudit(2),"engine exits OFF exact tick audit");bool noEngineExit=true;
+   for(int i=0;i<ArraySize(g_axTrades);i++)if(g_axTrades[i].outcome=="LAB_RULE_EXIT"||g_axTrades[i].outcome=="LAB_TIME_EXIT")noEngineExit=false;
+   Check(noEngineExit,"OFF removes actual rule/time closes, not just labels");string offHash=AuditIdentity();
+   LabEngine noExit=g_labEngine;g_labEngine.exitsEnabled=true;g_labEngine.maxBars=g_labEngine.maxMinutes=0;
+   ArrayResize(g_labEngine.exitBuy,0);ArrayResize(g_labEngine.exitSell,0);
+   Check(RunAudit(2)&&offHash==AuditIdentity(),"exit OFF equals unchanged SL/TP-only tick replay");g_labEngine=noExit;g_labEngine.exitsEnabled=true;
+   g_orbBridgeEnabled=true;Check(!LabNativeEntryPolicy(iTime(_Symbol,PERIOD_M1,1)),"policy refuses unverified listener publication");g_orbBridgeEnabled=false;
+   g_orbNativeWithBridgeOnly=false;Check(!LabNativeEntryPolicy(iTime(_Symbol,PERIOD_M1,1)),"policy respects NAT OFF");
+   g_probeClock=0;
+}
+
+void CheckBollingerIndependent()
+{
+   LabScalperPreset(4,g_labEngine);g_labPreviewOnly=true;
+   g_rtMaCrossMode=MA_CROSS_LAB_RULES;g_rtSignalTf=PERIOD_M1;
+   g_rtEntryMode=ORB_ENTRY_BREAKOUT;g_rtExitMode=ORB_EXIT_FIXED_TARGET;g_rtTargetMode=ORB_TARGET_R_LEG;
+   g_rtTargetLeg=(int)ORB_TARGET_CUSTOM;g_rtCustomR=.5;g_rtPipSlMode=true;g_rtPipSlPips=10;
+   g_rtHalfBeLeg=0;g_rtBEOnTp1=false;g_rtTimeExit=false;g_maReverseExit=false;
+   g_probeClock=TimeCurrent();g_maIndependent=false;g_maMaxConsecutive=10;
+   MaCrossAuditInvalidate();g_orbReplayMemo.Reset("BOLLINGER_LEGACY");
+   Check(RunAudit(2)&&g_histWins+g_histLosses>0,"Bollinger Legacy closes trades");int legacyCount=g_histTotal;
+   g_maIndependent=true;
+   Check(RunAudit(2)&&g_histWins+g_histLosses>0,"Bollinger Independent MAX10 closes trades");
+   Check(g_histTotal>=legacyCount,"Bollinger Independent does not lose all Legacy entries");
+   CheckCapacityAuditIntervals("BOLLINGER M1 MAX10");
+   string warm=AuditIdentity();g_orbReplayMemo.Reset("BOLLINGER_COLD");MaCrossAuditInvalidate();DeleteHist();
+   Check(RunAudit(2)&&warm==AuditIdentity(),"Bollinger Independent warm/cold parity");
+   string original=LabEngineIdentity();g_labUi=0;Click(PREFIX+"BTN_LAB_ENGINES");
+   Check(ObjectFind(0,LabUiPrefix()+"ENGINE_EXITS")>=0,"engine picker contains exit toggle");
+   Click(LabUiPrefix()+"ENGINE_EXITS");Check(!g_labEngine.exitsEnabled,"picker toggles engine exits OFF");
+   string name="LAB_EXIT_OFF_PROBE_"+(string)GetTickCount64();Check(OrbUserSaveLocked(name),"exit OFF strategy saved");
+   int index=g_strategyPresetIndex;OrbStrategyPreset preset;bool loaded=OrbStrategyPresetLoad(index,preset);
+   Check(loaded,"exit OFF strategy readable");
+   if(loaded){g_labEngine.exitsEnabled=true;g_maRestoringPreset=true;
+      Check(OrbStrategyPresetApplyValues(preset)&&!g_labEngine.exitsEnabled,"strategy restores exit OFF");g_maRestoringPreset=false;
+      FileDelete(OrbUserFile(index),FILE_COMMON);FileDelete("EntryEngineLabStrategyLibrary\\"+preset.id+".metrics",FILE_COMMON);}
+   Click(LabUiPrefix()+"ENGINE_EXITS");Check(g_labEngine.exitsEnabled&&LabEngineIdentity()==original,"toggle ON restores engine settings");
+   Click(LabUiPrefix()+"CLOSE");FileDelete(LabActiveFile(),FILE_COMMON);CancelHistoricalAuditBuild();EventKillTimer();
+   g_labPreviewOnly=true;
+   // This verifies truthful blocking, not fabricated results for absent history.
+   for(int years=1;years<=2;years++)
+   {
+      g_rtHistoricalWeeks=52*years;g_lastHistBuild=0;g_histNeedsRedraw=true;DrawHistoricalSignals();
+      datetime cutoff=g_histRunNow-(datetime)(52*years*7*86400);
+      bool missing=g_histTickCoverageKnown&&(g_histTickFirstAvailableMs==ULONG_MAX
+         ||g_histTickFirstAvailableMs>(ulong)(cutoff+7*86400)*1000);
+      if(missing)Check(g_histCoveragePending&&g_histCoverageHardBlocked
+         &&StringFind(g_histCoverageStatus,"TICK HISTORY UNAVAILABLE")>=0&&!g_userCompletedReady,
+         "large M1 window explicitly reports absent quote ticks, not zero results");
+      Print("BOLLINGER_LONG_WINDOW symbol=",_Symbol," years=",years," missing_ticks=",missing," status=",g_histCoverageStatus," ",g_histCoverageDetail);
+      CancelHistoricalAuditBuild();EventKillTimer();
+   }
+   g_maIndependent=false;g_maReverseExit=false;g_probeClock=0;g_rtHistoricalWeeks=2;
+}
+void CheckNativeMarginPreview()
+{
+   string symbols[]={_Symbol,"USDJPYm","XAUUSDm","BTCUSDm"};int verified=0;
+   for(int s=0;s<ArraySize(symbols);s++)
+   {
+      string symbol=symbols[s];if(!SymbolSelect(symbol,true))continue;
+      MqlTick tick;ZeroMemory(tick);ulong start=GetTickCount64();
+      while(GetTickCount64()-start<10000)
+      {if(SymbolInfoTick(symbol,tick)&&tick.bid>0&&tick.ask>=tick.bid)break;Sleep(100);}
+      if(tick.bid<=0||tick.ask<tick.bid)continue;
+      double lots=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN),distance=tick.bid*0.005;
+      for(int i=0;i<2;i++)
+      {
+         bool buy=i==0;ENUM_ORDER_TYPE side=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+         double entry=buy?tick.ask:tick.bid,stop=entry+(buy?-distance:distance),margin=0,profit=0;
+         NativeMarginQuote q;bool valid=NativeMarginCalculate(symbol,buy,entry,stop,lots,q);
+         Check(valid,"margin quote available "+symbol+(buy?" BUY":" SELL"));
+         Check(OrderCalcMargin(side,symbol,lots,entry,margin)&&valid&&MathAbs(q.margin-margin)<1e-8,
+            "margin equals broker API "+symbol);
+         Check(OrderCalcProfit(side,symbol,lots,entry,stop,profit)&&valid&&MathAbs(q.slRisk+profit)<1e-8,
+            "SL risk separately matches broker API "+symbol);
+         Print("MARGIN_PROBE symbol=",symbol," buy=",buy," lots=",lots," margin=",q.margin,
+            " sl_risk=",q.slRisk," currency=",AccountInfoString(ACCOUNT_CURRENCY),
+            " leverage=",AccountInfoInteger(ACCOUNT_LEVERAGE));verified++;
+      }
+   }
+   Check(verified>=2,"at least chart symbol BUY/SELL margins verified");
+   NativeMarginQuote q;
+   Check(!NativeMarginCalculate(_Symbol,true,100,101,0.01,q)&&!q.valid,"wrong-side stop rejected");
+   Check(!NativeMarginCalculate(_Symbol,false,100,101,0,q)&&!q.valid,"zero lot rejected");
+   Check(!NativeMarginCalculate(_Symbol,true,100,99,-1,q)&&!q.valid,"negative lot rejected");
+   bool pip=g_rtPipSlMode;double pips=g_rtPipSlPips,balance=g_nativeRiskBalance,risk=g_rtRiskPerTradePct;
+   g_rtPipSlMode=true;g_rtPipSlPips=10;g_nativeRiskBalance=30;g_rtRiskPerTradePct=1;
+   string engine=LabEngineIdentity(),audit=AuditIdentity();
+   UpdateDashboard();
+   string tooltip=ObjectGetString(0,PREFIX+"DASH_MARGIN_BUY",OBJPROP_TOOLTIP);
+   Check(StringFind(tooltip,"Lot=")>=0&&StringFind(tooltip,"margin=")>=0,"margin tooltip contains estimate");
+   Check(StringFind(tooltip,"risk budget=0.30")>=0,"applied balance feeds margin sizing risk budget");
+   Check(ObjectGetInteger(0,PREFIX+"DASH_MARGIN_BUY",OBJPROP_YDISTANCE)==OrbLibraryY(InpDashboardY+312+238),
+      "margin below SL row respects dashboard scaling");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"50");UpdateDashboard();
+   Check(g_rtPipSlPips==10&&StringFind(ObjectGetString(0,PREFIX+"DASH_MARGIN_BUY",OBJPROP_TOOLTIP),"risk budget=0.30")>=0,
+      "unapplied pip draft does not change margin sizing");
+   Check(LabEngineIdentity()==engine&&AuditIdentity()==audit,"preview does not mutate engines or audit");
+   // A hidden worker window reports a narrow chart width. Render the same
+   // production widgets at normal scale for an additional readable QA image.
+   double scale=g_libraryDashScale;int ox=g_libraryDashX,oy=g_libraryDashY;
+   g_libraryDashScale=1;g_libraryDashX=InpDashboardX;g_libraryDashY=InpDashboardY;
+   int x=InpDashboardX,y=InpDashboardY+312;
+   CreateRect("DASH_MARGIN_QA",x+300,y+212,320,82,C'24,30,42',C'90,178,255');
+   CreateButton("BTN_SL_MODE",x+330,y+220,66,18,"PIP ON",C'30,120,70');
+   CreateEdit("EDIT_SL_VALUE",x+402,y+220,72,18,"10.0");
+   CreateButton("BTN_SL_APPLY",x+480,y+220,58,18,"APPLY",C'38,101,176');
+   CreateButton("BTN_ADV_AUD",x+542,y+220,66,18,"LEGACY",C'80,80,80');
+   RenderNativeMarginPreview(x+514,y+238);RenderNativeBalance();
+   ChartRedraw();ChartScreenShot(0,"EntryEngineLabMargin.png",1600,900,ALIGN_LEFT);
+   ObjectDelete(0,PREFIX+"DASH_MARGIN_QA");g_libraryDashScale=scale;g_libraryDashX=ox;g_libraryDashY=oy;
+   g_rtPipSlMode=pip;g_rtPipSlPips=pips;g_nativeRiskBalance=balance;g_rtRiskPerTradePct=risk;
+}

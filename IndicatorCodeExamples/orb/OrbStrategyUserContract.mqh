@@ -295,7 +295,7 @@ bool OrbCustomPresetRead(const string &v[],int start,OrbStrategyPreset &p){
    if(!OrbMlNumber(v[start+10],n[10])||n[10]!=MathFloor(n[10])||MathAbs(n[10])>2147483647)return false;
    if(!OrbMlNumber(v[start+11],n[11])||n[11]!=MathFloor(n[11])||MathAbs(n[11])>2147483647)return false;
    if(!OrbMlNumber(v[start+12],n[12])||(n[12]!=0&&n[12]!=1))return false;
-   if(!OrbMlNumber(v[start+13],n[13]))return false;
+   if(!OrbMlNumber(v[start+13],n[13],DBL_MAX))return false;
    if(!OrbMlNumber(v[start+14],n[14])||(n[14]!=0&&n[14]!=1))return false;
    if(!OrbMlNumber(v[start+15],n[15])||(n[15]!=0&&n[15]!=1))return false;
    if(!OrbMlNumber(v[start+16],n[16]))return false;

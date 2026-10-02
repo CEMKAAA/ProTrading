@@ -316,7 +316,7 @@ bool OrbMlUiEvent(const string object)
 void OrbMlDraw()
 {
    if(!InpShowDashboard)return;
-   int x=InpDashboardX+644,y=InpDashboardY+346;
+   int x=InpDashboardX+644,y=InpDashboardY+160;
    CreateLabel("DASH_ML_TITLE",x,y,"STRATEGY ML | live + history",C'255,187,92',8);
    CreateButton("BTN_ML_GENERATION",x+380,y-3,212,20,g_mlR7?"MODEL: R7 / CHAMPION SLOT":"MODEL: LEGACY",g_mlR7?C'184,103,22':C'55,68,88');
    ObjectSetString(0,PREFIX+"BTN_ML_GENERATION",OBJPROP_TOOLTIP,"Model generation only; use ML FILTER ON to enable. R7 is a replaceable strategy slot, not automatic best-model selection. LOAD/USE RESULT pins a release. Missing/expired R7 blocks entries when ML is ON. Active/pending trades prevent switching.");

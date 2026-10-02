@@ -272,3 +272,52 @@ void CheckBollingerIndependent()
    }
    g_maIndependent=false;g_maReverseExit=false;g_probeClock=0;g_rtHistoricalWeeks=2;
 }
+void CheckNativeMarginPreview()
+{
+   string symbols[]={_Symbol,"USDJPYm","XAUUSDm","BTCUSDm"};int verified=0;
+   for(int s=0;s<ArraySize(symbols);s++)
+   {
+      string symbol=symbols[s];if(!SymbolSelect(symbol,true))continue;
+      MqlTick tick;ZeroMemory(tick);ulong start=GetTickCount64();
+      while(GetTickCount64()-start<10000)
+      {if(SymbolInfoTick(symbol,tick)&&tick.bid>0&&tick.ask>=tick.bid)break;Sleep(100);}
+      if(tick.bid<=0||tick.ask<tick.bid)continue;
+      double lots=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN),distance=tick.bid*0.005;
+      for(int i=0;i<2;i++)
+      {
+         bool buy=i==0;ENUM_ORDER_TYPE side=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+         double entry=buy?tick.ask:tick.bid,stop=entry+(buy?-distance:distance),margin=0,profit=0;
+         NativeMarginQuote q;bool valid=NativeMarginCalculate(symbol,buy,entry,stop,lots,q);
+         Check(valid,"margin quote available "+symbol+(buy?" BUY":" SELL"));
+         Check(OrderCalcMargin(side,symbol,lots,entry,margin)&&valid&&MathAbs(q.margin-margin)<1e-8,
+            "margin equals broker API "+symbol);
+         Check(OrderCalcProfit(side,symbol,lots,entry,stop,profit)&&valid&&MathAbs(q.slRisk+profit)<1e-8,
+            "SL risk separately matches broker API "+symbol);
+         Print("MARGIN_PROBE symbol=",symbol," buy=",buy," lots=",lots," margin=",q.margin,
+            " sl_risk=",q.slRisk," currency=",AccountInfoString(ACCOUNT_CURRENCY),
+            " leverage=",AccountInfoInteger(ACCOUNT_LEVERAGE));verified++;
+      }
+   }
+   Check(verified>=2,"at least chart symbol BUY/SELL margins verified");
+   NativeMarginQuote q;
+   Check(!NativeMarginCalculate(_Symbol,true,100,101,0.01,q)&&!q.valid,"wrong-side stop rejected");
+   Check(!NativeMarginCalculate(_Symbol,false,100,101,0,q)&&!q.valid,"zero lot rejected");
+   Check(!NativeMarginCalculate(_Symbol,true,100,99,-1,q)&&!q.valid,"negative lot rejected");
+   bool pip=g_rtPipSlMode;double pips=g_rtPipSlPips,balance=g_nativeRiskBalance,risk=g_rtRiskPerTradePct;
+   g_rtPipSlMode=true;g_rtPipSlPips=10;g_nativeRiskBalance=30;g_rtRiskPerTradePct=1;
+   string engine=LabEngineIdentity(),audit=AuditIdentity();
+   UpdateDashboard();
+   string tooltip=ObjectGetString(0,PREFIX+"DASH_MARGIN_BUY",OBJPROP_TOOLTIP);
+   Check(StringFind(tooltip,"Lot=")>=0&&StringFind(tooltip,"margin=")>=0,"margin tooltip contains estimate");
+   Check(StringFind(tooltip,"risk budget=0.30")>=0,"applied balance feeds margin sizing risk budget");
+   Check(ObjectGetInteger(0,PREFIX+"DASH_MARGIN_BUY",OBJPROP_YDISTANCE)==OrbLibraryY(InpDashboardY+420),
+      "right-panel margin respects dashboard scaling");
+   Check(ObjectFind(0,PREFIX+"DASH_MARGIN_MIN")>=0,"minimum broker lot margin is separately visible");
+   ObjectSetString(0,PREFIX+"EDIT_SL_VALUE",OBJPROP_TEXT,"50");UpdateDashboard();
+   Check(g_rtPipSlPips==10&&StringFind(ObjectGetString(0,PREFIX+"DASH_MARGIN_BUY",OBJPROP_TOOLTIP),"risk budget=0.30")>=0,
+      "unapplied pip draft does not change margin sizing");
+   Check(LabEngineIdentity()==engine&&AuditIdentity()==audit,"preview does not mutate engines or audit");
+   // Normal-scale full-dashboard QA is covered by the four-family margin probe.
+   ChartRedraw();ChartScreenShot(0,"EntryEngineLabMargin.png",1600,900,ALIGN_LEFT);
+   g_rtPipSlMode=pip;g_rtPipSlPips=pips;g_nativeRiskBalance=balance;g_rtRiskPerTradePct=risk;
+}

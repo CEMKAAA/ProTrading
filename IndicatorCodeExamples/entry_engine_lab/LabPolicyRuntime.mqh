@@ -5,7 +5,7 @@ bool LabPolicyEnabled(){return g_rtMaCrossMode==MA_CROSS_LAB_RULES&&g_labEngine.
 bool LabPolicyPipSl(){return LabPolicyEnabled();}
 bool LabPolicySetPip(bool enabled,double pips)
 {
-   if(!MathIsValidNumber(pips)||pips<0.1||pips>1000000)return false;
+   if(!MathIsValidNumber(pips)||pips<0.1)return false;
    if(!enabled)return false;
    bool oldMode=g_labEngine.pipSl,oldRuntimeMode=g_rtPipSlMode;
    double oldPips=g_labEngine.pipSlPips,oldRuntimePips=g_rtPipSlPips;

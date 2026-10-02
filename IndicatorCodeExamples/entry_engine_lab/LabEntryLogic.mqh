@@ -31,7 +31,7 @@ bool LabValidEngine(const LabEngine &e)
 {
    if(StringLen(e.name)<1||StringLen(e.name)>64||ArraySize(e.buy)>LAB_MAX_RULES||ArraySize(e.sell)>LAB_MAX_RULES
       ||ArraySize(e.exitBuy)>LAB_MAX_RULES||ArraySize(e.exitSell)>LAB_MAX_RULES)return false;
-   if(!MathIsValidNumber(e.pipSlPips)||e.pipSlPips<0.1||e.pipSlPips>1000000)return false;
+   if(!MathIsValidNumber(e.pipSlPips)||e.pipSlPips<0.1)return false;
    if(e.policy&&(e.atrPeriod<1||e.atrPeriod>5000||e.cooldown<0||e.cooldown>5000||e.maxBars<0||e.maxBars>5000
       ||e.maxMinutes<0||e.maxMinutes>100000||!MathIsValidNumber(e.slAtr)||!MathIsValidNumber(e.tpAtr)
       ||e.slAtr<=0||e.tpAtr<=0||e.slAtr>1000||e.tpAtr>1000))return false;

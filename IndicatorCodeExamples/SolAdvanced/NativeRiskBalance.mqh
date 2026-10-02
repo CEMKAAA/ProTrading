@@ -3,7 +3,7 @@
 double g_nativeRiskBalance=0.0;
 string g_nativeRiskBalanceKey="";
 bool NativeBalanceEnabled(){return g_nativeRiskBalance>0.0;}
-bool NativeBalanceParse(string text,double &value)
+bool NativeBalanceParse(string text,double &value,double maximum=1e12)
 {
    StringTrimLeft(text);StringTrimRight(text);StringReplace(text,",",".");
    int digits=0,dots=0;
@@ -15,7 +15,7 @@ bool NativeBalanceParse(string text,double &value)
    }
    if(digits==0)return false;
    value=StringToDouble(text);
-   return MathIsValidNumber(value)&&value>=0.0&&value<=1e12;
+   return MathIsValidNumber(value)&&value>=0.0&&value<=maximum;
 }
 void NativeBalanceLoad(string family)
 {
