@@ -51,3 +51,18 @@ reference balance, 0 preserves the existing account basis. Keep the four core
 copies identical. Listener payload budgets must remain on the original account
 basis; never substitute the native override into published risk fields.
 See NATIVE_BALANCE.md and scripts/validate_native_balance.ps1 for verification.
+
+## Test Storage Policy
+
+The user reports a 180 GB project and prohibits further per-run bulk file
+generation. Reuse one existing isolated MT5 worker and a fixed bounded build
+directory. Do not create timestamped source/dependency trees, duplicate
+terminal installations or history databases, or accumulate release backups.
+Do not run older validation scripts unchanged if they create those copies.
+Prefer focused tests and small reports; retain large trade traces only when
+needed to diagnose a specific issue. Do not request multi-year tick downloads
+unnecessarily. Do not add generated workers, history or build artifacts to Git.
+Remove only disposable artifacts created by the current task after verification,
+with resolved-path safety checks. Existing files, backups and history must not
+be deleted without the user's explicit approval. Production isolation and
+accuracy checks still apply; minimal necessary test artifacts are permitted.

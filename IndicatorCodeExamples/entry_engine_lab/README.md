@@ -220,3 +220,21 @@ audit campaign. See VERIFICATION.md for full and focused release evidence.
 ## Exact Audit Acceleration (2026-10-03)
 
 See `../../reports/audit_acceleration_20261003.md` for measured first/repeat/changed-target times and exact trade-trace comparisons. Canonical source and required headers remain in this folder. Signal/execution mathematics, strategy format, CSV schema and listeners are unchanged. In Orb-derived families, select the existing ADV engine for quote batching; the legacy path is unchanged. Sol accelerates its current tick replay. Available-history timings do not measure broker-download speed.
+
+## Native Position Visuals (1.12)
+
+Independent positions have separate entry/SL/TP segments keyed by MT5 position
+identifier, including simultaneous fills. Native closed-position arrows use
+actual net deal profit plus swap, commission and fee: green for positive, red
+for negative, neutral for flat. OPEN markers are gold, not a profit assertion.
+Closed geometry remains visible for at least one chart candle, up to the
+existing 20-candle segment convention; this visual width does not change
+actual fill or exit timestamps. An exit X marks the actual final deal price.
+
+Attach/restart restores owned native executions from account history within
+the selected audit window. Archived levels require available original order
+SL/TP or an existing native plan; unavailable levels are not fabricated.
+Native visuals do not change simulated audit results, trading rules, risk,
+strategy files or listeners. Run `scripts/validate_entrylab_native_visuals.ps1`
+for the focused read-only native-history and chart-object regression. See
+`../../reports/entrylab_native_visuals_20261004.md` for verification scope.

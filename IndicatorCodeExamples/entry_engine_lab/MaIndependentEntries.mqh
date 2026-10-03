@@ -290,7 +290,7 @@ bool MaIndependentOpen(string direction,datetime signalBar,double entry,double s
    if(filled)
    {
       OrbProStoreOpenPositions(dir,entry,sl,tp,0,signalBar,g_lastSignalRegime);
-      DrawOrbExecutionVisual(direction,TimeCurrent(),signalBar,entry,sl,detail);
+      DrawOrbLiveTradeLevels();
    }
    return filled;
 }

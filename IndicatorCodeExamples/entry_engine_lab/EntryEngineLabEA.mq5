@@ -16,7 +16,7 @@
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
-#define ORB15_BUILD "EntryEngineLab-1.11-AuditBatch"
+#define ORB15_BUILD "EntryEngineLab-1.12-NativeVisuals"
 
 enum ORB_SESSION_PROFILE
 {
@@ -4060,6 +4060,14 @@ void DrawOrbLiveTradeLevels()
 {
    if(IsTesterMode())return;
    FinalizeOrbBridgePlanVisualIfResolved();
+   static bool independentLevelsReady=false;
+   if(g_maIndependent)
+   {
+      if(!independentLevelsReady){DeleteByPrefix(PREFIX+"LIVE_LVL_");independentLevelsReady=true;}
+      LabNativeVisualRefreshOpen();
+      return;
+   }
+   independentLevelsReady=false;
    // Keep one fixed ENTRY/SL/TP set; HC and ORB-range lines are intentionally hidden.
    DeleteByPrefix(PREFIX+"LIVE_LVL_HC_");
    if(!InpDrawTradeLevelSegments)
@@ -4586,6 +4594,8 @@ void MarkOrbExecutionVisualResolved(datetime executedAt,int dir,bool won)
       ObjectSetInteger(0,base+"TXT",OBJPROP_COLOR,resultColor);
    }
 }
+
+#include "LabNativeTradeVisuals.mqh"
 
 bool FindHistBreakout(datetime from,datetime to,double hi,double lo,
                       string &dir,datetime &sigT,double &sigC,double &sigH,double &sigL,
@@ -9913,6 +9923,7 @@ int OnInit()
    RegimeV3Update(true);
    OrbProInit();
    if(!MaIndependentInit())return INIT_PARAMETERS_INCORRECT;
+   if(!IsTesterMode())LabNativeVisualRestore();
    if(!g_maPresetModeRestored&&!GlobalVariableCheck(MaExitSettingsKey()+".ON"))g_maReverseExit=!g_maIndependent;
    RestoreOrbBridgePlan();
    RestoreNasManagedLifecycle();
@@ -9956,12 +9967,13 @@ void OnDeinit(const int reason)
    McOfRelease();
    MaIndependentRelease();
    EventKillTimer();
-   if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();DeleteByPrefix(PREFIX+"MA_OBS_");}
+   if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();DeleteByPrefix(PREFIX+"NATIVE_");DeleteByPrefix(PREFIX+"MA_OBS_");}
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    OrbTesterAudit_WriteDeal(trans, request, result);
+   LabNativeVisualTransaction(trans);
    OrbProOnTradeTransaction(trans);
    MaRenderOpenCounter();
    if(IsTesterMode()||trans.type!=TRADE_TRANSACTION_DEAL_ADD||trans.deal==0||!HistoryDealSelect(trans.deal))return;
@@ -10003,6 +10015,7 @@ void OnTimer()
       if(coreDue)
       {
          OrbProTimer();
+         LabNativeVisualTimer();
          OrbAudit_HistoryScan();
          OBT_Tick();
          if(!g_histAuditRunning&&!g_histRedrawQueued)RefreshNasSignalOverlay();
