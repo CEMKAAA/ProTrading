@@ -1,0 +1,3 @@
+checks=194 failed=2 paired=95 normal=23W/40L/32O advanced=23W/40L/32O normal_R=-1.0208789839804797 advanced_R=-1.0208789839804797
+both exact tick engines available case=0
+all cases compared without DATA/OHLC fallback

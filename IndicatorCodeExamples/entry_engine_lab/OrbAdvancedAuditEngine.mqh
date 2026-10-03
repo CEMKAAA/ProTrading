@@ -51,6 +51,7 @@ long g_orbAdvParityChecks=0;
 long g_orbAdvParityMismatches=0;
 double g_orbAdvIndexIoSec=0.0;
 string g_orbAdvLastStatus="IDLE";
+#include "OrbAuditRamCache.mqh"
 
 string OrbAdvSafeToken(string value)
 {
@@ -345,7 +346,7 @@ bool OrbAdvLoadDay(const datetime dayStart)
    string server=AccountInfoString(ACCOUNT_SERVER);
    if(g_orbAdvLoadedDayKey==dayKey&&g_orbAdvLoadedSymbol==_Symbol&&g_orbAdvLoadedServer==server
       &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)return true;
-   OrbAdvClearLoadedDay();
+   if(OrbAdvSelectCachedDay(dayKey,server))return true;
    ulong started=GetTickCount64();
    bool loaded=OrbAdvReadIndex(dayKey);
    if(loaded){g_orbAdvIndexDiskHits++;g_orbAdvLoadedFromDisk=true;}
@@ -469,14 +470,15 @@ bool OrbAdvFindFirstQuote(const long fromMs,const long toMs,MqlTick &firstTick)
       if(first<after)
       {
          OrbAdvMinuteBlock block=g_orbAdvBlocks[first];
-         MqlTick ticks[];
+         MqlTick ticks[];int firstIndex=0,afterIndex=0;bool view=false;
          long blockFrom=MathMax(cursor,block.minuteMs);
          long blockTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
-         int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)blockFrom,(ulong)blockTo);
-         for(int i=0;i<copied;i++)
+         OrbAdvReadExactQuotes((ulong)blockFrom,(ulong)blockTo,ticks,firstIndex,afterIndex,view);
+         for(int i=firstIndex;i<afterIndex;i++)
          {
-            if(ticks[i].time_msc<blockFrom||ticks[i].time_msc>blockTo)continue;
-            if(ticks[i].bid>0.0&&ticks[i].ask>0.0){firstTick=ticks[i];return true;}
+            MqlTick quote=view?g_histTickReplayCache[i]:ticks[i];
+            if(quote.time_msc<blockFrom||quote.time_msc>blockTo)continue;
+            if(quote.bid>0.0&&quote.ask>0.0){firstTick=quote;return true;}
          }
       }
       cursor=dayTo+1;
@@ -572,13 +574,13 @@ bool SimulateTradeTicksAdvanced(datetime sigTime,datetime tradeEnd,double entry,
       OrbAdvMinuteBlock block=g_orbAdvBlocks[candidate];
       long exactFrom=MathMax(cursor,block.minuteMs);
       long exactTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
-      MqlTick ticks[];
-      int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)exactFrom,(ulong)exactTo);
+      MqlTick ticks[];int firstIndex=0,afterIndex=0;bool view=false;
+      int copied=OrbAdvReadExactQuotes((ulong)exactFrom,(ulong)exactTo,ticks,firstIndex,afterIndex,view);
       if(copied<=0)return false;
       g_orbAdvExactMinutes++;
-      for(int i=0;i<copied;i++)
+      for(int i=firstIndex;i<afterIndex;i++)
       {
-         MqlTick tick=ticks[i];
+         MqlTick tick=view?g_histTickReplayCache[i]:ticks[i];
          if(tick.time_msc<exactFrom||tick.time_msc>exactTo||tick.bid<=0.0||tick.ask<=0.0)continue;
          g_orbAdvExactTicks++;
          double closePx=isBuy?tick.bid:tick.ask;
@@ -721,12 +723,14 @@ bool OrbAdvancedAuditSetRuntime(const bool enabled)
    string key=OrbAdvancedAuditRuntimeKey();
    if(!GlobalVariableSet(key,enabled?1.0:0.0))return false;
    g_rtAdvancedAuditEngine=enabled;
+   OrbAdvClearDayCache();
    OrbAdvClearLoadedDay();
    return true;
 }
 
 void OrbAdvancedAuditResetRunStats()
 {
+   OrbAdvClearDayCache();
    // Completed shards are reloaded from disk. The active trading day is
    // intentionally rebuilt against the immutable audit snapshot timestamp.
    OrbAdvClearLoadedDay();

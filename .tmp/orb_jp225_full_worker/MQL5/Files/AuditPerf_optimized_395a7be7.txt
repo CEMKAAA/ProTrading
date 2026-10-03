@@ -1,0 +1,14 @@
+signal_ms=266 ready=true
+tick_sync_ms=172
+run=0 total_ms=18422 prep_ms=359 signals=2131 total=2122 W=962 L=1160 O=0 DATA=0 R=-198.000000000000 disk=119 cold=0 exact_ticks=497729 index_ms=47
+first_invalid=
+memo_hits=0
+profile run=0 tick_ms=17267.784 tick_calls=510 object_ms=0.000 object_calls=0 rate_ms=24.800 rate_calls=2126
+run=1 total_ms=281 prep_ms=78 signals=2131 total=2122 W=962 L=1160 O=0 DATA=0 R=-198.000000000000 disk=0 cold=0 exact_ticks=0 index_ms=0
+first_invalid=
+memo_hits=2122
+profile run=1 tick_ms=0.000 tick_calls=0 object_ms=0.000 object_calls=0 rate_ms=1.831 rate_calls=2122
+run=2 total_ms=17578 prep_ms=31 signals=2131 total=2129 W=1288 L=841 O=0 DATA=0 R=-197.000000000000 disk=119 cold=0 exact_ticks=238749 index_ms=92
+first_invalid=
+memo_hits=2122
+profile run=2 tick_ms=16606.055 tick_calls=505 object_ms=0.000 object_calls=0 rate_ms=3.729 rate_calls=2129

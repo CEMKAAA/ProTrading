@@ -1,0 +1,1 @@
+checks=199 failed=0 paired=96 normal=28W/44L/24O advanced=28W/44L/24O normal_R=-3.2038046802798852 advanced_R=-3.2038046802798852

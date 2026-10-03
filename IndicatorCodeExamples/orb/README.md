@@ -22,3 +22,8 @@ trade entry; normal audit does not compute the CSV feature set. Each accepted
 trade contributes one row, including OPEN/DATA records with explicit status.
 The full output path is shown by MT5 under Common/Files/AuditExports.
 Source mapping, timing rules and test scope: `../../research/kivanc/README.md`.
+
+
+## Exact Audit Acceleration (2026-10-03)
+
+See `../../reports/audit_acceleration_20261003.md` for measured first/repeat/changed-target times and exact trade-trace comparisons. Canonical source and required headers remain in this folder. Signal/execution mathematics, strategy format, CSV schema and listeners are unchanged. In Orb-derived families, select the existing ADV engine for quote batching; the legacy path is unchanged. Sol accelerates its current tick replay. Available-history timings do not measure broker-download speed.

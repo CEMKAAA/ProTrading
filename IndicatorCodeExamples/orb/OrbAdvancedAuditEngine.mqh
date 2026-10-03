@@ -34,30 +34,6 @@ struct OrbAdvTreeNode
    int validQuotes;
 };
 
-// Per-run cache only: never retain a potentially revised history across audits.
-#define ORB_ADV_DAY_CACHE_SLOTS 8
-struct OrbAdvCachedDay
-{
-   int dayKey;
-   string symbol,server;
-   long touched;
-   bool fromDisk;
-   OrbAdvMinuteBlock blocks[];
-   OrbAdvTreeNode tree[];
-};
-OrbAdvCachedDay g_orbAdvDayCache[ORB_ADV_DAY_CACHE_SLOTS];
-long g_orbAdvCacheClock=0,g_orbAdvRamHits=0;
-
-void OrbAdvClearDayCache()
-{
-   for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
-   {
-      g_orbAdvDayCache[i].dayKey=0;
-      ArrayFree(g_orbAdvDayCache[i].blocks);ArrayFree(g_orbAdvDayCache[i].tree);
-   }
-   g_orbAdvCacheClock=0;g_orbAdvRamHits=0;
-}
-
 OrbAdvMinuteBlock g_orbAdvBlocks[];
 OrbAdvTreeNode g_orbAdvTree[];
 int g_orbAdvLoadedDayKey=0;
@@ -75,6 +51,7 @@ long g_orbAdvParityChecks=0;
 long g_orbAdvParityMismatches=0;
 double g_orbAdvIndexIoSec=0.0;
 string g_orbAdvLastStatus="IDLE";
+#include "OrbAuditRamCache.mqh"
 
 string OrbAdvSafeToken(string value)
 {
@@ -369,43 +346,7 @@ bool OrbAdvLoadDay(const datetime dayStart)
    string server=AccountInfoString(ACCOUNT_SERVER);
    if(g_orbAdvLoadedDayKey==dayKey&&g_orbAdvLoadedSymbol==_Symbol&&g_orbAdvLoadedServer==server
       &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)return true;
-   // Only completed days are cacheable. The currently forming day stays in
-   // the original snapshot path. Cache failures fall back to the disk path.
-   if(g_orbAdvLoadedDayKey>0&&g_orbAdvLoadedDayKey<OrbAdvDayKey(TimeCurrent())
-      &&ArraySize(g_orbAdvBlocks)>0&&ArraySize(g_orbAdvTree)>0)
-   {
-      int slot=0;long oldest=LONG_MAX;
-      for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
-      {
-         if(g_orbAdvDayCache[i].dayKey==g_orbAdvLoadedDayKey
-            &&g_orbAdvDayCache[i].symbol==g_orbAdvLoadedSymbol&&g_orbAdvDayCache[i].server==g_orbAdvLoadedServer){slot=i;break;}
-         if(g_orbAdvDayCache[i].dayKey==0){slot=i;break;}
-         if(g_orbAdvDayCache[i].touched<oldest){oldest=g_orbAdvDayCache[i].touched;slot=i;}
-      }
-      g_orbAdvDayCache[slot].dayKey=0;
-      int nb=ArraySize(g_orbAdvBlocks),nt=ArraySize(g_orbAdvTree);
-      if(ArrayResize(g_orbAdvDayCache[slot].blocks,nb)==nb&&ArrayResize(g_orbAdvDayCache[slot].tree,nt)==nt
-         &&ArrayCopy(g_orbAdvDayCache[slot].blocks,g_orbAdvBlocks)==nb&&ArrayCopy(g_orbAdvDayCache[slot].tree,g_orbAdvTree)==nt)
-      {
-         g_orbAdvDayCache[slot].dayKey=g_orbAdvLoadedDayKey;
-         g_orbAdvDayCache[slot].symbol=g_orbAdvLoadedSymbol;g_orbAdvDayCache[slot].server=g_orbAdvLoadedServer;
-         g_orbAdvDayCache[slot].fromDisk=g_orbAdvLoadedFromDisk;g_orbAdvDayCache[slot].touched=++g_orbAdvCacheClock;
-      }
-   }
-   OrbAdvClearLoadedDay();
-   for(int i=0;i<ORB_ADV_DAY_CACHE_SLOTS;i++)
-   {
-      if(dayKey>=OrbAdvDayKey(TimeCurrent())||g_orbAdvDayCache[i].dayKey!=dayKey
-         ||g_orbAdvDayCache[i].symbol!=_Symbol||g_orbAdvDayCache[i].server!=server)continue;
-      int nb=ArraySize(g_orbAdvDayCache[i].blocks),nt=ArraySize(g_orbAdvDayCache[i].tree);
-      if(ArrayCopy(g_orbAdvBlocks,g_orbAdvDayCache[i].blocks)==nb&&ArrayCopy(g_orbAdvTree,g_orbAdvDayCache[i].tree)==nt)
-      {
-         g_orbAdvLoadedDayKey=dayKey;g_orbAdvLoadedSymbol=_Symbol;g_orbAdvLoadedServer=server;
-         g_orbAdvLoadedFromDisk=g_orbAdvDayCache[i].fromDisk;g_orbAdvDayCache[i].touched=++g_orbAdvCacheClock;
-         g_orbAdvRamHits++;g_orbAdvLastStatus="INDEX_RAM";return true;
-      }
-      OrbAdvClearLoadedDay();break;
-   }
+   if(OrbAdvSelectCachedDay(dayKey,server))return true;
    ulong started=GetTickCount64();
    bool loaded=OrbAdvReadIndex(dayKey);
    if(loaded){g_orbAdvIndexDiskHits++;g_orbAdvLoadedFromDisk=true;}
@@ -529,14 +470,15 @@ bool OrbAdvFindFirstQuote(const long fromMs,const long toMs,MqlTick &firstTick)
       if(first<after)
       {
          OrbAdvMinuteBlock block=g_orbAdvBlocks[first];
-         MqlTick ticks[];
+         MqlTick ticks[];int firstIndex=0,afterIndex=0;bool view=false;
          long blockFrom=MathMax(cursor,block.minuteMs);
          long blockTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
-         int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)blockFrom,(ulong)blockTo);
-         for(int i=0;i<copied;i++)
+         OrbAdvReadExactQuotes((ulong)blockFrom,(ulong)blockTo,ticks,firstIndex,afterIndex,view);
+         for(int i=firstIndex;i<afterIndex;i++)
          {
-            if(ticks[i].time_msc<blockFrom||ticks[i].time_msc>blockTo)continue;
-            if(ticks[i].bid>0.0&&ticks[i].ask>0.0){firstTick=ticks[i];return true;}
+            MqlTick quote=view?g_histTickReplayCache[i]:ticks[i];
+            if(quote.time_msc<blockFrom||quote.time_msc>blockTo)continue;
+            if(quote.bid>0.0&&quote.ask>0.0){firstTick=quote;return true;}
          }
       }
       cursor=dayTo+1;
@@ -630,13 +572,13 @@ bool SimulateTradeTicksAdvanced(datetime sigTime,datetime tradeEnd,double entry,
       OrbAdvMinuteBlock block=g_orbAdvBlocks[candidate];
       long exactFrom=MathMax(cursor,block.minuteMs);
       long exactTo=MathMin(dayTo,block.minuteMs+ORB_ADV_MINUTE_MS-1);
-      MqlTick ticks[];
-      int copied=AuditCopyTicksRange(_Symbol,ticks,COPY_TICKS_INFO,(ulong)exactFrom,(ulong)exactTo);
+      MqlTick ticks[];int firstIndex=0,afterIndex=0;bool view=false;
+      int copied=OrbAdvReadExactQuotes((ulong)exactFrom,(ulong)exactTo,ticks,firstIndex,afterIndex,view);
       if(copied<=0)return false;
       g_orbAdvExactMinutes++;
-      for(int i=0;i<copied;i++)
+      for(int i=firstIndex;i<afterIndex;i++)
       {
-         MqlTick tick=ticks[i];
+         MqlTick tick=view?g_histTickReplayCache[i]:ticks[i];
          if(tick.time_msc<exactFrom||tick.time_msc>exactTo||tick.bid<=0.0||tick.ask<=0.0)continue;
          g_orbAdvExactTicks++;
          double closePx=isBuy?tick.bid:tick.ask;

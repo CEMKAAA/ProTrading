@@ -14,7 +14,7 @@
 #include "TradeCalendarMatrix.mqh"
 #include "AuditTradeCsv.mqh"
 
-#define LN_BUILD "2026-10-02.sol-advanced-pip-no-ceiling"
+#define LN_BUILD "2026-10-03.sol-advanced-audit-batch"
 #define LN_PREFIX "LIQNARRSOL_"
 #define LN_PERIOD_H90 ((ENUM_TIMEFRAMES)90)
 #define LN_H90_SECONDS 5400
@@ -2507,6 +2507,7 @@ void CaptureLastSimulationExit(string reason, datetime exitTime)
    g_lastSimExitTime = exitTime;
 }
 
+#include "LiqAuditQuoteCache.mqh"
 double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL_TARGET_MODEL targetModel,
    ENUM_TIMEFRAMES entryTf, datetime maxTime, bool &closed, bool &won, bool &valid)
 {
@@ -2600,18 +2601,32 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       datetime tickEnd = maxTime > 0 ? maxTime : TimeCurrent();
       if(tickEnd > tickStart)
       {
-         MqlTick ticks[];
+
          // Read chronologically and stop at the first terminal event. Loading
-         // the whole lifespan first can copy months of unused ticks per trade.
+         // the whole lifespan first can copy months of unused quotes per trade.
          ulong tickLimit = (ulong)tickEnd * 1000;
          bool tickInitialized = false;
          datetime lastTickAt = 0;
          double lastClosePx = 0.0;
          for(ulong cursor = (ulong)tickStart * 1000; cursor <= tickLimit;)
          {
+            if(g_lnQuoteAcceleration&&tickInitialized)
+            {
+               cursor=LnQuoteSkipRange(cursor,tickLimit,simDir,activeSl,tp,half,!halfDone,reverseExitMode,lastTickAt,lastClosePx);
+               if(cursor>tickLimit)break;
+            }
             ulong chunkEnd = cursor + 3600000 - 1;
             if(chunkEnd > tickLimit) chunkEnd = tickLimit;
-            int copied = CopyTicksRange(_Symbol, ticks, COPY_TICKS_ALL, cursor, chunkEnd);
+            int rangeFirst=0,rangeAfter=0;
+            int copied=0;
+            if(g_lnQuoteAcceleration)
+               copied=LnQuoteLoad(cursor,tickLimit,rangeFirst,rangeAfter,chunkEnd);
+            else
+            {
+               g_lnQuoteReady=false;
+               copied=CopyTicksRange(_Symbol,g_lnQuoteTicks,COPY_TICKS_ALL,cursor,chunkEnd);
+               rangeAfter=MathMax(0,copied);
+            }
             if(copied < 0) break;
             cursor = chunkEnd + 1;
             if(copied == 0)
@@ -2620,9 +2635,9 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                continue;
             }
             int first = -1;
-            for(int k = 0; k < copied; ++k)
+            for(int k = rangeFirst; k < rangeAfter; ++k)
             {
-               if(ticks[k].bid > 0.0 && ticks[k].ask > 0.0) { first = k; break; }
+               if(g_lnQuoteTicks[k].bid > 0.0 && g_lnQuoteTicks[k].ask > 0.0) { first = k; break; }
             }
             if(first < 0)
             {
@@ -2630,14 +2645,14 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                continue;
             }
             // A terminal TP/SL observed in an early tick chunk is final. Do
-            // not discard that causal ordering merely because ticks after
+            // not discard that causal ordering merely because quotes after
             // the exit do not cover the later reverse-signal boundary.
             if(!tickInitialized)
             {
-               if((datetime)ticks[first].time > tickStart + tfSeconds) break;
+               if((datetime)g_lnQuoteTicks[first].time > tickStart + tfSeconds) break;
                double slip = MathMax(0.0, g_btSlippagePts) * point;
-               simEntry = NormTradePrice(simDir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
-               double sourceTickEntry = NormTradePrice(sig.dir > 0 ? ticks[first].ask + slip : ticks[first].bid - slip);
+               simEntry = NormTradePrice(simDir > 0 ? g_lnQuoteTicks[first].ask + slip : g_lnQuoteTicks[first].bid - slip);
+               double sourceTickEntry = NormTradePrice(sig.dir > 0 ? g_lnQuoteTicks[first].ask + slip : g_lnQuoteTicks[first].bid - slip);
                if(!ConfigureSimulationLevels(sig, target, hc, targetModel, simEntry, sourceTickEntry, reverseExitMode, simDir,
                   activeSl, tp, half, simRisk, activeHc, commissionR, geometryDetail, true))
                {
@@ -2647,18 +2662,32 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                }
                g_lastSimEntryTime=sig.availableTime;g_lastSimEntrySpread=effectiveSpreadPts;g_lastSimEntryBasis=g_btSpreadPts>0?"CONFIGURED_BAR_SPREAD":"HISTORICAL_BAR_SPREAD";
    CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
-               g_lastSimEntryTime=(datetime)ticks[first].time;g_lastSimEntrySpread=(ticks[first].ask-ticks[first].bid)/point;g_lastSimEntryBasis="ENTRY_BID_ASK_QUOTE";
+               g_lastSimEntryTime=(datetime)g_lnQuoteTicks[first].time;g_lastSimEntrySpread=(g_lnQuoteTicks[first].ask-g_lnQuoteTicks[first].bid)/point;g_lastSimEntryBasis="ENTRY_BID_ASK_QUOTE";
                halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
                pnlR = 0.0;
                tickInitialized = true;
             }
-            for(int k = first; k < copied; ++k)
+            for(int k = first; k < rangeAfter; ++k)
             {
-               double bid = ticks[k].bid;
-               double ask = ticks[k].ask;
+               if(g_lnQuoteAcceleration)
+               {
+                  int next=LnQuoteSkip(k,rangeAfter,simDir,activeSl,tp,half,!halfDone,reverseExitMode);
+                  if(next>k)
+                  {
+                     int last=g_lnQuoteBlocks[k/LN_QUOTE_BLOCK].lastValid;
+                     if(last>=0)
+                     {
+                        lastTickAt=(datetime)g_lnQuoteTicks[last].time;
+                        lastClosePx=simDir>0?g_lnQuoteTicks[last].bid:g_lnQuoteTicks[last].ask;
+                     }
+                     k=next-1;continue;
+                  }
+               }
+               double bid = g_lnQuoteTicks[k].bid;
+               double ask = g_lnQuoteTicks[k].ask;
                if(bid <= 0.0 || ask <= 0.0) continue;
                double closePx = simDir > 0 ? bid : ask;
-               lastTickAt = (datetime)ticks[k].time;
+               lastTickAt = (datetime)g_lnQuoteTicks[k].time;
                lastClosePx = closePx;
 
                if(!reverseExitMode && !halfDone)
@@ -2681,7 +2710,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                   pnlR -= commissionR;
                   closed = true;
                   won = pnlR > 0.0;
-                  CaptureLastSimulationExit("TICK_SL", (datetime)ticks[k].time);
+                  CaptureLastSimulationExit("TICK_SL", (datetime)g_lnQuoteTicks[k].time);
                   return pnlR;
                }
 
@@ -2693,7 +2722,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                   pnlR -= commissionR;
                   closed = true;
                   won = pnlR > 0.0;
-                  CaptureLastSimulationExit("TICK_TP", (datetime)ticks[k].time);
+                  CaptureLastSimulationExit("TICK_TP", (datetime)g_lnQuoteTicks[k].time);
                   return pnlR;
                }
             }
@@ -2811,7 +2840,7 @@ datetime NextSignalTime(const ErlSignal &signals[], int index)
 
 datetime NextOppositeSignalTime(const ErlSignal &signals[], datetime current, int dir)
 {
-   for(int i = 0; i < ArraySize(signals); ++i)
+   for(int i = LnNasFirstRawAfter(signals,current); i < ArraySize(signals); ++i)
    {
       if(signals[i].availableTime > current && signals[i].dir != dir) return signals[i].availableTime;
    }
@@ -2931,6 +2960,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    g_auditMacroPending = false;
    g_auditGeneration++;
    BeginHistoricalAuditProgress();
+   LnQuoteReset();
    ulong stageStarted = GetTickCount64();
    datetime cutoff = TimeCurrent() - HistDays() * 86400;
    string rawSig = HistRawSignature();

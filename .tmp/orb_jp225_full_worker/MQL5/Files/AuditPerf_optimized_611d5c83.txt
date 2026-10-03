@@ -1,0 +1,3 @@
+run=0 total_ms=7141 signals=28 total=28 W=8 L=18 O=2 DATA=0 R=-2.000000000000
+run=1 total_ms=94 signals=28 total=28 W=8 L=18 O=2 DATA=0 R=-2.000000000000
+run=2 total_ms=359 signals=28 total=28 W=10 L=17 O=1 DATA=0 R=-7.000000000000

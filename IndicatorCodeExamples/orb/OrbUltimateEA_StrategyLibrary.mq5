@@ -13,7 +13,7 @@
 #include "NasUltimate_Core.mqh"
 #include "TradeCalendarMatrix.mqh"
 #include "AuditTradeCsv.mqh"
-#define ORB15_BUILD "2026-10-02.v6.92-pip-no-ceiling"
+#define ORB15_BUILD "2026-10-03.v6.93-audit-batch"
 
 enum ORB_SESSION_PROFILE
 {
@@ -5048,7 +5048,8 @@ int HistoricalTickUpperBound(const ulong targetMs)
 // No quote is aggregated or approximated; this only removes repeated terminal
 // history I/O. The returned slice is the same MqlTick sequence a direct
 // CopyTicksRange call provides for [fromMs,toMs].
-bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &first,int &after)
+bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &first,int &after,
+                                     const uint prefetchMinutes=ORB_HIST_TICK_PREFETCH_MINUTES)
 {
    first=0;after=0;
    if(!g_histAuditRunning||fromMs>toMs)return false;
@@ -5057,7 +5058,7 @@ bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &f
       &&fromMs>=g_histTickReplayCacheFromMs&&toMs<=g_histTickReplayCacheToMs);
    if(!covered)
    {
-      const ulong prefetchMs=(ulong)ORB_HIST_TICK_PREFETCH_MINUTES*60*1000;
+      const ulong prefetchMs=(ulong)prefetchMinutes*60*1000;
       ulong loadToMs=toMs;
       if(fromMs<=ULONG_MAX-prefetchMs)
          loadToMs=MathMax(loadToMs,fromMs+prefetchMs);
@@ -5069,6 +5070,11 @@ bool PrepareHistoricalTickReplayRange(const ulong fromMs,const ulong toMs,int &f
          &&fromMs>=g_histTickReplayCacheFromMs
          &&fromMs<=g_histTickReplayCacheToMs
          &&loadToMs>g_histTickReplayCacheToMs);
+      // ADV batches sparse minute queries without an indefinitely growing window.
+      // The original engine retains its existing extension policy.
+      if(prefetchMinutes>ORB_HIST_TICK_PREFETCH_MINUTES
+         &&(loadToMs-g_histTickReplayCacheFromMs>86400000
+            ||(long)ArraySize(g_histTickReplayCache)*sizeof(MqlTick)>67108864))canExtend=false;
       int loaded=0,rebuildFromTick=0;
       if(canExtend)
       {

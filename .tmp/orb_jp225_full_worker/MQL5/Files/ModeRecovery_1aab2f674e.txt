@@ -1,0 +1,3 @@
+broker_positions=1
+broker ticket=2498295742 symbol=BTCUSDm magic=4000016092601952448 comment=MAI|1791019800
+checks=13 failed=0

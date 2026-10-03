@@ -1,0 +1,2 @@
+checks=200 failed=0 paired=96 normal=8W/68L/20O advanced=8W/68L/20O normal_R=-56.066341772042762 advanced_R=-56.066341772042762
+HC_cases=7 inverse_cases=48 forced_cases=32

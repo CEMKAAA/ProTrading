@@ -215,3 +215,8 @@ production synchronization guards or tick fill/outcome calculations.
 `-PipOnly` keeps the kernel/formula, UI, pip geometry, strategy restore,
 exit parity and capacity checks, but skips repeating the ten-engine ATR
 audit campaign. See VERIFICATION.md for full and focused release evidence.
+
+
+## Exact Audit Acceleration (2026-10-03)
+
+See `../../reports/audit_acceleration_20261003.md` for measured first/repeat/changed-target times and exact trade-trace comparisons. Canonical source and required headers remain in this folder. Signal/execution mathematics, strategy format, CSV schema and listeners are unchanged. In Orb-derived families, select the existing ADV engine for quote batching; the legacy path is unchanged. Sol accelerates its current tick replay. Available-history timings do not measure broker-download speed.

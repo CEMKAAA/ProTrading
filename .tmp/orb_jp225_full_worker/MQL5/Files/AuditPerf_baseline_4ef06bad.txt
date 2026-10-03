@@ -1,0 +1,3 @@
+signal_ms=219 ready=true
+run=0 total_ms=2469 prep_ms=1187 signals=252 total=81 W=36 L=44 O=1 DATA=0 R=-8.000000000000 disk=15 cold=1 exact_ticks=8179
+run=1 total_ms=93 prep_ms=31 signals=252 total=81 W=36 L=44 O=1 DATA=0 R=-8.000000000000 disk=1 cold=0 exact_ticks=0

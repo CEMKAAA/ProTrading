@@ -18,6 +18,38 @@ string g_lnNasLastAction="";
 ulong g_lnNasLastActionAt=0;
 struct LnNasEvent {datetime at;int dir;bool stateAllowed,flowAllowed;double high,low;};
 LnNasEvent g_lnNasEvents[];
+int g_lnNasPrevState[],g_lnNasPrevFlow[],g_lnNasNextBuy[],g_lnNasNextSell[];
+void LnNasIndexEvents()
+{
+   int n=ArraySize(g_lnNasEvents),state=-1,flow=-1,buy=-1,sell=-1;
+   ArrayResize(g_lnNasPrevState,n);ArrayResize(g_lnNasPrevFlow,n);
+   ArrayResize(g_lnNasNextBuy,n+1);ArrayResize(g_lnNasNextSell,n+1);
+   for(int i=0;i<n;i++)
+   {
+      if(g_lnNasEvents[i].stateAllowed)state=i;
+      if(g_lnNasEvents[i].flowAllowed)flow=i;
+      g_lnNasPrevState[i]=state;g_lnNasPrevFlow[i]=flow;
+   }
+   g_lnNasNextBuy[n]=-1;g_lnNasNextSell[n]=-1;
+   for(int i=n-1;i>=0;i--)
+   {
+      if(g_lnNasEvents[i].flowAllowed)
+      {if(g_lnNasEvents[i].dir>0)buy=i;else sell=i;}
+      g_lnNasNextBuy[i]=buy;g_lnNasNextSell[i]=sell;
+   }
+}
+int LnNasAfter(datetime at)
+{
+   int lo=0,hi=ArraySize(g_lnNasEvents);
+   while(lo<hi){int mid=lo+(hi-lo)/2;if(g_lnNasEvents[mid].at<=at)lo=mid+1;else hi=mid;}
+   return lo;
+}
+int LnNasFirstRawAfter(const ErlSignal &raw[],datetime at)
+{
+   int lo=0,hi=ArraySize(raw);
+   while(lo<hi){int mid=lo+(hi-lo)/2;if(raw[mid].availableTime<=at)lo=mid+1;else hi=mid;}
+   return lo;
+}
 datetime g_lnNasBar=0,g_lnNasSeed=0;
 string g_lnNasSignature="";
 ErlSignal g_lnNasRejected[];
@@ -104,7 +136,7 @@ bool LnNasBuild(datetime oldest)
    string signature=_Symbol+"|"+(string)tf+"|"+(string)g_lnNas.sensitivity+"|"
       +(string)g_lnNas.stateVolume+"|"+DoubleToString(g_lnNas.stateMultiplier,8)+"|"
       +(string)g_lnNas.flowVolume+"|"+DoubleToString(g_lnNas.flowMultiplier,8);
-   if(g_lnNasBar==closed&&g_lnNasSignature==signature&&g_lnNasSeed<=oldest&&ArraySize(g_lnNasEvents)>0)return true;
+   if(g_lnNasBar==closed&&g_lnNasSignature==signature&&g_lnNasSeed<=oldest)return true;
    int shift=iBarShift(_Symbol,tf,oldest,false);
    if(shift<0){g_lnNasStatus="NAS start bar unavailable";return false;}
    int requested=MathMax(5200,shift+5200);
@@ -120,13 +152,14 @@ bool LnNasBuild(datetime oldest)
       if(points[i].buy==points[i].sell)continue;
       double mean=0;for(int k=i-20;k<i;k++)mean+=(double)rates[k].tick_volume;
       mean/=20.0;double volume=(double)rates[i].tick_volume;
-      int n=ArraySize(events);ArrayResize(events,n+1);
+      int n=ArraySize(events);ArrayResize(events,n+1,256);
        events[n].at=rates[i+1].time;events[n].dir=points[i].buy?1:-1;
        events[n].stateAllowed=!g_lnNas.stateVolume||(mean>0&&volume>=mean*g_lnNas.stateMultiplier);
        events[n].flowAllowed=!g_lnNas.flowVolume||(mean>0&&volume>=mean*g_lnNas.flowMultiplier);
        events[n].high=rates[i].high;events[n].low=rates[i].low;
    }
    ArraySwap(g_lnNasEvents,events);g_lnNasBar=closed;g_lnNasSeed=rates[0].time;g_lnNasSignature=signature;
+   LnNasIndexEvents();
    return true;
 }
 // 1 allowed, 0 rejected/wait, -1 unknown data.
@@ -136,18 +169,16 @@ int LnNasEntryDecision(int dir,datetime signalAt,datetime through,datetime &acce
    if(!LnNasBuild(signalAt))return -1;
    if(g_lnNas.gate==2)
    {
-      for(int i=ArraySize(g_lnNasEvents)-1;i>=0;i--)
-         if(g_lnNasEvents[i].at<=signalAt&&g_lnNasEvents[i].stateAllowed)
-            return g_lnNasEvents[i].dir==dir?1:0;
+      int at=LnNasAfter(signalAt)-1;
+      int i=at>=0?g_lnNasPrevState[at]:-1;
+      if(i>=0)return g_lnNasEvents[i].dir==dir?1:0;
       return -1;
    }
    datetime ageStart=signalAt-(datetime)(g_lnNas.entryAgeMinutes*60);
-   for(int i=ArraySize(g_lnNasEvents)-1;i>=0;i--)
-      if(g_lnNasEvents[i].at<=signalAt&&g_lnNasEvents[i].at>=ageStart&&g_lnNasEvents[i].flowAllowed)
-      {if(g_lnNasEvents[i].dir==dir)return 1;break;}
-   for(int i=0;i<ArraySize(g_lnNasEvents);i++)
-      if(g_lnNasEvents[i].at>signalAt&&g_lnNasEvents[i].at<=through&&g_lnNasEvents[i].dir==dir&&g_lnNasEvents[i].flowAllowed)
-      {acceptedAt=g_lnNasEvents[i].at;return 1;}
+   int after=LnNasAfter(signalAt),prior=after>0?g_lnNasPrevFlow[after-1]:-1;
+   if(prior>=0&&g_lnNasEvents[prior].at>=ageStart&&g_lnNasEvents[prior].dir==dir)return 1;
+   int next=dir>0?g_lnNasNextBuy[after]:g_lnNasNextSell[after];
+   if(next>=0&&g_lnNasEvents[next].at<=through){acceptedAt=g_lnNasEvents[next].at;return 1;}
    return 0;
 }
 datetime LnNasExitAt(int dir,datetime opened,datetime through,int waitMinutes)
@@ -155,33 +186,30 @@ datetime LnNasExitAt(int dir,datetime opened,datetime through,int waitMinutes)
    if(g_lnNas.exitMode==0||!LnNasBuild(opened))return 0;
    // OPP watches the current Liq setup. ADD keeps watching until the trade ends.
    if(g_lnNas.exitMode==1)
-      for(int r=0;r<ArraySize(g_histRawCache);r++)
+      for(int r=LnNasFirstRawAfter(g_histRawCache,opened);r<ArraySize(g_histRawCache);r++)
          if(g_histRawCache[r].availableTime>opened)
          {through=MathMin(through,g_histRawCache[r].availableTime);break;}
-   datetime eligible=opened+(datetime)(waitMinutes*60),last=0;
-   int lastDir=0;
-   for(int i=0;i<ArraySize(g_lnNasEvents);i++)
-   {
-      LnNasEvent e=g_lnNasEvents[i];if(e.at<=opened||e.at>through||!e.flowAllowed)continue;
-      if(e.at<=eligible){last=e.at;lastDir=e.dir;continue;}
-      if(last>0&&lastDir==-dir)return eligible;
-      if(e.dir==-dir)return e.at;
-   }
-   if(last>0&&lastDir==-dir&&through>=eligible)return eligible;
+   datetime eligible=opened+(datetime)(waitMinutes*60);
+   int end=LnNasAfter(MathMin(eligible,through))-1;
+   int prior=end>=0?g_lnNasPrevFlow[end]:-1;
+   if(prior>=0&&g_lnNasEvents[prior].at>opened&&g_lnNasEvents[prior].dir==-dir&&through>=eligible)return eligible;
+   int after=LnNasAfter(MathMax(opened,eligible));
+   int next=dir>0?g_lnNasNextSell[after]:g_lnNasNextBuy[after];
+   if(next>=0&&g_lnNasEvents[next].at<=through)return g_lnNasEvents[next].at;
    return 0;
 }
 datetime LnNasReverseAt(const ErlSignal &raw[],int dir,datetime opened,datetime through,int waitMinutes)
 {
    if(!g_lnNas.reverseExit)return 0;
    datetime eligible=opened+(datetime)(waitMinutes*60);
-   for(int i=0;i<ArraySize(raw);i++)
+   for(int i=LnNasFirstRawAfter(raw,opened);i<ArraySize(raw);i++)
       if(raw[i].availableTime>opened&&raw[i].availableTime<=through&&EffectiveTradeDir(raw[i].dir)==-dir)
          return MathMax(raw[i].availableTime,eligible);
    return 0;
 }
 datetime LnNasNextRaw(const ErlSignal &raw[],datetime after)
 {
-   for(int i=0;i<ArraySize(raw);i++)if(raw[i].availableTime>after)return raw[i].availableTime;
+   int i=LnNasFirstRawAfter(raw,after);if(i<ArraySize(raw))return raw[i].availableTime;
    return 0;
 }
 void LnNasFilterHistorical(ErlSignal &signals[],const ErlSignal &raw[])
