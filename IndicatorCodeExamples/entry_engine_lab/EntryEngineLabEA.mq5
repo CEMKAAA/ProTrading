@@ -16,7 +16,7 @@
 #include "MaCrossSignalCore.mqh"
 #include "MaCrossAuditCache.mqh"
 #include "MaCrossOrderFlow.mqh"
-#define ORB15_BUILD "EntryEngineLab-1.12-NativeVisuals"
+#define ORB15_BUILD "EntryEngineLab-1.13-NativeRecovery"
 
 enum ORB_SESSION_PROFILE
 {
@@ -2977,7 +2977,7 @@ long RuntimeMagic()
    return g_runtimeMagic;
 }
 bool MagicScoped(long m){return m>=4000000000000000000&&m<5000000000000000000;}
-bool MagicOwned(long m){return m==RuntimeMagic()||(!RiskEnabled()&&m==InpMagic);}
+bool MagicOwned(long m){return m==RuntimeMagic()||MaRecoveredMagicOwned(m)||(!RiskEnabled()&&m==InpMagic);}
 string BtFillLabel(BT_FILL_MODE m){switch(m){case BT_FILL_SIGNAL_CLOSE:return"SIGNAL";case BT_FILL_NEXT_BAR_OPEN:return"NEXT";case BT_FILL_CONSERVATIVE:return"CONS";}return"SIGNAL";}
 string BtSameBarLabel(BT_SAME_BAR_POLICY p){switch(p){case BT_SAMEBAR_CONSERVATIVE:return"CONS";case BT_SAMEBAR_NEAREST_OPEN:return"NEAR";case BT_SAMEBAR_TP_FIRST:return"TP1ST";case BT_SAMEBAR_SL_FIRST:return"SL1ST";}return"CONS";}
 double BtCostRForSpread(double risk,double spreadPoints,bool includeSlippage=true)
@@ -4063,7 +4063,7 @@ void DrawOrbLiveTradeLevels()
    static bool independentLevelsReady=false;
    if(g_maIndependent)
    {
-      if(!independentLevelsReady){DeleteByPrefix(PREFIX+"LIVE_LVL_");independentLevelsReady=true;}
+      if(!independentLevelsReady){DeleteByPrefix(PREFIX+"LIVE_LVL_");DeleteExecutionVisuals();independentLevelsReady=true;}
       LabNativeVisualRefreshOpen();
       return;
    }
@@ -7184,7 +7184,7 @@ void ProcessHistoricalCalcDay(const int back)
       MaCrossTradeMarker(fillAt,isBuy,sim.simEntry,visualT,arwP,pad);
       string dateKey=(string)(long)sigT;
       datetime levelStart=fillAt;
-      datetime levelEnd=levelStart+MathMax(60,PeriodSeconds(RuntimeEntryTf()))*20;
+      datetime levelEnd=LabNativeVisualBarCap(levelStart);
       datetime nextSig=0;
       FindNextHistoricalSignalAfter(sigT,levelEnd,nextSig);
       if(nextSig>levelStart&&nextSig<levelEnd)levelEnd=nextSig;
@@ -9923,6 +9923,7 @@ int OnInit()
    RegimeV3Update(true);
    OrbProInit();
    if(!MaIndependentInit())return INIT_PARAMETERS_INCORRECT;
+   if(g_maRecoveredMagic>0)OrbProRestoreRuntimeState();
    if(!IsTesterMode())LabNativeVisualRestore();
    if(!g_maPresetModeRestored&&!GlobalVariableCheck(MaExitSettingsKey()+".ON"))g_maReverseExit=!g_maIndependent;
    RestoreOrbBridgePlan();
@@ -9966,6 +9967,7 @@ void OnDeinit(const int reason)
    TCalDestroy();
    McOfRelease();
    MaIndependentRelease();
+   MaRecoveryRelease();
    EventKillTimer();
    if(reason==REASON_REMOVE||reason==REASON_PROGRAM){DeleteLevels();DeleteDash();DeleteHist();DeleteLive();DeleteExecutionVisuals();DeleteByPrefix(PREFIX+"NATIVE_");DeleteByPrefix(PREFIX+"MA_OBS_");}
 }
@@ -10000,6 +10002,7 @@ void OnTimer()
    if(coreDue)
    {
       g_histTimerCoreLastMs=nowMs;
+      MaRecoveryRetry();
       TradeDayCalendarPublisherTick();
       EnforceRiskBreach();
       dc=ResetForNewNyDay();BuildOrb();
@@ -10038,7 +10041,7 @@ void OnTick()
       OBT_RunRegimeMatrix();
       return;
    }
-   EnforceRiskBreach();
+   MaRecoveryRetry();EnforceRiskBreach();
    ResetForNewNyDay();MaObserveClosedSignal();if(!MaProcessExitManagement())TryOpenSignal();ManagePositions();
    if(!IsTesterMode())
    {

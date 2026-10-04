@@ -184,7 +184,7 @@ void AxCollectSol()
    for(int i=0;i<ArraySize(g_histSignals);i++)
    {
       string reason=g_histSignalInvalidReason[i];
-      if(reason=="TIME_MATRIX"||reason=="DAILY_QUOTA"||reason=="MAX_SAME_OPEN"||reason=="INVERSE_GAP_BLOCK")continue;
+      if(reason=="TIME_MATRIX"||reason=="DAILY_QUOTA"||reason=="MAX_OPEN"||reason=="MAX_SAME_OPEN"||reason=="LEGACY_ACTIVE"||reason=="INVERSE_GAP_BLOCK")continue;
       ErlSignal sig=g_histSignals[i];AxTrade t;ZeroMemory(t);
       t.signalTime=sig.entryTime;t.availableTime=sig.availableTime;t.entryTime=sig.availableTime;
       t.entryClock="SCHEDULED_AVAILABLE_TIME";t.localTime=t.entryTime;

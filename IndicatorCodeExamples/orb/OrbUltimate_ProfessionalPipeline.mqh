@@ -280,7 +280,8 @@ bool OrbProHas(ulong positionId){return positionId>0&&GlobalVariableCheck(OrbPro
 void OrbProDelete(ulong positionId)
 {
    string fields[]={"entry","sl","tp","half","dir","openTs","signalTs","regime","pipMode","pipValue","targetLeg","hcLeg",
-      "mfePips","maePips","mfeMoney","maeMoney","mfePx","maePx","mfeTs","maeTs","halfDone","beDone"};
+      "mfePips","maePips","mfeMoney","maeMoney","mfePx","maePx","mfeTs","maeTs","halfDone","beDone",
+      "endTs","bestHigh","bestLow","dynamicBar","revSeen","revState","revPending","revCfg"};
    for(int i=0;i<ArraySize(fields);i++)GlobalVariableDel(OrbProPlanKey(positionId,fields[i]));
 }
 void OrbProStorePlan(ulong ticket,int dir,double entry,double sl,double tp,double halfTrigger,datetime signalTime,int regimeBucket)
@@ -298,6 +299,7 @@ void OrbProStorePlan(ulong ticket,int dir,double entry,double sl,double tp,doubl
    }
    OrbProSet(positionId,"entry",entry);OrbProSet(positionId,"sl",sl);OrbProSet(positionId,"tp",tp);OrbProSet(positionId,"half",halfTrigger);
    OrbProSet(positionId,"dir",dir);OrbProSet(positionId,"openTs",openTime);OrbProSet(positionId,"signalTs",signalTime);
+   OrbProSet(positionId,"endTs",g_tradeEndServer);
    OrbProSet(positionId,"regime",regimeBucket);OrbProSet(positionId,"pipMode",g_rtPipSlMode?1:0);OrbProSet(positionId,"pipValue",g_rtPipSlPips);
    OrbProSet(positionId,"targetLeg",RuntimeTargetLeg());OrbProSet(positionId,"hcLeg",RuntimeHalfBeLeg());
    OrbProSet(positionId,"mfePips",0);OrbProSet(positionId,"maePips",0);OrbProSet(positionId,"mfeMoney",0);OrbProSet(positionId,"maeMoney",0);

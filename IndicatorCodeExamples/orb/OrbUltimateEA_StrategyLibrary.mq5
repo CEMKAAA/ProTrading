@@ -13,7 +13,8 @@
 #include "NasUltimate_Core.mqh"
 #include "TradeCalendarMatrix.mqh"
 #include "AuditTradeCsv.mqh"
-#define ORB15_BUILD "2026-10-03.v6.93-audit-batch"
+#include "OrbPositionPolicy.mqh"
+#define ORB15_BUILD "2026-10-05.v6.94-position-policy"
 
 enum ORB_SESSION_PROFILE
 {
@@ -2586,6 +2587,7 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
       OrbStrategyPresetSyncEdits();return true;
    }
    if(!TCalStrategyApplyText(TCalStrategyOffText()))return false;
+   OrbPositionDefaults(g_orbPositions);
    if(!SetRuntimeInverseMaxGapPct(100.0))return false;
    g_rtCustomR=0.0;
    g_orbStrategyTimezone=0; OrbClockUseSaved(0,0,0,0); // Preserve built-in research defaults.
@@ -2616,6 +2618,7 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
 bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)
 {
    if(OrbUserPreset(p))return OrbUserMatches(p);
+   if(!OrbPositionIsDefault(g_orbPositions))return false;
    if(MathAbs(g_rtInverseMaxGapPct-100.0)>0.000001)return false;
    if(!TCalStrategyMatchesText(TCalStrategyOffText()))return false;
    if(MathAbs(OrbBrokerOffsetHours())>0.0000001||OrbBrokerClockKey()!="")return false;
@@ -3529,7 +3532,8 @@ void OrbTesterAudit_WriteDeal(const MqlTradeTransaction &trans, const MqlTradeRe
 //=========================================================================
 //  POSITION HELPERS
 //=========================================================================
-bool IsOwnPosition(){return PositionGetString(POSITION_SYMBOL)==_Symbol&&MagicOwned((long)PositionGetInteger(POSITION_MAGIC));}
+bool IsOwnPosition(){return PositionGetString(POSITION_SYMBOL)==_Symbol&&MagicOwned((long)PositionGetInteger(POSITION_MAGIC))
+   &&(g_orbManagedTicket==0||(ulong)PositionGetInteger(POSITION_TICKET)==g_orbManagedTicket);}
 bool OwnPositionExists(){for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsOwnPosition())return true;}return false;}
 int OwnPositionCount(){int c=0;for(int i=PositionsTotal()-1;i>=0;i--){ulong t=PositionGetTicket(i);if(t==0||!PositionSelectByTicket(t))continue;if(IsOwnPosition())c++;}return c;}
 void CloseAllOwn(string reason="close_all")
@@ -5492,6 +5496,8 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    if(res.invalidReason=="INVERSE_GAP_BLOCK")return res;
    if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
    if(g_rtInvertMode){res.valid=false;res.invalidReason="INVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
+   if(g_orbPositions.reverse&&forcedExitTime>sigTime)
+   {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
    ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
@@ -5784,6 +5790,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    key+="|g_rtNasFlowVolumeMultiplier="+AuditMemoPrice(g_rtNasFlowVolumeMultiplier);
    key+="|g_rtNasActiveSignalLookbackMinutes="+(string)g_rtNasActiveSignalLookbackMinutes;
    key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
+   key+=OrbPositionMetricMeta(g_orbPositions);
    key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
    key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
    key+=OrbBrokerClockKey();
@@ -6243,6 +6250,7 @@ int ProcessHistoricalPrepDay(const int back)
    key+="|g_rtNasFlowVolumeMultiplier="+AuditMemoPrice(g_rtNasFlowVolumeMultiplier);
    key+="|g_rtNasActiveSignalLookbackMinutes="+(string)g_rtNasActiveSignalLookbackMinutes;
    key+="|g_rtNasOppositeExitWaitMinutes="+(string)g_rtNasOppositeExitWaitMinutes;
+   key+=OrbPositionMetricMeta(g_orbPositions);
    key+="|g_rtRiskPerTradePct="+AuditMemoPrice(g_rtRiskPerTradePct);
    key+="|g_rtVolumeMultiplier="+AuditMemoPrice(g_rtVolumeMultiplier);
    key+=OrbBrokerClockKey();
@@ -6511,6 +6519,9 @@ bool FindNewDayAcceptedReverseExit(const OrbWindowSignal &signals[],datetime aft
                                     datetime limitTime,datetime &exitTime,string &exitDetail)
 {
    exitTime=0;exitDetail="";
+   if(g_orbPositions.reverse)
+      return FindOrbTimedReverseExit(signals,afterTime,tradeDirection,limitTime,exitTime,exitDetail);
+   if(!g_orbPositions.nextDay)return false;
    string opposite=(tradeDirection=="BUY"?"SELL":"BUY");
    datetime localEntry=ServerToSessionLocal(afterTime);
    MqlDateTime entryDt;TimeToStruct(localEntry,entryDt);
@@ -6530,6 +6541,25 @@ bool FindNewDayAcceptedReverseExit(const OrbWindowSignal &signals[],datetime aft
       return true;
    }
    return false;
+}
+
+bool FindOrbTimedReverseExit(const OrbWindowSignal &signals[],datetime opened,string direction,
+                            datetime through,datetime &exitAt,string &detail)
+{
+   exitAt=0;detail="";
+   datetime eligible=opened+(datetime)(g_orbPositions.waitMinutes*60);
+   string state="",opposite=direction=="BUY"?"SELL":"BUY";
+   for(int i=FirstOrbSignalAfter(signals,opened);i<ArraySize(signals);i++)
+   {
+      datetime at=signals[i].availableTime;if(at>through)break;
+      if(at<=eligible){state=signals[i].executionDirection;continue;}
+      if(state==opposite&&eligible<=through){exitAt=eligible;break;}
+      if(signals[i].executionDirection==opposite){exitAt=at;break;}
+      state=signals[i].executionDirection;
+   }
+   if(exitAt==0&&state==opposite&&eligible<=through)exitAt=eligible;
+   if(exitAt>0)detail="reverse_wait="+DurationMinutesText(g_orbPositions.waitMinutes);
+   return exitAt>0;
 }
 
 bool FindFilteredWindowExit(const OrbWindowSignal &signals[],datetime afterTime,string tradeDirection,
@@ -6663,6 +6693,7 @@ bool EnsureOrbAuditHistoryCoverage(int days,string &detail,bool &hardBlocked)
 void OrbResetHistoricalStats()
 {
    AxReset();
+   ArrayFree(g_orbPositionReservations);
    g_histAuditRunning=false;
    g_histAuditStage="";
    g_histAuditTotalDays=RuntimeHistoricalDays();
@@ -6817,11 +6848,21 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
          forcedExitOutcome=g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT";
       }
       datetime newDayReverseExitAt=0;string newDayReverseDetail="";
-      FindNewDayAcceptedReverseExit(g_histAcceptedSignals,entryT,execDir,g_histRunNow,newDayReverseExitAt,newDayReverseDetail);
+      datetime reverseOpened=g_orbPositions.reverse?OrbSignalAvailableTime(entryT):entryT;
+      FindNewDayAcceptedReverseExit(g_histAcceptedSignals,reverseOpened,execDir,g_histRunNow,newDayReverseExitAt,newDayReverseDetail);
       if(newDayReverseExitAt>0&&(forcedExitAt<=0||newDayReverseExitAt<forcedExitAt))
       {forcedExitAt=newDayReverseExitAt;forcedExitOutcome="NEW_DAY_REVERSE_EXIT";}
+      int positionCap=OrbPositionAuditCap(OrbSignalAvailableTime(entryT));
+      if(g_orbPositions.independent&&InpExecutionMode!=ORB_EXEC_SINGLE)positionCap=-1;
+      if(positionCap>0)
+      {
+         g_histFiltered++;
+         g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
+         return;
+      }
       HistResult sim=OrbMemoLifecycle(entryT,te,g_histRunNow,entry,NormalizePrice(sl),isBuy,tp1,tp2,tp3,RuntimeHalfBeLeg(),simEnd,
             forcedExitAt,forcedExitOutcome);
+      if(positionCap<0){sim.valid=false;sim.invalidReason="POSITION_CAP_DATA";}
       if(!TCalAllows(ServerToSessionLocal(AxEntryAt(sim.entryTime,OrbSignalAvailableTime(entryT)))))
       {
          g_histFiltered++;
@@ -6841,7 +6882,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       if(nasOppositeExitAt>0&&(referenceExit<=0||nasOppositeExitAt<referenceExit))
       {referenceExit=nasOppositeExitAt;referenceOutcome=g_rtNasAdditionalExit?"NAS_ADDITIONAL_EXIT":"NAS_OPPOSITE_EXIT";}
       datetime referenceReverse=0;string referenceDetail="";
-      FindNewDayAcceptedReverseExit(g_regimeReferenceSignals,entryT,execDir,g_histRunNow,referenceReverse,referenceDetail);
+      FindNewDayAcceptedReverseExit(g_regimeReferenceSignals,reverseOpened,execDir,g_histRunNow,referenceReverse,referenceDetail);
       if(referenceReverse>0&&(referenceExit<=0||referenceReverse<referenceExit))
       {referenceExit=referenceReverse;referenceOutcome="NEW_DAY_REVERSE_EXIT";}
       HistResult referenceSim=sim;
@@ -6882,6 +6923,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
          return;
       }
       if(!OrbMlHistoryAllow(sigT,dir,hi,lo,oe,sim)){g_histFiltered++;return;}
+      OrbPositionReserve(isBuy?1:-1,sim.valid,sim.outcome=="open"?0:sim.exitTime);
       OrbMlCapture(sigT,entryT,dir,hi,lo,oe,sim);
       if(finalOutcome)
       {
@@ -7632,7 +7674,7 @@ void UpdateDashboard()
 
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
-   OrbUserDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+400,false,!g_orbMoneyRisk); OrbClockUiDraw();
+   OrbUserDraw();OrbPositionDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+400,false,!g_orbMoneyRisk); OrbClockUiDraw();
    TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
@@ -8410,7 +8452,7 @@ void ApplyCloseBasedExit(double bid,double ask)
 //=========================================================================
 //  TRADE MANAGEMENT
 //=========================================================================
-void ManagePositions()
+void ManagePositionScope()
 {
    if(g_tradeDir==0||!OwnPositionExists())
    {
@@ -8511,6 +8553,7 @@ void ManagePositions()
 //=========================================================================
 //  MAIN SIGNAL PIPELINE — uses g_rtSignalTf
 //=========================================================================
+#include "OrbPositionRuntime.mqh"
 void SetRetestPending(string dir,datetime bt,double breakoutClose,string context,datetime gateAvailable=0)
 {
    ClearImbalanceState("retest_selected");
@@ -8637,7 +8680,7 @@ bool ProcessNasPending()
       ClearNasPending("expired");
       return false;
    }
-   if(OwnPositionExists()||g_orbBridgePlanActive)
+   if(!g_orbPositions.independent&&!g_orbPositions.reverse&&(OwnPositionExists()||g_orbBridgePlanActive))
    {
       string reverseDetail="";
       string pendingExecDir=EffectiveOrbDirection(g_nasPendingDir);
@@ -8756,8 +8799,12 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       Audit("bridge_only_shape_block",execDir,0,entry,sl,0,"bridge-only requires a fixed TP because no native position exists to drive dynamic/time exits "+ExitDebugConfig());
       return false;
    }
+   OrbPositionObserve(execDir,OrbSignalAvailableTime(signalBar));
+   OrbPositionManageReverse();
+   if(g_orbPositions.independent&&!OrbPositionNativeCompatible())
+   {g_lastExecStatus="INDEPENDENT_REQUIRES_NATIVE_HEDGE_SINGLE_PUB_OFF";return false;}
    bool hasActiveLifecycle=(OwnPositionExists()||g_orbBridgePlanActive);
-   if(hasActiveLifecycle)
+   if(hasActiveLifecycle&&!g_orbPositions.independent)
    {
       datetime candidateAvailable=MathMax(OrbSignalAvailableTime(signalBar),TimeCurrent());
       string reverseDetail="";
@@ -8777,6 +8824,12 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       }
       ClearNewDayReverseRetry("close_complete");
       entryDetail+=(entryDetail==""?"":" ")+"new_day_reverse=1 "+reverseDetail;
+   }
+   if(g_orbPositions.independent)
+   {
+      int slots=InpExecutionMode==ORB_EXEC_PARTIAL_3LEG?3:1;
+      if(OrbPositionNativeCount()+slots>g_orbPositions.maxSameOpen)
+      {g_lastExecStatus="MAX_OPEN";return false;}
    }
    // ML only vetoes a new entry, after any required reverse-position closure.
    // No publishing or native order is allowed beyond a rejected gate.
@@ -8858,6 +8911,18 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
    }
    if(opened&&FixedReferenceRiskMode())
    {
+      // A per-trade risk check must not include or liquidate older tickets.
+      if(g_orbPositions.independent)
+      {
+         ulong filled=trade.ResultOrder();
+         if(filled==0||!PositionSelectByTicket(filled)||!IsOwnPosition())
+         {
+            g_lastExecStatus="FIXED_RISK_FILL_TICKET_UNAVAILABLE";
+            Audit("fixed_risk_ticket_data",execDir,0,entry,sl,planTp,"No older position may be liquidated by this check");
+            return false;
+         }
+         g_orbManagedTicket=filled;
+      }
       string fixedRiskDetail="";
       if(!ValidateFixedReferencePostFill(fixedRiskDetail))
       {
@@ -8865,6 +8930,7 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
          Audit("fixed_risk_post_fill_block",execDir,0,entry,sl,planTp,fixedRiskDetail);
       }
       else Audit("fixed_risk_post_fill_ok",execDir,0,entry,sl,planTp,fixedRiskDetail);
+      g_orbManagedTicket=0;
    }
    if(opened)
    {
@@ -8919,6 +8985,7 @@ int OrbSessionDayKeyAt(datetime value)
 bool IsAcceptedNewDayReverseCandidate(string execDir,datetime candidateAvailable,string &detail)
 {
    detail="";
+   if(g_orbPositions.independent||!g_orbPositions.nextDay||g_orbPositions.reverse)return false;
    int candidateDir=(execDir=="BUY"?1:(execDir=="SELL"?-1:0));
    int activeDir=CurrentOrbLifecycleDirection();
    datetime activeSince=CurrentOrbLifecycleStartTime();
@@ -9177,6 +9244,7 @@ bool CloseNasManagedLifecycle()
 
 bool ProcessNasOppositeExit()
 {
+   if(g_orbPositions.independent)return false; // The ticket-scoped manager handles NAS exits.
    if(!g_nasManagedLifecycle)return false;
    if(g_nasManagedOppositeAt>0&&g_nasManagedOppositeAt<=g_nasManagedStartAt)
    {
@@ -9346,6 +9414,7 @@ void TryOpenSignal()
 {
    if(!g_rtEaEnabled)return;if(!BuildOrb())return;
    if(!StartupOrbReplayGuardAllows())return;
+   OrbPositionManageReverse();
    if(ProcessNewDayReverseRetry())return;
    if(!EntryWindowAllowsAt(TimeCurrent()))
    {
@@ -9432,7 +9501,8 @@ void TryOpenSignal()
    string newDayReverseDetail="";
    bool newDayReverse=hasActiveLifecycle
       &&IsAcceptedNewDayReverseCandidate(execDir,OrbSignalAvailableTime(bt),newDayReverseDetail);
-   if((InpOneTradePerNyDay&&g_tradeTaken&&!newDayReverse)||(hasActiveLifecycle&&!newDayReverse))
+   if((InpOneTradePerNyDay&&g_tradeTaken&&!newDayReverse)
+      ||(!g_orbPositions.independent&&hasActiveLifecycle&&!newDayReverse&&!g_orbPositions.reverse))
    {
       g_lastExecStatus="ACCEPTED_ALREADY_ACTIVE";
       Audit("accepted_signal_while_active",execDir,0,sc,0,0,modernDetail);
@@ -9560,6 +9630,7 @@ int OnInit()
    g_btFillMode=InpBacktestFillMode;g_btSameBarPolicy=InpBacktestSameBarPolicy;g_btNativeParity=InpBacktestNativeParity;
    g_btSpreadPts=InpBacktestSpreadPts>0?InpBacktestSpreadPts:(double)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
    g_btSlippagePts=InpBacktestSlippagePts;g_btCommissionPerLot=InpBacktestCommissionPerLot;
+   OrbPositionLoad();
    OrbStrategyPresetRestore();
    OrbMlInit();
    OrbStrategyPresetBuildMatches("");
@@ -9720,6 +9791,8 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       UpdateDashboard();ChartRedraw(0);return;
    }
    if(id!=CHARTEVENT_OBJECT_CLICK)return;
+   if(OrbPositionEvent(sparam))
+   {ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;}
    if(sparam==PREFIX+"BTN_NATIVE_BALANCE")
    {
       bool applied=NativeBalanceApply(ObjectGetString(0,PREFIX+"EDIT_NATIVE_BALANCE",OBJPROP_TEXT));

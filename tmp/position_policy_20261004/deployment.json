@@ -1,0 +1,361 @@
+﻿{
+    "behavior":  "PASS",
+    "files":  [
+                  {
+                      "family":  "orb",
+                      "name":  "AuditKivancExport.mqh",
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditKivancFeatures.mqh",
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditMemoIndex.mqh",
+                      "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditQuantFeatures.mqh",
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditSignalFeatures.mqh",
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditTickReadGuard.mqh",
+                      "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditTradeCsv.mqh",
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "AuditTradeCsvAdapter.mqh",
+                      "sha256":  "3B9EDB4FAF42305CFD98F27E6469BD3F81DEBFF2FE6301069F26642AD29E7FC4"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "DailyTradeQuota.mqh",
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "NasUltimate_Core.mqh",
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "NativeRiskBalance.mqh",
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbAdvancedAuditEngine.mqh",
+                      "sha256":  "944DC0AAFC521113537A5424E4852911F1898F9222EF089A212FF6DDD24207CB"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbAuditRamCache.mqh",
+                      "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbBrokerClockProfiles.mqh",
+                      "sha256":  "617CF3B50D555E6F703F14BA8A34416774A67B7C039D3C1FF4CB6DD7F5F058CE"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbBrokerTimezone.mqh",
+                      "sha256":  "957A226AC54A2F8A92699C08CE2ED5C46887FC5A5282C1EC41AE589008C63D5D"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbClockDashboard.mqh",
+                      "sha256":  "3BC455829E2609973CB96F921191C5F1FA17F32FBEB5F0C6CDE444B027158992"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbCustomRPicker.mqh",
+                      "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbMoneyRisk.mqh",
+                      "sha256":  "ED736D13AC6D0E82161D11A237EFC625AAECE2C22DF81EA00D8A05AD9D2E8F4F"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbPositionPolicy.mqh",
+                      "sha256":  "311CA73BA3169C00FB6A95EC91F4FD4DF035F4B7023414A40EBAE7C940804CC9"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbPositionRuntime.mqh",
+                      "sha256":  "BB5ED402593A30D9D3ECFFE6D0BB40CE019B5600DF154E6EFB5E7106C6B42632"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbReplayMemoEpoch.mqh",
+                      "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyCampaignModels.mqh",
+                      "sha256":  "CB7782DF62E25DEA1C31218A0794B7F85E577CD9FD0C953CA13CB89E9015A075"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyCampaignRegistry.mqh",
+                      "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyLeaderboard.mqh",
+                      "sha256":  "4A2150E3D695FDF61C7B15B848DCCDA18BA9CA8875D78BB2F4C95915B4DB41A9"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyLeaderboardData.mqh",
+                      "sha256":  "D28D17B82E769604FE36A4640A2F6677D5754BE6A266822573FC68DC3B0D3133"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyLeaderboardFiveYear.mqh",
+                      "sha256":  "72A43B364FC328AD7CF30C48EFC9653B7B43FABF41291F16393F316E5A6303A8"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyMLConfig.mqh",
+                      "sha256":  "2A8A0445F6BFB461ECF19796DA98F207DE13A7C3D8D073DB041FA9857E19B2ED"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyMLCore.mqh",
+                      "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyMLHistory.mqh",
+                      "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyMLJobs.mqh",
+                      "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyMLPipeline.mqh",
+                      "sha256":  "1D035BBA91FFE8304AAFB305C3BD93B154BAC5A853661F8E58334D301960768B"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyModelSlot.mqh",
+                      "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyPresetLibrary.mqh",
+                      "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyR7Core.mqh",
+                      "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyR7Runtime.mqh",
+                      "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyRegimeLeaderboard.mqh",
+                      "sha256":  "36EFCC535A2B5CE58E83F4C809E8F08D1373C66A6DA684D172C68732870CFBF7"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyUserContract.mqh",
+                      "sha256":  "BFB68DB44C8C98411FF94599BF16C4B6CC6F04855C188657D83C02BE7793E8FF"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyUserLibrary.mqh",
+                      "sha256":  "81553CBF1FD188FCA6B4A032CED4C02B0D14F570D49C8AC084CF9C418BD24EDE"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbStrategyUserMetrics.mqh",
+                      "sha256":  "E29FAC89FE0BAB0BCE51BE2201F8BA94751942986C0D6610B29C60649F331BFB"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbUltimateEA_StrategyLibrary.ex5",
+                      "sha256":  "EBCD315AC6624AF15E1F500F8CEA29DEC76EF905368E7D0BB067B76D3542617B"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbUltimateEA_StrategyLibrary.mq5",
+                      "sha256":  "BED6D766D002722AB5D6E6EF2F0B485C3CF5454745EA795138A23F1A92BF60BC"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbUltimate_ProfessionalPipeline.mqh",
+                      "sha256":  "C20C93DFC63838388EA38B3418EBBC70C5B9E8DA3F5F21A696CA1400BFD61BBD"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "OrbUltimate_RegimeMatrix.mqh",
+                      "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "ResearchFiveYearData.mqh",
+                      "sha256":  "C7821EC77E64D6496B802D8CFBF3A3EB23ADD4F2F5ED43786E086FF3265A5EB6"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "TradeCalendarMatrix.mqh",
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A"
+                  },
+                  {
+                      "family":  "orb",
+                      "name":  "TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "AuditKivancExport.mqh",
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "AuditKivancFeatures.mqh",
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "AuditQuantFeatures.mqh",
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "AuditSignalFeatures.mqh",
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "AuditTradeCsv.mqh",
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "AuditTradeCsvAdapter.mqh",
+                      "sha256":  "9DF4A7B3ECE00A3DA0F5C49CE1512A429DEE90F26854295BDF07A8921A5B8240"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "DailyTradeQuota.mqh",
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqAuditQuoteCache.mqh",
+                      "sha256":  "0F4305FFEF0E43BCCEEF29956E9F48D6E36B9B8C29F6422F31548568424784F7"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqDashboardFit.mqh",
+                      "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqImagePresets.mqh",
+                      "sha256":  "8AFC1D468129F6F67B00B4BE3C44ABCB5F92EC3CB34A66C2BEEE504923E3B4A7"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqNarrativeMacroRegime.mqh",
+                      "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqNarrativeMacroRegimeFilter.mqh",
+                      "sha256":  "FC4656C522B991A367ADD4F401BC90E47F845ECE0C70AB47F37951449B81386B"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqNarrativeSol_Advanced.ex5",
+                      "sha256":  "58E913F491B8CE11044A8E42B3290B0A8185DADF488F169A213B7CB0FF887E82"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqNarrativeSol_Advanced.mq5",
+                      "sha256":  "D9A7CEEDB32B5B44FF6668C2CA3A60569002375B0D06EA6F12F8435439F07EEC"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqROptions.mqh",
+                      "sha256":  "8AD32908D817778510F89E69EC023261AAE45FBB1651356FF71755245A070BDF"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqSolAdvancedNas.mqh",
+                      "sha256":  "C4C53FCD1F0DAD3B7D2F15F8381D8BF917C9D5B302DBF397D44D2416160C90DF"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "LiqStrategyLibrary.mqh",
+                      "sha256":  "278781709AA5E91A4A8A174A85840996649C789B2E696F22E68958C337B342C9"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "NasUltimate_Core.mqh",
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "NativeRiskBalance.mqh",
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "ResearchFiveYearData.mqh",
+                      "sha256":  "64D3CDED9D3D73A0568DA8DBA97C76B10868F328D3CD43E83CA66FAB20FE1827"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "TradeCalendarMatrix.mqh",
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A"
+                  },
+                  {
+                      "family":  "SolAdvanced",
+                      "name":  "TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E"
+                  }
+              ],
+    "maReverseReference":  "2021367C1F71FA9AEBD9688F93ACAEDF6378BF7779CBAFCA06898E9D179F90AD",
+    "schema":  1,
+    "maCapacityReference":  "714B24965B31B50F24402A22922754F57E39C5195B7409C529464536B1987E45",
+    "defaultReplay":  "PASS",
+    "checkedAt":  "2026-10-05T01:13:58.8508254+03:00",
+    "deployedAt":  "2026-10-05T01:16:26.0823334+03:00"
+}

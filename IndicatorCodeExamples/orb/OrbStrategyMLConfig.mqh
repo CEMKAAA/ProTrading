@@ -225,6 +225,8 @@ string OrbMlConfiguration()
    OrbMlConfigField(value,"sim_spread",DoubleToString(g_btSpreadPts,16));
    OrbMlConfigField(value,"sim_slippage",DoubleToString(g_btSlippagePts,16));
    OrbMlConfigField(value,"sim_commission",DoubleToString(g_btCommissionPerLot,16));
+   if(!OrbPositionIsDefault(g_orbPositions))OrbMlConfigField(value,"position_policy",OrbPositionPack(g_orbPositions));
+   if(g_orbPositions.independent)OrbMlConfigField(value,"position_capacity","TOTAL_OPEN_V2");
    for(int i=0;i<ORB_REGIME_COUNT;i++)OrbMlConfigField(value,"reg"+(string)i,(string)g_regimeAllowed[i]);
    for(int i=0;i<ORB_RF_COUNT;i++)OrbMlConfigField(value,"rf"+(string)i,(string)g_orbRfBlocked[i]);
    OrbStrategyPreset p;

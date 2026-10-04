@@ -9,7 +9,106 @@ datetime g_maSeriesBar=0;
 bool g_maSeriesUncertain=false;
 int g_maSeriesLock=INVALID_HANDLE;
 string g_maSeriesFile="",g_maSeriesIdentity="";
+long g_maRecoveredMagic=0;
+int g_maRecoveredLock=INVALID_HANDLE;
+ulong g_maRecoveryRetryUntil=0,g_maRecoveryRetryAt=0;
 int g_maHistSeriesDir=0,g_maHistSeriesCount=0;
+
+bool MaRecoveredMagicOwned(long magic){return magic>0&&magic==g_maRecoveredMagic;}
+string MaIndependentStateIdentity(long magic)
+{return AccountInfoString(ACCOUNT_SERVER)+"/"+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"/"+_Symbol+"/"+(string)magic;}
+string MaIndependentStateFile(long magic)
+{
+   string identity=MaIndependentStateIdentity(magic);ulong hash=1469598103934665603;
+   for(int i=0;i<StringLen(identity);i++)hash=(hash^(ulong)StringGetCharacter(identity,i))*1099511628211;
+   return "EntryLabIndependent_"+(string)hash+".state";
+}
+bool MaRecoveryFamilyMagic(long magic)
+{
+   if(!RiskEnabled()&&!InpUseChartScopedMagic)return false;
+   return magic>0&&magic!=RuntimeMagic()&&magic/1000000==RuntimeMagic()/1000000;
+}
+bool MaRecoveryChartActive(long magic)
+{
+   for(long chart=ChartFirst();chart>=0;chart=ChartNext(chart))
+      if(chart!=ChartID()&&chart%1000000==magic%1000000&&ChartSymbol(chart)==_Symbol
+         &&StringFind(ChartGetString(chart,CHART_EXPERT_NAME),"EntryEngineLab")>=0)return true;
+   return false;
+}
+bool MaRecoveryStateValid(long magic)
+{
+   int h=FileOpen(MaIndependentStateFile(magic),FILE_READ|FILE_TXT|FILE_ANSI,0,CP_UTF8);
+   if(h==INVALID_HANDLE)return false;
+   string line=FileReadString(h);FileClose(h);string fields[];
+   if(StringSplit(line,'|',fields)!=6||fields[0]!="2"||fields[1]!=MaIndependentStateIdentity(magic)||fields[5]!="0")return false;
+   int dir=(int)StringToInteger(fields[2]),count=(int)StringToInteger(fields[3]);
+   long bar=StringToInteger(fields[4]);
+   return MathAbs(dir)<=1&&count>=0&&count<=1000&&bar>=0
+      &&(count==0||(dir!=0&&bar>0))&&fields[2]==(string)dir&&fields[3]==(string)count&&fields[4]==(string)bar;
+}
+string MaRecoveryKey()
+{return "ELREC."+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"."+(string)ChartID()+"."+(string)InpMagic;}
+bool MaRecoveryClaim(long magic)
+{
+   if(!MaRecoveryFamilyMagic(magic)||MaRecoveryChartActive(magic)||!MaRecoveryStateValid(magic))return false;
+   // Reuse the original owner's exclusive state lock, never claim an active instance.
+   int lock=FileOpen(MaIndependentStateFile(magic)+".lock",FILE_READ|FILE_WRITE|FILE_BIN);
+   if(lock==INVALID_HANDLE)return false;
+   if(!MaRecoveryStateValid(magic)){FileClose(lock);return false;}
+   g_maRecoveredMagic=magic;g_maRecoveredLock=lock;
+   return true;
+}
+void MaRecoveryRelease()
+{
+   if(g_maRecoveredLock!=INVALID_HANDLE)FileClose(g_maRecoveredLock);
+   g_maRecoveredLock=INVALID_HANDLE;g_maRecoveredMagic=0;
+}
+bool MaRecoverIndependentOwner()
+{
+   if(IsTesterMode()||!g_maIndependent||g_maRecoveredMagic>0)return true;
+   string key=MaRecoveryKey();
+   if(GlobalVariableCheck(key+".HI")&&GlobalVariableCheck(key+".LO"))
+   {
+      double hi=GlobalVariableGet(key+".HI"),lo=GlobalVariableGet(key+".LO");
+      if(hi>=0&&hi<=4294967295.0&&lo>=0&&lo<=4294967295.0&&hi==MathFloor(hi)&&lo==MathFloor(lo))
+      {
+         long saved=(long)(((ulong)hi<<32)|(ulong)lo);
+         if(MaRecoveryClaim(saved))return true;
+      }
+   }
+   long candidate=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      if(PositionGetTicket(i)==0||PositionGetString(POSITION_SYMBOL)!=_Symbol
+         ||StringFind(PositionGetString(POSITION_COMMENT),"MAI|")!=0)continue;
+      long magic=PositionGetInteger(POSITION_MAGIC);
+      if(!MaRecoveryFamilyMagic(magic)||MaRecoveryChartActive(magic)||!MaRecoveryStateValid(magic))continue;
+      int lock=FileOpen(MaIndependentStateFile(magic)+".lock",FILE_READ|FILE_WRITE|FILE_BIN);
+      if(lock==INVALID_HANDLE)continue;FileClose(lock);
+      if(candidate!=0&&candidate!=magic)
+      {Print("ENTRYLAB recovery ambiguous: multiple orphan instance owners; no ownership changed");return false;}
+      candidate=magic;
+   }
+   if(candidate==0)return true;
+   if(!MaRecoveryClaim(candidate))return false;
+   // Split the 64-bit magic: storing it directly as a terminal double loses bits.
+   if(GlobalVariableSet(key+".HI",(double)((ulong)candidate>>32))==0
+      ||GlobalVariableSet(key+".LO",(double)((ulong)candidate&0xFFFFFFFF))==0)
+   {MaRecoveryRelease();return false;}
+   GlobalVariablesFlush();
+   Print("ENTRYLAB recovered independent owner old_magic=",candidate," current_magic=",RuntimeMagic());
+   return true;
+}
+void MaRecoveryRetry()
+{
+   ulong now=GetTickCount64();
+   if(IsTesterMode()||!g_maIndependent||g_maRecoveredMagic>0||now>g_maRecoveryRetryUntil
+      ||now<g_maRecoveryRetryAt||!TerminalInfoInteger(TERMINAL_CONNECTED))return;
+   g_maRecoveryRetryAt=now+2000;
+   if(!MaRecoverIndependentOwner()){g_lastExecStatus="RECOVERY: owner ambiguous or locked";return;}
+   if(g_maRecoveredMagic>0)
+   {OrbProRestoreRuntimeState();LabNativeVisualRestore();DrawOrbLiveTradeLevels();MaRenderOpenCounter(true);}
+}
 
 datetime g_maHistOpenUntil[1000];
 int g_maHistOpenCount=0;
@@ -64,6 +163,7 @@ void MaRenderOpenCounter(bool force=false)
    string text=MaOpenCounterText(opened),name=PREFIX+"DASH_MA_OPEN";
    string tip="Instance-owned native MT5 positions: BUY="+(string)buys+", SELL="+(string)sells
       +". MAX SERIES is TOTAL simultaneously open positions, not consecutive signals. Applied limit="+(string)limit+".";
+   if(g_maRecoveredMagic>0)tip+=" Recovered previous chart magic="+(string)g_maRecoveredMagic+".";
    if(!force&&ObjectFind(0,name)>=0&&ObjectGetString(0,name,OBJPROP_TEXT)==text&&ObjectGetString(0,name,OBJPROP_TOOLTIP)==tip)return;
    CreateLabel("DASH_MA_OPEN",InpDashboardX+420,InpDashboardY+313,text,opened>=limit?clrTomato:C'80,255,180',8);
    ObjectSetString(0,name,OBJPROP_TOOLTIP,tip);
@@ -146,11 +246,8 @@ bool MaIndependentWrite()
 
 void MaIndependentIdentity()
 {
-   g_maSeriesIdentity=AccountInfoString(ACCOUNT_SERVER)+"/"+(string)AccountInfoInteger(ACCOUNT_LOGIN)
-      +"/"+_Symbol+"/"+(string)RuntimeMagic();
-   ulong hash=1469598103934665603;
-   for(int i=0;i<StringLen(g_maSeriesIdentity);i++)hash=(hash^(ulong)StringGetCharacter(g_maSeriesIdentity,i))*1099511628211;
-   g_maSeriesFile="EntryLabIndependent_"+(string)hash+".state";
+   g_maSeriesIdentity=MaIndependentStateIdentity(RuntimeMagic());
+   g_maSeriesFile=MaIndependentStateFile(RuntimeMagic());
 }
 
 bool MaIndependentOrdersPending()
@@ -187,13 +284,18 @@ bool MaIndependentAcquire()
       return true;
    }
    // Never silently invent a fresh allowance for existing independent exposure.
-   if(OwnPositionExists()||MaIndependentOrdersPending()){MaIndependentRelease();return false;}
+   bool currentExposure=false;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+      if(PositionGetTicket(i)>0&&PositionGetString(POSITION_SYMBOL)==_Symbol
+         &&PositionGetInteger(POSITION_MAGIC)==RuntimeMagic()){currentExposure=true;break;}
+   if(currentExposure||MaIndependentOrdersPending()){MaIndependentRelease();return false;}
    if(!MaIndependentWrite()){MaIndependentRelease();return false;}
    return true;
 }
 
 bool MaIndependentInit()
 {
+   g_maRecoveryRetryUntil=GetTickCount64()+120000;g_maRecoveryRetryAt=0;
    if(InpMaxConsecutiveEntries<1||InpMaxConsecutiveEntries>1000)return false;
    if(!g_maPresetModeRestored){g_maIndependent=InpIndependentEntries;g_maMaxConsecutive=InpMaxConsecutiveEntries;}
    string key=MaIndependentSettingsKey();
@@ -203,6 +305,7 @@ bool MaIndependentInit()
       if(packed<1||packed>1001000||(packed%1000000)<1||(packed%1000000)>1000)return false;
       g_maIndependent=packed>=1000000;g_maMaxConsecutive=packed%1000000;
    }
+   if(!MaRecoverIndependentOwner())return false;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong ticket=PositionGetTicket(i);if(ticket==0||!IsOwnPosition())continue;
@@ -227,9 +330,19 @@ bool MaIndependentInit()
 bool MaIndependentApply(bool enabled,int maximum)
 {
    if(maximum<1||maximum>1000)return false;
+   bool hadNative=OwnPositionExists();long previousOwner=g_maRecoveredMagic;
+   if(enabled)
+   {
+      string reason="";
+      if(!MaIndependentExecutionAllowed(reason)){g_lastExecStatus=reason;return false;}
+      bool prior=g_maIndependent;g_maIndependent=true;
+      bool recovered=MaRecoverIndependentOwner();g_maIndependent=prior;
+      if(!recovered){g_lastExecStatus="RECOVERY: owner ambiguous or locked";return false;}
+   }
+   bool adopting=enabled&&!hadNative&&g_maRecoveredMagic>0;
    if(enabled&&MaNativeOpenCount()>maximum)
    {g_lastExecStatus="MAX SERIES below current OPEN count; close exposure first";return false;}
-   if(enabled!=g_maIndependent&&(OwnPositionExists()||MaIndependentOrdersPending()
+   if(enabled!=g_maIndependent&&((OwnPositionExists()&&!adopting)||MaIndependentOrdersPending()
       ||g_maSeriesUncertain||g_orbBridgePlanActive||g_nasPending
       ||g_retestPending||g_imbPending||g_newDayReverseRetryPending))
    {g_lastExecStatus="MODE CHANGE: close existing lifecycle first";return false;}
@@ -238,10 +351,13 @@ bool MaIndependentApply(bool enabled,int maximum)
    {g_lastExecStatus=reason!=""?reason:"SERIES STATE LOCK/IO ERROR";return false;}
    if(GlobalVariableSet(MaIndependentSettingsKey(),(enabled?1000000:0)+maximum)<=0)return false;
    GlobalVariablesFlush();g_maIndependent=enabled;g_maMaxConsecutive=maximum;
+   g_maRecoveryRetryUntil=GetTickCount64()+120000;g_maRecoveryRetryAt=0;
    if(!enabled)MaIndependentRelease();
    // Do not replay the latest closed candle when changing the mode/allowance.
    g_lastSignalBarTime=iTime(_Symbol,g_rtSignalTf,1);
    g_lastCheckedSignalBarTime=g_lastSignalBarTime;
+   if(previousOwner!=g_maRecoveredMagic)
+   {OrbProRestoreRuntimeState();LabNativeVisualRestore();DrawOrbLiveTradeLevels();MaRenderOpenCounter(true);}
    return true;
 }
 
@@ -250,6 +366,7 @@ bool MaIndependentOpen(string direction,datetime signalBar,double entry,double s
    string reason="";
    if(!MaIndependentExecutionAllowed(reason)||!g_orbNativeWithBridgeOnly)
    {g_lastExecStatus=reason!=""?reason:"NATIVE OFF";return false;}
+   if(!MaRecoverIndependentOwner()){g_lastExecStatus="RECOVERY: owner ambiguous or locked";return false;}
    if(!MaIndependentAcquire()||signalBar<=g_maSeriesBar){g_lastExecStatus="SERIES STATE / DUPLICATE BLOCK";return false;}
    if(g_maSeriesUncertain){g_lastExecStatus="ORDER RECONCILIATION REQUIRED";return false;}
    if(OrbSignalAvailableTime(signalBar)<=g_instanceStartedAt){g_lastExecStatus="STALE SIGNAL BLOCK";return false;}

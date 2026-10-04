@@ -9,6 +9,27 @@ not the development source for this EA.
 Do not edit `C:\MT5\DEMO\MQL5\Experts` as a source repository. Changes here
 must be compiled, validated, and deliberately deployed before affecting MT5.
 
+## Position Controls (2026-10-05)
+
+Open NAS / POSITIONS: LEGACY/INDEPENDENT, MAX total open, MA REV EXIT, and REV WAIT
+HH:MM reuse the existing NAS policy and strategy serialization. Apply commits
+the current edit values. Legacy blocks a second position in either direction;
+Independent caps concurrently OPEN native positions in TOTAL (BUY + SELL),
+as in MaCross, not per direction. MAX=10 permits at most ten owned positions,
+e.g. six BUY plus four SELL. Existing MAX=0 retains its unlimited meaning;
+positive MAX values accept 1 through 1000. Hedging is required for Independent.
+
+MA REV EXIT only considers Liq signals after a position opened. During the
+wait the latest signal state wins: opposite closes at expiry, same-direction
+cancels the latch; a fresh opposite after expiry closes immediately.
+MA REV timing is checked against the actual MaCross `MaKernelExitAt` source.
+Reverse wait accepts 00:00 through 99:59; the NAS wait range is unchanged.
+No ORB next-day rule is added. Existing Opposite Signal target semantics remain a
+mandatory reverse target and reject incompatible policy combinations.
+New timed exits are MT5-native; listener protocols were not changed.
+The all-default regression scope and tests are recorded in
+`../../reports/orb_sol_position_policy_20261005.md`.
+
 ## Audit CSV
 
 Open TIME MATRIX and click EXPORT AUDIT CSV after the audit completes.

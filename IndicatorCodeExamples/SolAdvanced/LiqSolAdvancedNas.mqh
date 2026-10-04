@@ -9,7 +9,7 @@ struct LnNasPolicy
    int exitMode;             // 0 off, 1 opposite, 2 additional
    bool stateVolume,flowVolume,independent,reverseExit;
    double stateMultiplier,flowMultiplier;
-   int sensitivity,waitMinutes,entryAgeMinutes,maxSameOpen,reverseWaitMinutes;
+   int sensitivity,waitMinutes,entryAgeMinutes,maxSameOpen,reverseWaitMinutes; // MAX is total BUY + SELL.
 };
 LnNasPolicy g_lnNas,g_lnNasDraft;
 bool g_lnNasPanel=false,g_lnNasReady=false;
@@ -60,8 +60,6 @@ int g_lnNasOverlayFirst=-1,g_lnNasOverlayVisible=-1,g_lnNasOverlayWeeks=-1;
 ErlSignal g_lnNasPendingSignal;
 bool g_lnNasPending=false,g_lnNasAuditData=true;
 string g_lnNasDelayed[];
-bool g_lnNasSourceValid[],g_lnNasSourceClosed[];
-datetime g_lnNasSourceExitTime[];
 
 void LnNasDefaults(LnNasPolicy &p)
 {
@@ -81,8 +79,8 @@ bool LnNasValid(const LnNasPolicy &p)
       &&MathIsValidNumber(p.stateMultiplier)&&p.stateMultiplier>0&&p.stateMultiplier<=100
       &&MathIsValidNumber(p.flowMultiplier)&&p.flowMultiplier>0&&p.flowMultiplier<=100
       &&p.sensitivity>=1&&p.sensitivity<=100&&p.waitMinutes>=0&&p.waitMinutes<=1440
-      &&p.entryAgeMinutes>=0&&p.entryAgeMinutes<=10080&&p.maxSameOpen>=0&&p.maxSameOpen<=100
-      &&p.reverseWaitMinutes>=0&&p.reverseWaitMinutes<=1440;
+      &&p.entryAgeMinutes>=0&&p.entryAgeMinutes<=10080&&p.maxSameOpen>=0&&p.maxSameOpen<=1000
+      &&p.reverseWaitMinutes>=0&&p.reverseWaitMinutes<=5999;
 }
 bool LnNasUnpack(string line,LnNasPolicy &p)
 {
@@ -202,10 +200,17 @@ datetime LnNasReverseAt(const ErlSignal &raw[],int dir,datetime opened,datetime 
 {
    if(!g_lnNas.reverseExit)return 0;
    datetime eligible=opened+(datetime)(waitMinutes*60);
+   int state=0;
    for(int i=LnNasFirstRawAfter(raw,opened);i<ArraySize(raw);i++)
-      if(raw[i].availableTime>opened&&raw[i].availableTime<=through&&EffectiveTradeDir(raw[i].dir)==-dir)
-         return MathMax(raw[i].availableTime,eligible);
-   return 0;
+   {
+      datetime at=raw[i].availableTime;if(at>through)break;
+      int next=EffectiveTradeDir(raw[i].dir);
+      if(at<=eligible){state=next;continue;}
+      if(state==-dir&&eligible<=through)return eligible;
+      if(next==-dir)return at;
+      state=next;
+   }
+   return state==-dir&&eligible<=through?eligible:0;
 }
 datetime LnNasNextRaw(const ErlSignal &raw[],datetime after)
 {
@@ -251,7 +256,8 @@ bool LnNasNeedsExactTicks(const ErlSignal &signal,datetime exitAt)
 }
 datetime LnNasAuditExit(const ErlSignal &signal,const ErlSignal &raw[],datetime oldReverse)
 {
-   if(!LnNasActive())return oldReverse;
+   if(g_targetModel==ERL_TARGET_OPPOSITE_SIGNAL)return oldReverse;
+   if(!LnNasActive())return g_lnNas.reverseExit?oldReverse:0;
    int dir=EffectiveTradeDir(signal.dir);
    datetime reverse=LnNasReverseAt(raw,dir,signal.availableTime,TimeCurrent(),g_lnNas.reverseWaitMinutes);
    datetime nas=0;
@@ -266,19 +272,26 @@ datetime LnNasAuditExit(const ErlSignal &signal,const ErlSignal &raw[],datetime 
 }
 int LnNasAuditCap(int index)
 {
-   if(!g_lnNas.independent||g_lnNas.maxSameOpen==0)return 0;
+   if(!LnNasActive()||(g_lnNas.independent&&g_lnNas.maxSameOpen==0))return 0;
    int direction=EffectiveTradeDir(g_histSignals[index].dir),count=0;
    datetime at=g_histSignals[index].availableTime;
    for(int i=0;i<index;i++)
    {
-      if(EffectiveTradeDir(g_histSignals[i].dir)!=direction||(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="MAX_SAME_OPEN"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"))continue;
-      bool valid=g_invertMode?g_lnNasSourceValid[i]:g_histSignalValid[i];
-      bool closed=g_invertMode?g_lnNasSourceClosed[i]:g_histSignalClosed[i];
-      datetime exited=g_invertMode?g_lnNasSourceExitTime[i]:g_histSignalExitTime[i];
+      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="MAX_OPEN"
+         ||g_histSignalInvalidReason[i]=="MAX_SAME_OPEN"||g_histSignalInvalidReason[i]=="LEGACY_ACTIVE"||g_histSignalInvalidReason[i]=="DAILY_QUOTA")continue;
+      bool valid=g_histSignalValid[i],closed=g_histSignalClosed[i];
+      datetime exited=g_histSignalExitTime[i];
       if(!valid)return -1;
-      if(!closed||exited>=at)count++;
+      if(!closed||exited>at)
+      {
+         // An immediate causal reverse closes the old position before the new
+         // entry; its first executable exit tick can be later than bar time.
+         if(!g_lnNas.independent&&g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes==0
+            &&at>g_histSignals[i].availableTime&&EffectiveTradeDir(g_histSignals[i].dir)==-direction)continue;
+         count++;
+      }
    }
-   return count>=g_lnNas.maxSameOpen?1:0;
+   return count>=(g_lnNas.independent?g_lnNas.maxSameOpen:1)?1:0;
 }
 bool LnNasLiveAccept(ErlSignal &signal)
 {
@@ -296,8 +309,12 @@ bool LnNasLiveAccept(ErlSignal &signal)
          return false;
       }
    }
-   if(g_lnNas.independent&&g_lnNas.maxSameOpen>0&&LnNasOpenCount(dir)>=g_lnNas.maxSameOpen)
-   {g_lastBlock="MAX_SAME_OPEN";g_lnNasPending=false;return false;}
+   if(!LnNasCloseCausalReverse(signal.availableTime,dir,false))
+   {g_lastBlock="REVERSE_CLOSE_RETRY";return false;}
+   if(g_lnNas.independent&&g_lnNas.maxSameOpen>0&&LnNasOpenCount()>=g_lnNas.maxSameOpen)
+   {g_lastBlock="MAX_OPEN";g_lnNasPending=false;return false;}
+   if(!g_lnNas.independent&&LnNasOpenCount()>0)
+   {g_lastBlock="LEGACY_ACTIVE";g_lnNasPending=false;return false;}
    if(accepted>signal.availableTime)
    {
       if(TimeCurrent()-accepted>MathMax(180,2*PeriodSeconds(g_entryTf)))
@@ -305,6 +322,24 @@ bool LnNasLiveAccept(ErlSignal &signal)
       signal.availableTime=accepted;
    }
    g_lnNasPending=false;return true;
+}
+bool LnNasCloseCausalReverse(datetime signalAt,int direction,bool required)
+{
+   if(!required&&!g_lnNas.reverseExit)return true;
+   bool ok=true;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0||PositionGetString(POSITION_SYMBOL)!=_Symbol
+         ||!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC)))continue;
+      int dir=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;
+      if(dir==direction)continue;
+      datetime opened=(datetime)PositionGetInteger(POSITION_TIME);
+      if(signalAt<=opened)continue;
+      if(!required&&TimeCurrent()<opened+(datetime)(g_lnNas.reverseWaitMinutes*60))continue;
+      if(!trade.PositionClose(ticket)||trade.ResultRetcode()!=TRADE_RETCODE_DONE)ok=false;
+   }
+   return ok;
 }
 void LnNasRetryPending()
 {
@@ -336,7 +371,7 @@ void LnNasManageNative()
       datetime nas=LnNasExitAt(dir,opened,now,g_lnNas.waitMinutes);
       if((reverse>0&&reverse<=now)||(nas>0&&nas<=now))
       {
-         if(!trade.PositionClose(ticket))
+         if(!trade.PositionClose(ticket)||trade.ResultRetcode()!=TRADE_RETCODE_DONE)
             AuditWrite("nas_position_close_retry",(string)ticket,dir,0,0,0,0,
                "ret="+(string)trade.ResultRetcode());
          else AuditWrite("nas_position_close",(string)ticket,dir,0,0,0,0,
@@ -344,12 +379,12 @@ void LnNasManageNative()
       }
    }
 }
-int LnNasOpenCount(int dir)
+int LnNasOpenCount(int dir=0)
 {
    int n=0;for(int i=PositionsTotal()-1;i>=0;i--)
       if(PositionGetTicket(i)>0&&PositionGetString(POSITION_SYMBOL)==_Symbol
          &&IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC))
-         &&(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1)==dir)n++;
+         &&(dir==0||(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1)==dir))n++;
    return n;
 }
 
@@ -470,11 +505,11 @@ bool LnNasParseDecimal(string raw,double &value)
    if(raw==".")return false;
    value=StringToDouble(raw);return MathIsValidNumber(value);
 }
-bool LnNasParseDuration(string raw,int &minutes)
+bool LnNasParseDuration(string raw,int &minutes,int maximum=1440)
 {
    string parts[];if(StringSplit(raw,':',parts)!=2||StringLen(parts[1])!=2)return false;
-   int h=0,m=0;if(!LnNasParseDigits(parts[0],h)||!LnNasParseDigits(parts[1],m)||m>59||h>24)return false;
-   minutes=h*60+m;return minutes<=1440;
+   int h=0,m=0;if(!LnNasParseDigits(parts[0],h)||!LnNasParseDigits(parts[1],m)||m>59||h>99)return false;
+   minutes=h*60+m;return minutes<=maximum;
 }
 void LnNasDrawPanel()
 {
@@ -486,15 +521,16 @@ void LnNasDrawPanel()
    LnNasWidget("TITLE",OBJ_LABEL,x+12,y+9,w-60,20,"NAS FILTERS / POSITION POLICY",C'24,30,42');
    LnNasWidget("CLOSE",OBJ_BUTTON,x+w-40,y+5,30,22,"X",clrMaroon);
    int col=(w-30)/3;
-   LnNasWidget("HINT",OBJ_LABEL,x+12,y+30,w-24,18,"LEGACY OFF keeps the existing execution path. APPLY commits edits.",C'24,30,42');
+   LnNasWidget("HINT",OBJ_LABEL,x+12,y+30,w-24,18,"MAX = total BUY + SELL. OPEN "+(string)LnNasOpenCount()+"/"
+      +(g_lnNas.independent?(g_lnNas.maxSameOpen>0?(string)g_lnNas.maxSameOpen:"UNLIMITED"):"1"),C'24,30,42');
    LnNasWidget("MODE",OBJ_BUTTON,x+10,y+55,col-5,24,g_lnNasDraft.independent?"INDEPENDENT":"LEGACY",g_lnNasDraft.independent?on:off);
    LnNasWidget("GATE",OBJ_BUTTON,x+10+col,y+55,col-5,24,g_lnNasDraft.gate==1?"ENTRY GATE":g_lnNasDraft.gate==2?"STATE GATE":"GATE OFF",g_lnNasDraft.gate?on:off);
    LnNasWidget("EXIT",OBJ_BUTTON,x+10+2*col,y+55,col-5,24,g_lnNasDraft.exitMode==1?"OPP EXIT":g_lnNasDraft.exitMode==2?"ADD EXIT":"NAS EXIT OFF",g_lnNasDraft.exitMode?on:off);
    LnNasWidget("SV",OBJ_BUTTON,x+10,y+87,col-5,24,g_lnNasDraft.stateVolume?"STATE VOL ON":"STATE VOL OFF",g_lnNasDraft.stateVolume?on:off);
    LnNasWidget("FV",OBJ_BUTTON,x+10+col,y+87,col-5,24,g_lnNasDraft.flowVolume?"FLOW VOL ON":"FLOW VOL OFF",g_lnNasDraft.flowVolume?on:off);
-   LnNasWidget("REV",OBJ_BUTTON,x+10+2*col,y+87,col-5,24,g_lnNasDraft.reverseExit?"REVERSE ON":"REVERSE OFF",g_lnNasDraft.reverseExit?on:off);
+   LnNasWidget("REV",OBJ_BUTTON,x+10+2*col,y+87,col-5,24,g_lnNasDraft.reverseExit?"MA REV EXIT ON":"MA REV EXIT OFF",g_lnNasDraft.reverseExit?on:off);
    string ids[]={"SVM","FVM","SENS","AGE","WAIT","MAX","RWAIT"};
-   string labels[]={"State vol x","Flow vol x","Sensitivity","Entry age min","NAS wait HH:MM","MAX same open","Reverse wait HH:MM"};
+   string labels[]={"State vol x","Flow vol x","Sensitivity","Entry age min","NAS wait HH:MM","MAX total open","Reverse wait HH:MM"};
    string vals[]={DoubleToString(g_lnNasDraft.stateMultiplier,8),DoubleToString(g_lnNasDraft.flowMultiplier,8),
       (string)g_lnNasDraft.sensitivity,(string)g_lnNasDraft.entryAgeMinutes,LnNasDuration(g_lnNasDraft.waitMinutes),
       (string)g_lnNasDraft.maxSameOpen,LnNasDuration(g_lnNasDraft.reverseWaitMinutes)};
@@ -523,7 +559,7 @@ bool LnNasReadPanel(LnNasPolicy &candidate)
       ||!LnNasParseDigits(ObjectGetString(0,LnNasObject("AGE"),OBJPROP_TEXT),candidate.entryAgeMinutes)
       ||!LnNasParseDigits(ObjectGetString(0,LnNasObject("MAX"),OBJPROP_TEXT),candidate.maxSameOpen)
       ||!LnNasParseDuration(ObjectGetString(0,LnNasObject("WAIT"),OBJPROP_TEXT),candidate.waitMinutes)
-      ||!LnNasParseDuration(ObjectGetString(0,LnNasObject("RWAIT"),OBJPROP_TEXT),candidate.reverseWaitMinutes))return false;
+      ||!LnNasParseDuration(ObjectGetString(0,LnNasObject("RWAIT"),OBJPROP_TEXT),candidate.reverseWaitMinutes,5999))return false;
    return LnNasValid(candidate);
 }
 bool LnNasPanelEvent(int id,string object,long mx=0,double my=0)
@@ -588,6 +624,8 @@ bool LnNasPanelEvent(int id,string object,long mx=0,double my=0)
       &&(next.gate!=0||next.exitMode!=0||next.independent||next.reverseExit!=InpCloseOnReverse||next.reverseWaitMinutes>0)))
    {g_lnNasStatus="Filter/target/account combination unavailable";LnNasDrawPanel();return true;}
    if(!LiqLibraryCanApply()){g_lnNasStatus=g_liqLibraryStatus;LnNasDrawPanel();return true;}
+   if(next.independent&&next.maxSameOpen>0&&LnNasOpenCount()>next.maxSameOpen)
+   {g_lnNasStatus="MAX below current OPEN count; close exposure first";LnNasDrawPanel();return true;}
    LnNasPolicy previous=g_lnNas;g_lnNas=next;
    if(!LnNasSaveRuntime()){g_lnNas=previous;g_lnNasStatus="Settings save failed";LnNasDrawPanel();return true;}
    g_lnNasDraft=g_lnNas;LnNasInvalidate();g_lnNasStatus="Applied (NAS on chart TF; exits native MT5 only)";

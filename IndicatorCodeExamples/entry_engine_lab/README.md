@@ -227,9 +227,11 @@ Independent positions have separate entry/SL/TP segments keyed by MT5 position
 identifier, including simultaneous fills. Native closed-position arrows use
 actual net deal profit plus swap, commission and fee: green for positive, red
 for negative, neutral for flat. OPEN markers are gold, not a profit assertion.
-Closed geometry remains visible for at least one chart candle, up to the
-existing 20-candle segment convention; this visual width does not change
-actual fill or exit timestamps. An exit X marks the actual final deal price.
+Closed geometry remains readable until the next owned native entry, capped
+at 20 chart candles; a fast close does not collapse its reference lines.
+Native and historical caps use chart TF, not signal TF. This visual width
+does not change actual fill or exit timestamps. An exit X marks the actual
+final deal price. Simultaneous fills can share the same visual time group.
 
 Attach/restart restores owned native executions from account history within
 the selected audit window. Archived levels require available original order
@@ -238,3 +240,21 @@ Native visuals do not change simulated audit results, trading rules, risk,
 strategy files or listeners. Run `scripts/validate_entrylab_native_visuals.ps1`
 for the focused read-only native-history and chart-object regression. See
 `../../reports/entrylab_native_visuals_20261004.md` for verification scope.
+
+## Independent Owner Recovery (1.13)
+
+A new chart ID changes the chart-scoped magic. Independent startup/apply now
+recovers one unambiguous orphan EntryLab owner on the same account/server,
+symbol and input-magic family. Its original valid Independent state must
+exist and its exclusive state lock must be available. Active owners are
+never taken over; multiple orphan candidates fail closed without choosing
+one arbitrarily. Recovery retries briefly after attach for delayed account
+synchronization. Saved owner magics use exact split 64-bit values, not a
+lossy terminal double. The binding is instance-local, not a strategy field.
+
+The native OPEN counter and entry capacity include recovered plus current
+positions. Existing native TP/SL and position identifiers are unchanged;
+new entries retain the current chart's magic. The counter tooltip names the
+recovered owner. Historical audit O counts remain simulated open positions,
+not a claim about actual account positions. See
+`../../reports/entrylab_native_recovery_20261004.md` for focused verification.

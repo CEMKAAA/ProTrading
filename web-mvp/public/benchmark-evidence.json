@@ -1,0 +1,15 @@
+{
+ "source_report": "audit_acceleration_20261003.md",
+ "recorded_date": "2026-10-03",
+ "type": "internal engineering benchmark, not investment performance",
+ "assertions_passed": 270115,
+ "failed_assertions": 0,
+ "matching_chronological_trade_traces": 14177,
+ "workloads": [
+  {"family":"Entry Lab builtin","symbol":"XAUUSD","timeframe":"M1","window":"20W","previous_seconds":159.453,"accelerated_seconds":18.422,"speedup":8.66},
+  {"family":"Sol Advanced","symbol":"USDJPY","timeframe":"H1","window":"5Y","previous_seconds":38.453,"accelerated_seconds":7.109,"speedup":5.41},
+  {"family":"MaCross","symbol":"XAUUSD","timeframe":"M1","window":"20W","previous_seconds":149.563,"accelerated_seconds":24.671,"speedup":6.06}
+ ],
+ "conditions": "First audit with cold EA outcome cache and previously synchronized history. Network download time excluded.",
+ "limitations": ["Observed wall-clock samples, not confidence intervals", "Not exhaustive all-strategy/all-symbol validation", "Matching reference behavior does not prove all historical assumptions", "The final unchanged MaCross repeat did not improve", "The browser demonstration is a separate synthetic OHLC replay, not this benchmarked engine"]
+}

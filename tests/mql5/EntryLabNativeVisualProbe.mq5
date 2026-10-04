@@ -70,6 +70,45 @@ void VisualCheck(bool ok,string message)
 {
    g_visualChecks++;if(!ok){g_visualFailed++;FileWriteString(g_visualReport,"FAIL "+message+"\r\n");}
 }
+void VisualRecoveryState(long magic)
+{
+   int h=FileOpen(MaIndependentStateFile(magic),FILE_WRITE|FILE_TXT|FILE_ANSI,0,CP_UTF8);
+   if(h==INVALID_HANDLE){VisualCheck(false,"fixture state write");return;}
+   FileWriteString(h,"2|"+MaIndependentStateIdentity(magic)+"|-1|7|1791062400|0");FileClose(h);
+}
+void VisualRecoveryChecks()
+{
+   long original=RuntimeMagic(),old=original/1000000*1000000+777111,other=old+1;
+   string key=MaRecoveryKey();GlobalVariableDel(key+".HI");GlobalVariableDel(key+".LO");
+   VisualRecoveryState(old);VisualRecoveryState(other);
+   long own=g_visualPositions[0].magic,foreign=g_visualPositions[3].magic;
+   g_visualPositions[0].magic=old;g_visualPositions[3].magic=original+1000000;
+   g_maMaxConsecutive=3;
+   VisualCheck(MaNativeOpenCount()==2,"old chart magic is initially excluded");
+   VisualCheck(MaRecoverIndependentOwner()&&g_maRecoveredMagic==old,"unique orphan owner is recovered from exact state");
+   int buys=0,sells=0;
+   VisualCheck(MaNativeOpenCount(buys,sells)==3&&buys==1&&sells==2,"counter includes recovered and current exposure only");
+   VisualCheck(!MaOpenCapacityAllows(MaNativeOpenCount(),3),"recovered exposure consumes the live MAX limit");
+   MaRenderOpenCounter(true);
+   VisualCheck(ObjectGetString(0,PREFIX+"DASH_MA_OPEN",OBJPROP_TEXT)=="OPEN 3/3","dashboard recovered open count");
+   int locked=FileOpen(MaIndependentStateFile(old)+".lock",FILE_READ|FILE_WRITE|FILE_BIN);
+   VisualCheck(locked==INVALID_HANDLE,"recovered owner keeps its original exclusive lock");
+   if(locked!=INVALID_HANDLE)FileClose(locked);
+   MaRecoveryRelease();g_visualPositions[0].magic=own;
+   VisualCheck(MaRecoverIndependentOwner()&&g_maRecoveredMagic==old,"64-bit saved ownership restores even after old exposure is closed");
+   MaRecoveryRelease();GlobalVariableDel(key+".HI");GlobalVariableDel(key+".LO");g_visualPositions[0].magic=old;
+   locked=FileOpen(MaIndependentStateFile(old)+".lock",FILE_READ|FILE_WRITE|FILE_BIN);
+   VisualCheck(locked!=INVALID_HANDLE,"simulate a competing active owner");
+   VisualCheck(MaRecoverIndependentOwner()&&g_maRecoveredMagic==0&&MaNativeOpenCount()==2,"active owner is not stolen");
+   if(locked!=INVALID_HANDLE)FileClose(locked);
+   g_visualPositions[3].magic=other;
+   VisualCheck(!MaRecoverIndependentOwner()&&g_maRecoveredMagic==0,"multiple orphan owners fail closed without claiming either");
+   g_visualPositions[0].magic=own;g_visualPositions[3].magic=foreign;
+   GlobalVariableDel(key+".HI");GlobalVariableDel(key+".LO");
+   FileDelete(MaIndependentStateFile(old));FileDelete(MaIndependentStateFile(other));
+   FileDelete(MaIndependentStateFile(old)+".lock");FileDelete(MaIndependentStateFile(other)+".lock");
+   ObjectDelete(0,PREFIX+"DASH_MA_OPEN");
+}
 void OnStart()
 {
    if(StringFind(TerminalInfoString(TERMINAL_DATA_PATH),"orb_jp225_full_worker")<0)return;
@@ -89,6 +128,7 @@ void OnStart()
       g_visualPositions[i].entry=price+i;g_visualPositions[i].sl=price+i+(i==1?-5000:5000);
       g_visualPositions[i].tp=price+i+(i==1?50:-50);
    }
+   VisualRecoveryChecks();
    DrawOrbLiveTradeLevels();ChartRedraw();
    for(int i=0;i<3;i++)
    {
@@ -98,11 +138,18 @@ void OnStart()
       VisualCheck(ObjectGetInteger(0,base+"ARW",OBJPROP_COLOR)==clrGold,"open arrow is neutral, not a sell loss");
    }
    VisualCheck(ObjectFind(0,LabNativeVisualBase(g_visualPositions[3].id)+"ARW")<0,"foreign instance excluded");
+   ulong next=(ulong)990000005;
+   LabNativeVisualDraw(next,1,opened+300,opened,price,price-5000,price+50);
+   for(int i=0;i<3;i++)
+      VisualCheck(ObjectGetInteger(0,LabNativeVisualBase(g_visualPositions[i].id)+"ENTRY",OBJPROP_TIME,1)==opened+300,
+         "next native entry trims all preceding same-time positions");
+   VisualCheck(ObjectGetInteger(0,LabNativeVisualBase(next)+"ENTRY",OBJPROP_TIME,1)<=opened+300+20*60,
+      "M5 signal on M1 chart never extends to 100 chart bars");
    ulong winner=g_visualPositions[0].id;
    LabNativeVisualDraw(winner,-1,opened,opened-300,price,price+5000,price-50,opened+2,5,"[tp]");
    string base=LabNativeVisualBase(winner);ChartRedraw();
    VisualCheck(ObjectGetInteger(0,base+"ARW",OBJPROP_COLOR)==clrLime,"winning sell is green");
-   VisualCheck(ObjectGetInteger(0,base+"TP",OBJPROP_TIME,1)-ObjectGetInteger(0,base+"TP",OBJPROP_TIME,0)==60,"same-candle close has one displayed candle of geometry");
+   VisualCheck(ObjectGetInteger(0,base+"TP",OBJPROP_TIME,1)==opened+300,"fast close keeps readable geometry until next entry, not past it");
    VisualCheck(StringFind(ObjectGetString(0,base+"TXT",OBJPROP_TEXT),"SL=")>=0&&StringFind(ObjectGetString(0,base+"TXT",OBJPROP_TEXT),"TP=")>=0,"closed levels have numeric labels");
    g_visualPositions[0]=g_visualPositions[2];g_visualPositions[1]=g_visualPositions[3];ArrayResize(g_visualPositions,2);
    DrawOrbLiveTradeLevels();ChartRedraw();
@@ -112,6 +159,23 @@ void OnStart()
    VisualCheck(MathAbs(LabNativeDealNet(5,-1,-3,-2)+1)<1e-9,"profit includes swap, commission and fees");
    VisualCheck(LabNativeResultColor(0)==clrLightSteelBlue,"breakeven is neutral");
    g_visualFixture=false;DeleteByPrefix(PREFIX+"NATIVE_");
+   g_runtimeMagic=4000011026004638164;
+   VisualCheck(MaRecoverIndependentOwner(),"real account orphan ownership recovery is unambiguous");
+   int actual=MaNativeOpenCount();
+   FileWriteString(g_visualReport,"RECOVERY current_magic="+(string)RuntimeMagic()+" recovered_magic="+(string)g_maRecoveredMagic
+      +" native_open="+(string)actual+"\r\n");
+   int expected=0,oldCount=0;
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      if(PositionGetTicket(i)==0||PositionGetString(POSITION_SYMBOL)!=_Symbol)continue;
+      long magic=PositionGetInteger(POSITION_MAGIC);
+      if(magic==4000011026004262155){oldCount++;expected++;}
+      else if(magic==RuntimeMagic())expected++;
+   }
+   VisualCheck(actual==expected,"real counter includes original chart exposure and current chart fills");
+   if(oldCount>0)VisualCheck(g_maRecoveredMagic==4000011026004262155,"original user positions were actually recovered");
+   g_maMaxConsecutive=10;MaRenderOpenCounter(true);
+   VisualCheck(ObjectGetString(0,PREFIX+"DASH_MA_OPEN",OBJPROP_TEXT)=="OPEN "+(string)actual+"/10","real restored dashboard counter uses configured maximum");
    LabNativeVisualRestore();int count=ArraySize(g_labVisualPending),closed=0,positive=0,open=0;
    ulong ids[];ArrayCopy(ids,g_labVisualPending);
    for(int i=0;i<ArraySize(ids);i++)
@@ -147,8 +211,16 @@ void OnStart()
          +" entry="+DoubleToString(PositionGetDouble(POSITION_PRICE_OPEN),_Digits)+" tp="+DoubleToString(PositionGetDouble(POSITION_TP),_Digits)
          +" pnl="+DoubleToString(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP),2)+"\r\n");
    }
+   for(int i=0;i<ArraySize(g_labVisualEvents);i++)
+   {
+      string native=LabNativeVisualBase(g_labVisualEvents[i].id);
+      datetime at=g_labVisualEvents[i].opened,until=(datetime)ObjectGetInteger(0,native+"ENTRY",OBJPROP_TIME,1);
+      datetime nextEntry=LabNativeVisualNext(at);
+      VisualCheck(until>at&&until<=LabNativeVisualBarCap(at),"real native line span is bounded by 20 chart candles");
+      if(nextEntry>0)VisualCheck(until<=nextEntry,"real native line does not cross the next native entry");
+   }
    VisualCheck(closed>0&&positive>0,"real strategy history contains positive closes");
    FileWriteString(g_visualReport,"checked="+(string)g_visualChecks+" failed="+(string)g_visualFailed+" queued="+(string)count
       +" real_closed="+(string)closed+" positive="+(string)positive+" still_open="+(string)open+"\r\n");
-   FileClose(g_visualReport);DeleteByPrefix(PREFIX);ChartRedraw();
+   FileClose(g_visualReport);MaRecoveryRelease();DeleteByPrefix(PREFIX);ChartRedraw();
 }

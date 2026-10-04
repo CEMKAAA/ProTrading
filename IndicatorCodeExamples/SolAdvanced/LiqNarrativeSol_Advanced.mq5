@@ -14,7 +14,7 @@
 #include "TradeCalendarMatrix.mqh"
 #include "AuditTradeCsv.mqh"
 
-#define LN_BUILD "2026-10-03.sol-advanced-audit-batch"
+#define LN_BUILD "2026-10-05.sol-advanced-position-policy"
 #define LN_PREFIX "LIQNARRSOL_"
 #define LN_PERIOD_H90 ((ENUM_TIMEFRAMES)90)
 #define LN_H90_SECONDS 5400
@@ -3058,12 +3058,6 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
    ArrayResize(g_histSignalExecHalf, ArraySize(g_histSignals));
    ArrayResize(g_histSignalExitTime, ArraySize(g_histSignals));
    ArrayResize(g_histSignalExitReason, ArraySize(g_histSignals));
-   ArrayResize(g_lnNasSourceValid, ArraySize(g_histSignals));
-   ArrayResize(g_lnNasSourceClosed, ArraySize(g_histSignals));
-   ArrayResize(g_lnNasSourceExitTime, ArraySize(g_histSignals));
-   ArrayInitialize(g_lnNasSourceValid, false);
-   ArrayInitialize(g_lnNasSourceClosed, false);
-   ArrayInitialize(g_lnNasSourceExitTime, 0);
 
    ZeroMemory(g_hist);
    TCalReset();
@@ -3084,7 +3078,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
          g_histSignalExitTime[i]=0;g_histSignalExitReason[i]="DAILY_QUOTA";continue;
       }
       datetime nextSignalTime = NextOppositeSignalTime(exitSignals, g_histSignals[i].availableTime, g_histSignals[i].dir);
-      if(LnNasActive())nextSignalTime=LnNasAuditExit(g_histSignals[i],exitSignals,nextSignalTime);
+      nextSignalTime=LnNasAuditExit(g_histSignals[i],exitSignals,nextSignalTime);
       // Restore the full trace with terminal outcomes; never freeze DATA/OPEN.
       string simKey = SimCacheKey(g_histSignals[i], g_target, g_hc, g_targetModel, g_entryTf, nextSignalTime);
       double r = 0.0;
@@ -3099,7 +3093,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       if(capped!=0)
       {
          g_histSignalR[i]=0;g_histSignalClosed[i]=false;g_histSignalWon[i]=false;
-         g_histSignalValid[i]=false;g_histSignalInvalidReason[i]=capped>0?"MAX_SAME_OPEN":"MAX_DATA";
+         g_histSignalValid[i]=false;g_histSignalInvalidReason[i]=capped>0?(g_lnNas.independent?"MAX_OPEN":"LEGACY_ACTIVE"):"MAX_DATA";
          g_histSignalExitTime[i]=0;g_histSignalExitReason[i]=g_histSignalInvalidReason[i];
          if(capped<0){g_hist.total++;g_hist.invalid++;}
          continue;
@@ -3145,24 +3139,6 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       g_histSignalExecHalf[i] = g_lastSimExecHalf;
       g_histSignalExitTime[i] = g_lastSimExitTime;
       g_histSignalExitReason[i] = g_lastSimExitReason;
-      g_lnNasSourceValid[i] = valid;
-      g_lnNasSourceClosed[i] = closed;
-      g_lnNasSourceExitTime[i] = g_lastSimExitTime;
-      if(g_invertMode && g_lnNas.independent && g_lnNas.maxSameOpen > 0)
-      {
-         // Historical capacity follows the uninverted setup calendar. Live
-         // capacity still checks actual native positions and remains fail-closed.
-         g_invertMode = false;
-         datetime sourceExit = NextOppositeSignalTime(exitSignals,
-            g_histSignals[i].availableTime, g_histSignals[i].dir);
-         if(LnNasActive())
-            sourceExit = LnNasAuditExit(g_histSignals[i], exitSignals, sourceExit);
-         bool sourceWon = false;
-         SimulateSignal(g_histSignals[i], g_target, g_hc, g_targetModel,
-            g_entryTf, sourceExit, g_lnNasSourceClosed[i], sourceWon, g_lnNasSourceValid[i]);
-         g_lnNasSourceExitTime[i] = g_lastSimExitTime;
-         g_invertMode = true;
-      }
       if(!valid && g_lastSimInvalidReason=="INVERSE_GAP_BLOCK")continue;
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
@@ -4884,7 +4860,7 @@ bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
       return true;
    }
 
-   bool reverseExitEnabled = InpCloseOnReverse || g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL;
+   bool reverseExitEnabled = (g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes==0) || g_targetModel == ERL_TARGET_OPPOSITE_SIGNAL;
    int rejectedExecDir = EffectiveTradeDir(sig.dir);
    int closeDir = -rejectedExecDir;
    bool bridgeOk = true;
@@ -4893,7 +4869,7 @@ bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
 
    bool localOk = true;
    if(reverseExitEnabled && OwnPositionCount(closeDir) > 0)
-      localOk = CloseOwnPositions(closeDir) && OwnPositionCount(closeDir) == 0;
+      localOk = LnNasCloseCausalReverse(sig.availableTime,rejectedExecDir,g_targetModel==ERL_TARGET_OPPOSITE_SIGNAL);
 
    string regimeDecisionDetail = "state=UNAVAILABLE";
    RegimeV3Snapshot decisionState;
@@ -5004,10 +4980,10 @@ bool OpenSignalAccepted(const ErlSignal &sig)
       {g_lastBlock="same_direction_position";return false;}
       if(!RiskGateAllows(execSig.entry,execSig.sl,lot,riskReason))
       {g_lastBlock=riskReason;AuditWrite("risk_block",sig.id,execSig.dir,execSig.entry,orderSl,orderTp,lot,riskReason);return false;}
-      if(((!LnNasActive()?InpCloseOnReverse:(g_lnNas.reverseExit&&g_lnNas.reverseWaitMinutes==0))||reverseExitMode)
-         && OwnPositionCount(-execSig.dir)>0
-         && (!CloseOwnPositions(-execSig.dir)||OwnPositionCount(-execSig.dir)>0))
-      {g_lastBlock="reverse_close_failed";return false;}
+      if(!LnNasCloseCausalReverse(sig.availableTime,execSig.dir,reverseExitMode))
+      {g_lastBlock="reverse_close_failed_or_pre_entry_signal";return false;}
+      if(!g_lnNas.independent&&(OwnPositionCount(1)>0||OwnPositionCount(-1)>0))
+      {g_lastBlock="LEGACY_ACTIVE";return false;}
    }
    bool bridgeWritten = false;
    if(g_fileBridgeEnabled)

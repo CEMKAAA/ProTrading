@@ -5,15 +5,52 @@
 // by a timestamp or the latest signal. They never feed the historical audit.
 ulong g_labVisualPending[];
 string g_labVisualScope="";
+struct LabNativeVisualEvent {ulong id;datetime opened;};
+LabNativeVisualEvent g_labVisualEvents[];
 
 string LabNativeVisualBase(ulong id){return PREFIX+"NATIVE_"+StringFormat("%I64u",id)+"_";}
 color LabNativeResultColor(double net){return net>1e-8?clrLime:(net<-1e-8?clrTomato:clrLightSteelBlue);}
 double LabNativeDealNet(double profit,double swap,double commission,double fee){return profit+swap+commission+fee;}
-datetime LabNativeVisualEnd(datetime opened,datetime closed)
+datetime LabNativeVisualBarCap(datetime opened)
 {
    int seconds=MathMax(60,PeriodSeconds((ENUM_TIMEFRAMES)_Period));
-   datetime end=closed>0?MathMin(closed,opened+seconds*20):opened+seconds*20;
-   return MathMax(opened+seconds,end);
+   int shift=iBarShift(_Symbol,(ENUM_TIMEFRAMES)_Period,opened,false);
+   if(shift>=20){datetime cap=iTime(_Symbol,(ENUM_TIMEFRAMES)_Period,shift-20);if(cap>opened)return cap;}
+   return opened+seconds*20;
+}
+datetime LabNativeVisualEnd(datetime opened,datetime nextEntry)
+{
+   datetime cap=LabNativeVisualBarCap(opened);
+   return nextEntry>opened&&nextEntry<cap?nextEntry:cap;
+}
+datetime LabNativeVisualNext(datetime opened)
+{
+   int lo=0,hi=ArraySize(g_labVisualEvents);
+   while(lo<hi){int mid=(lo+hi)/2;if(g_labVisualEvents[mid].opened<=opened)lo=mid+1;else hi=mid;}
+   return lo<ArraySize(g_labVisualEvents)?g_labVisualEvents[lo].opened:0;
+}
+void LabNativeVisualRegister(ulong id,datetime opened)
+{
+   int count=ArraySize(g_labVisualEvents);
+   int lo=0,hi=count;
+   while(lo<hi){int mid=(lo+hi)/2;if(g_labVisualEvents[mid].opened<opened)lo=mid+1;else hi=mid;}
+   while(lo<count&&g_labVisualEvents[lo].opened==opened)
+   {if(g_labVisualEvents[lo].id==id)return;lo++;}
+   ArrayResize(g_labVisualEvents,count+1,128);
+   for(int i=count;i>lo;i--)g_labVisualEvents[i]=g_labVisualEvents[i-1];
+   g_labVisualEvents[lo].id=id;g_labVisualEvents[lo].opened=opened;
+   // A new fill trims the previous time group, including archived results.
+   int prior=lo-1;while(prior>=0&&g_labVisualEvents[prior].opened==opened)prior--;
+   if(prior<0)return;
+   datetime previous=g_labVisualEvents[prior].opened;
+   datetime until=LabNativeVisualEnd(previous,opened);
+   for(int i=prior;i>=0&&g_labVisualEvents[i].opened==previous;i--)
+   {
+      string base=LabNativeVisualBase(g_labVisualEvents[i].id);
+      string levels[]={"ENTRY","SL","TP"};
+      for(int j=0;j<3;j++)if(ObjectFind(0,base+levels[j])>=0)
+         ObjectMove(0,base+levels[j],1,until,ObjectGetDouble(0,base+levels[j],OBJPROP_PRICE,0));
+   }
 }
 
 void LabNativeVisualLine(string name,datetime from,datetime until,double price,color tint)
@@ -23,6 +60,7 @@ void LabNativeVisualLine(string name,datetime from,datetime until,double price,c
    ObjectMove(0,name,0,from,price);ObjectMove(0,name,1,until,price);
    ObjectSetInteger(0,name,OBJPROP_COLOR,tint);ObjectSetInteger(0,name,OBJPROP_WIDTH,2);
    ObjectSetInteger(0,name,OBJPROP_RAY_RIGHT,false);ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,name,OBJPROP_RAY_LEFT,false);
    ObjectSetInteger(0,name,OBJPROP_HIDDEN,false);
    ObjectSetString(0,name,OBJPROP_TOOLTIP,"Actual MT5 level: "+DoubleToString(price,_Digits));
 }
@@ -32,10 +70,12 @@ void LabNativeVisualDraw(ulong id,int dir,datetime opened,datetime signalBar,dou
 {
    if(IsTesterMode()||id==0||dir==0||opened<=0||entry<=0.0)return;
    string base=LabNativeVisualBase(id);
-   datetime until=LabNativeVisualEnd(opened,closed),bar=0;double arrow=0,pad=0;
+   LabNativeVisualRegister(id,opened);
+   datetime until=LabNativeVisualEnd(opened,LabNativeVisualNext(opened)),bar=0;double arrow=0,pad=0;
    MaCrossTradeMarker(opened,dir>0,entry,bar,arrow,pad);
    string fingerprint=(string)opened+"|"+(string)closed+"|"+(string)dir+"|"+(string)bar
       +"|"+DoubleToString(entry,_Digits)+"|"+DoubleToString(sl,_Digits)+"|"+DoubleToString(tp,_Digits)
+      +"|"+(string)until
       +"|"+DoubleToString(arrow,_Digits)+"|"+DoubleToString(net,8)+"|"+(string)InpDrawTradeLevelSegments+"|"+reason;
    if(ObjectFind(0,base+"ARW")>=0&&ObjectGetString(0,base+"ARW",OBJPROP_TEXT)==fingerprint)return;
    color tint=closed>0?LabNativeResultColor(net):clrGold;
@@ -132,7 +172,7 @@ void LabNativeVisualRefreshOpen()
 void LabNativeVisualRestore()
 {
    string scope=(string)AccountInfoInteger(ACCOUNT_LOGIN)+"|"+_Symbol+"|"+(string)RuntimeMagic();
-   if(g_labVisualScope!=scope){DeleteByPrefix(PREFIX+"NATIVE_");ArrayResize(g_labVisualPending,0);g_labVisualScope=scope;}
+   if(g_labVisualScope!=scope){DeleteByPrefix(PREFIX+"NATIVE_");ArrayResize(g_labVisualPending,0);ArrayResize(g_labVisualEvents,0);g_labVisualScope=scope;}
    datetime from=TimeCurrent()-(datetime)((long)RuntimeHistoricalDays()*86400);
    if(!HistorySelect(from,TimeCurrent()))return;
    for(int i=0;i<HistoryDealsTotal();i++)

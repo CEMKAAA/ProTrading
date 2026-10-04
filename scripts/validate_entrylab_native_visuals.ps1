@@ -13,6 +13,8 @@ foreach($source in @($main,$probe)){
 }
 $worker=Join-Path $root '.tmp/orb_jp225_full_worker';$terminal=Join-Path $worker 'terminal64.exe'
 if(Get-Process terminal64 -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $terminal}){throw 'Worker busy'}
+Get-ChildItem -LiteralPath 'C:\MT5\DEMO\MQL5\Files' -Filter 'EntryLabIndependent_*.state' |
+ ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $worker ('MQL5/Files/'+$_.Name)) -Force}
 Copy-Item -LiteralPath ([IO.Path]::ChangeExtension($probe,'.ex5')) -Destination (Join-Path $worker 'MQL5/Scripts/EntryLabNativeVisualProbe.ex5') -Force
 $ini=Join-Path $stage 'probe.ini'
 @('[Experts]','Enabled=0','AllowDllImport=0','[StartUp]','Script=EntryLabNativeVisualProbe','Symbol=BTCUSDm','Period=M1','ShutdownTerminal=1')|Set-Content -LiteralPath $ini -Encoding ASCII
