@@ -104,7 +104,7 @@
                   {
                       "family":  "orb",
                       "name":  "OrbPositionRuntime.mqh",
-                      "sha256":  "BB5ED402593A30D9D3ECFFE6D0BB40CE019B5600DF154E6EFB5E7106C6B42632"
+                      "sha256":  "F9A11D687C5121D1F3257848DA32460A2B07654F1A188947A88367D4C17C5038"
                   },
                   {
                       "family":  "orb",
@@ -194,7 +194,7 @@
                   {
                       "family":  "orb",
                       "name":  "OrbStrategyUserLibrary.mqh",
-                      "sha256":  "81553CBF1FD188FCA6B4A032CED4C02B0D14F570D49C8AC084CF9C418BD24EDE"
+                      "sha256":  "73DB936B1D4C91D913E0276D2CF6F1EDEE4E4889B001DCD6F69E7FDC6B97FBBE"
                   },
                   {
                       "family":  "orb",
@@ -204,12 +204,12 @@
                   {
                       "family":  "orb",
                       "name":  "OrbUltimateEA_StrategyLibrary.ex5",
-                      "sha256":  "EBCD315AC6624AF15E1F500F8CEA29DEC76EF905368E7D0BB067B76D3542617B"
+                      "sha256":  "F3A3F1D8345813B7DA4546CBDF3D33DE827B08922847C03C1F3C9C4ECD78B0D0"
                   },
                   {
                       "family":  "orb",
                       "name":  "OrbUltimateEA_StrategyLibrary.mq5",
-                      "sha256":  "BED6D766D002722AB5D6E6EF2F0B485C3CF5454745EA795138A23F1A92BF60BC"
+                      "sha256":  "EBBAFC5A02951646BAEE13CE5E4CEAE6E0E3F9F67E1E3734C992D9294600BF63"
                   },
                   {
                       "family":  "orb",
@@ -299,12 +299,12 @@
                   {
                       "family":  "SolAdvanced",
                       "name":  "LiqNarrativeSol_Advanced.ex5",
-                      "sha256":  "58E913F491B8CE11044A8E42B3290B0A8185DADF488F169A213B7CB0FF887E82"
+                      "sha256":  "AFB3CC54BE5AFBFCF75981761D0D41B8F9C019782CAB184AB93CC983C723A130"
                   },
                   {
                       "family":  "SolAdvanced",
                       "name":  "LiqNarrativeSol_Advanced.mq5",
-                      "sha256":  "D9A7CEEDB32B5B44FF6668C2CA3A60569002375B0D06EA6F12F8435439F07EEC"
+                      "sha256":  "3F4956DBC8D6392B628BABE9F5876E9A67CF567D10AEBC3EF80BB33E56F0247B"
                   },
                   {
                       "family":  "SolAdvanced",
@@ -319,12 +319,12 @@
                   {
                       "family":  "SolAdvanced",
                       "name":  "LiqSolAdvancedNas.mqh",
-                      "sha256":  "C4C53FCD1F0DAD3B7D2F15F8381D8BF917C9D5B302DBF397D44D2416160C90DF"
+                      "sha256":  "979C93008A13DEEE1701668877325006164C188F25C9C07CEB834ADC23239974"
                   },
                   {
                       "family":  "SolAdvanced",
                       "name":  "LiqStrategyLibrary.mqh",
-                      "sha256":  "278781709AA5E91A4A8A174A85840996649C789B2E696F22E68958C337B342C9"
+                      "sha256":  "678C50C0D3D08F9BF5B61781C9711588E17F68359A2DF0D68B7A8F87DD8DA639"
                   },
                   {
                       "family":  "SolAdvanced",
@@ -356,6 +356,6 @@
     "schema":  1,
     "maCapacityReference":  "714B24965B31B50F24402A22922754F57E39C5195B7409C529464536B1987E45",
     "defaultReplay":  "PASS",
-    "checkedAt":  "2026-10-05T01:13:58.8508254+03:00",
-    "deployedAt":  "2026-10-05T01:16:26.0823334+03:00"
+    "checkedAt":  "2026-10-05T19:44:13.8196934+03:00",
+    "deployedAt":  "2026-10-05T19:46:09.2371408+03:00"
 }

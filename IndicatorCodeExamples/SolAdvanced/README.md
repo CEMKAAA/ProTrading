@@ -30,6 +30,17 @@ New timed exits are MT5-native; listener protocols were not changed.
 The all-default regression scope and tests are recorded in
 `../../reports/orb_sol_position_policy_20261005.md`.
 
+## Apply With Open Positions
+
+NAS / POSITIONS and fixed/custom TARGET R edits can be applied with owned
+positions open. Existing broker SL/TP, half-close plans and native NAS/reverse
+exit policies are retained per ticket; the audit and future entries use the new
+settings. Lowering MAX below current exposure does not liquidate positions:
+future entries wait for capacity. Full strategy replacement still requires a
+flat instance. Account compatibility, batch-backtest and pending-bridge guards
+remain. Native exit changes do not introduce a listener close protocol.
+Verification: `../../reports/sol_apply_orb_layout_20261005.md`.
+
 ## Audit CSV
 
 Open TIME MATRIX and click EXPORT AUDIT CSV after the audit completes.

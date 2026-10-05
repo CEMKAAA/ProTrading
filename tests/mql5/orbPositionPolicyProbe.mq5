@@ -1,4 +1,18 @@
 #property strict
+int probeCanvasWidth=0,probeCanvasHeight=0;
+long ProbeChartGetInteger(long chart,ENUM_CHART_PROPERTY_INTEGER key,int sub=0)
+{
+   if(chart==0&&probeCanvasWidth>0&&key==CHART_WIDTH_IN_PIXELS)return probeCanvasWidth;
+   if(chart==0&&probeCanvasHeight>0&&key==CHART_HEIGHT_IN_PIXELS)return probeCanvasHeight;
+   return ChartGetInteger(chart,key,sub);
+}
+bool ProbeChartGetInteger(long chart,ENUM_CHART_PROPERTY_INTEGER key,int sub,long &value)
+{
+   if(chart==0&&probeCanvasWidth>0&&(key==CHART_WIDTH_IN_PIXELS||key==CHART_HEIGHT_IN_PIXELS))
+   {value=ProbeChartGetInteger(chart,key,sub);return true;}
+   return ChartGetInteger(chart,key,sub,value);
+}
+#define ChartGetInteger ProbeChartGetInteger
 #define OnInit PolicyInit
 #define OnDeinit PolicyDeinit
 #define OnTick PolicyTick
@@ -12,9 +26,55 @@
 #undef OnTimer
 #undef OnChartEvent
 #undef OnTradeTransaction
+#undef ChartGetInteger
 #include "MaPositionReference.mqh"
 int checks=0,failed=0;
 void Check(bool value,string name){checks++;if(!value){failed++;Print("FAIL ",name);}}
+bool Overlaps(string a,string b)
+{
+   long ax=ObjectGetInteger(0,a,OBJPROP_XDISTANCE),ay=ObjectGetInteger(0,a,OBJPROP_YDISTANCE);
+   long bx=ObjectGetInteger(0,b,OBJPROP_XDISTANCE),by=ObjectGetInteger(0,b,OBJPROP_YDISTANCE);
+   return ax<bx+ObjectGetInteger(0,b,OBJPROP_XSIZE)&&bx<ax+ObjectGetInteger(0,a,OBJPROP_XSIZE)
+      &&ay<by+ObjectGetInteger(0,b,OBJPROP_YSIZE)&&by<ay+ObjectGetInteger(0,a,OBJPROP_YSIZE);
+}
+void CheckLayout(int width,int height)
+{
+   probeCanvasWidth=width;probeCanvasHeight=height;
+   DeleteByPrefix(PREFIX);
+   g_mlJobPaint=GetTickCount64();DrawDashboard();ChartRedraw(0);
+   string bg=PREFIX+"DASH_LIBRARY_BG";
+   long left=ObjectGetInteger(0,bg,OBJPROP_XDISTANCE),top=ObjectGetInteger(0,bg,OBJPROP_YDISTANCE);
+   long right=left+ObjectGetInteger(0,bg,OBJPROP_XSIZE),bottom=top+ObjectGetInteger(0,bg,OBJPROP_YSIZE);
+   string pos[]={"BTN_POS_MODE","EDIT_POS_MAX","BTN_POS_DAY","BTN_POS_REV","EDIT_POS_WAIT","BTN_POS_APPLY"};
+   string ml[]={"BTN_ML_GENERATION","BTN_ML_EXPORT","BTN_ML_CANCEL","BTN_ML_LOAD","BTN_ML_TOGGLE",
+      "BTN_ML_DATA_PREV","BTN_ML_DATA_NEXT","BTN_ML_REFRESH","BTN_ML_JOB_PREV","BTN_ML_JOB_NEXT",
+      "BTN_ML_TRAIN","BTN_ML_CANCEL_JOB","BTN_ML_USE","DASH_ML_JOB_NOTE"};
+   for(int i=0;i<ArraySize(pos);i++)
+   {
+      string a=PREFIX+pos[i];Check(ObjectFind(0,a)>=0,"position control exists");
+      long x=ObjectGetInteger(0,a,OBJPROP_XDISTANCE),y=ObjectGetInteger(0,a,OBJPROP_YDISTANCE);
+      Check(x>=left&&y>=top&&x+ObjectGetInteger(0,a,OBJPROP_XSIZE)<=right
+         &&y+ObjectGetInteger(0,a,OBJPROP_YSIZE)<=bottom,"position control inside right panel");
+      for(int j=0;j<ArraySize(ml);j++)
+      {string b=PREFIX+ml[j];Check(ObjectFind(0,b)>=0&&!Overlaps(a,b),"positions do not overlap ML");}
+      Check(!Overlaps(a,PREFIX+"DASH_MARGIN_TITLE")&&!Overlaps(a,PREFIX+"EDIT_NATIVE_BALANCE")
+         &&!Overlaps(a,PREFIX+"EDIT_USER_NAME"),"position section clear of lower sections");
+   }
+   Check(bottom<=height-1,"right panel fits chart height");
+   Check(ObjectFind(0,TCalId("OPEN"))>=0&&!Overlaps(TCalId("OPEN"),TCalId("CSV_RIGHT")),
+      "time matrix and CSV launchers do not overlap at small scales");
+   Check(ObjectGetInteger(0,TCalId("DIRECTION"),OBJPROP_XDISTANCE)==OrbLibraryX(InpDashboardX+12)
+      &&ObjectGetInteger(0,TCalId("DIRECTION"),OBJPROP_XSIZE)==OrbLibrarySize(116),
+      "entry direction uses the same canvas transform");
+   string lower[]={"DASH_MARGIN_NOTE","DASH_NATIVE_BUDGET","BTN_USER_SAVE","DASH_USER_NOTE"};
+   for(int i=0;i<ArraySize(lower);i++)
+   {string key=PREFIX+lower[i];Check(ObjectFind(0,key)>=0
+      &&ObjectGetInteger(0,key,OBJPROP_YDISTANCE)+ObjectGetInteger(0,key,OBJPROP_YSIZE)<=bottom,
+      "lower section contained by expanded panel");}
+   Check(ChartScreenShot(0,"orbPositionLayout_"+(string)width+"x"+(string)height+".png",width,height,ALIGN_LEFT),
+      "dashboard screenshot queued");
+   Sleep(500);EventKillTimer();
+}
 void CheckMaReference()
 {
    PolicyMaEvent reference[];OrbWindowSignal events[];
@@ -140,6 +200,8 @@ void OnStart()
       &&ObjectGetString(0,PREFIX+"EDIT_POS_WAIT",OBJPROP_TEXT)=="00:45","strategy policy updates visible fields");
    Check(ObjectGetString(0,PREFIX+"DASH_POS_MAX",OBJPROP_TEXT)=="MAX OPEN","total capacity label");
    CheckMaReference();
+   CheckLayout(1280,720);
+   CheckLayout(1600,900);
    int f=FileOpen(MQLInfoString(MQL_PROGRAM_NAME)+".txt",FILE_WRITE|FILE_TXT|FILE_ANSI);
    if(f!=INVALID_HANDLE){FileWriteString(f,"checks="+(string)checks+" failed="+(string)failed);FileClose(f);}
 }

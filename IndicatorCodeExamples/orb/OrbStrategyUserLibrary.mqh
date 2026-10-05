@@ -243,7 +243,7 @@ bool OrbUserSave(const string name)
 
 void OrbUserDraw()
 {
-   int x=InpDashboardX+644,y=InpDashboardY+600;
+   int x=InpDashboardX+644,y=InpDashboardY+700;
    CreateLabel("DASH_USER_TITLE",x,y,"SAVE STRATEGY | GMT "+DoubleToString(OrbBrokerOffsetHours(),2),C'255,187,92',8);
    CreateButton("BTN_USER_TZ",x+390,y-3,202,18,"TIMEZONE SETTINGS",C'38,101,176');
    CreateEdit("EDIT_USER_NAME",x,y+19,380,22,"");

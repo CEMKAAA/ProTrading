@@ -4448,10 +4448,12 @@ void CopyPlanState(ulong fromTicket, ulong toTicket)
    string fields[] = {"entry","sl","tp1","tp2","tp3","tp4","tp5","tp6","hc","halfDone","openTs","dir","target","targetPips","lossPips","mfePips","maePips","mfeMoney","maeMoney","mfePx","maePx","mfeTs","maeTs","firstTargetTs","firstLossTs","reverseCount"};
    for(int i = 0; i < ArraySize(fields); ++i)
       CopyPlanField(fromTicket, toTicket, fields[i]);
+   LnNasCopyPositionPolicy(fromTicket,toTicket);
 }
 
 void StorePositionPlan(ulong ticket, const ErlSignal &sig, ERL_HC_MODE hc)
 {
+   if(!LnNasStorePositionPolicy(ticket))Print("Position NAS policy could not be saved: ",ticket);
    GlobalVariableSet(TicketKey(ticket, "entry"), sig.entry);
    GlobalVariableSet(TicketKey(ticket, "sl"), sig.sl);
    GlobalVariableSet(TicketKey(ticket, "tp1"), sig.tp1);
@@ -4868,7 +4870,7 @@ bool HandleRegimeRejectedSignal(const ErlSignal &sig, string rule)
       bridgeOk = FileBridgeWriteRegimeCloseOnly(sig, rule);
 
    bool localOk = true;
-   if(reverseExitEnabled && OwnPositionCount(closeDir) > 0)
+   if(OwnPositionCount(closeDir) > 0)
       localOk = LnNasCloseCausalReverse(sig.availableTime,rejectedExecDir,g_targetModel==ERL_TARGET_OPPOSITE_SIGNAL);
 
    string regimeDecisionDetail = "state=UNAVAILABLE";

@@ -140,9 +140,11 @@ bool LiqLibrarySave(string name)
    payload+="\n"+TCalStrategyText();
    return LiqLibraryAtomicWrite(LiqLibraryPath(name),payload+"\nSHA256="+LiqLibraryHash(payload));
 }
-bool LiqLibraryCanApply()
+bool LiqLibraryCanApply(bool requireFlat=true)
 {
    if(g_btRunning||ArraySize(g_bridgePending)>0){g_liqLibraryStatus="Wait: backtest or pending bridge events";return false;}
+   // Full strategy replacement still requires flat exposure; filter/R edits do not.
+   if(!requireFlat)return true;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       if(PositionGetTicket(i)==0)continue;
@@ -489,7 +491,7 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
          double custom=0;
          if(!LiqLibraryCustomR(ObjectGetString(0,LiqLibraryObject("CUSTOM_VALUE"),OBJPROP_TEXT),custom))
             g_liqLibraryStatus="Enter R from 0.00000001 to 10000 (decimal point)";
-         else if(LiqLibraryCanApply())
+         else if(LiqLibraryCanApply(false)&&LnNasPreserveOwnedPolicies())
          {g_customTargetR=custom;g_target=ERL_RR_CUSTOM;g_targetModel=ERL_TARGET_FIXED_R;
           SanitizeHalfMode();RefreshAfterConfigChange(false);close=true;}
       }
@@ -497,7 +499,11 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
       if(StringFind(action,"RSTEP")==0)
       {
          int step=(int)StringToInteger(StringSubstr(action,5));
-         if(LiqLibraryRStepAllowed(step)&&LiqLibraryCanApply())
+         if(LiqLibraryRStepAllowed(step)&&LiqLibraryCanApply(false)
+#ifdef LN_SOL_ADV_NAS_READY
+            &&LnNasPreserveOwnedPolicies()
+#endif
+            )
          {g_target=(ERL_RR_MODE)(100+step);g_targetModel=ERL_TARGET_FIXED_R;SanitizeHalfMode();RefreshAfterConfigChange(false);close=true;}
       }
       if(close){g_liqLibraryRPicker=false;DeleteByPrefix(LiqLibraryObject(""));LiqLibraryRedrawPreserve();}

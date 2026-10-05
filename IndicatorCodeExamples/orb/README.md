@@ -45,6 +45,14 @@ exact PnL. Native Independent manages each ticket through the existing manager.
 Existing legacy bridge close capability is reused, not extended to multi-ticket
 listeners. See `../../reports/orb_sol_position_policy_20261005.md`.
 
+## Dashboard Layout
+
+The right panel separates ML training, native position controls, margin,
+balance and strategy save/timezone controls. It scales against a 780-pixel
+logical height; ML controls repaint on resize, and TIME MATRIX / entry-direction
+launchers follow the same canvas transform.
+Verification: `../../reports/sol_apply_orb_layout_20261005.md`.
+
 ## Audit CSV
 
 Open TIME MATRIX and click EXPORT AUDIT CSV after the audit completes.

@@ -25,7 +25,7 @@ try { session = JSON.parse(readFileSync(accessFile, "utf8")); plane.browser(sess
 writeFileSync(accessFile, JSON.stringify({ ...session, accountId, developmentOnly: true }, null, 2), { mode: 0o600 });
 const server = controlHttp(plane);
 server.listen(4321, "127.0.0.1", () => {
-  console.log("Local control service: http://127.0.0.1:4321 (NOT production auth, NOT connected to MT5, live orders disabled)");
+  console.log("Local pilot: http://127.0.0.1:4321. MT5 requires paired helper + connection EA. Apply is audit-only; Trading starts OFF.");
   console.log(`Local session file: ${resolve(accessFile)} (keep private; never ship it)`);
 });
 function stop() { server.close(() => { plane.close(); process.exit(0); }); }

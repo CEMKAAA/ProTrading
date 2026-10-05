@@ -1,4 +1,4 @@
-param([switch]$RunProbes,[switch]$CandidateOnly,[switch]$RunReplay)
+param([switch]$RunProbes,[switch]$CandidateOnly,[switch]$RunReplay,[string]$BaselineDirectory='baseline')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $source=Join-Path $root 'IndicatorCodeExamples'
@@ -31,7 +31,7 @@ foreach($kind in @('baseline','candidate')){
   if(!$path.StartsWith($source+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'External quoted dependency'}
   if($seen.ContainsKey($path)){return};$seen[$path]=$true
   $relative=$path.Substring($source.Length+1)
-  $read=$path;$saved=Join-Path $stage ('baseline/'+$relative)
+  $read=$path;$saved=Join-Path $stage ($BaselineDirectory+'/'+$relative)
   if($kind-eq 'baseline'-and (Test-Path $saved)){$read=$saved}
   $dest=Join-Path $stage ($kind+'_build/IndicatorCodeExamples/'+$relative)
   New-Item -ItemType Directory -Force (Split-Path $dest)|Out-Null
@@ -66,7 +66,7 @@ foreach($kind in @('baseline','candidate')){
  }
  foreach($file in $files){
   $log=$file+'.log'
-  if($kind-eq 'baseline'-and $file-notmatch 'PositionReplayProbe'-and (Test-Path $log)-and (Get-Content $log -Raw)-match 'Result: 0 errors, 0 warnings'){continue}
+  if($BaselineDirectory-eq 'baseline'-and $kind-eq 'baseline'-and $file-notmatch 'PositionReplayProbe'-and (Test-Path $log)-and (Get-Content $log -Raw)-match 'Result: 0 errors, 0 warnings'){continue}
   $p=Start-Process 'C:\MT5\DEMO\MetaEditor64.exe' -ArgumentList ('/compile:"'+$file+'" /log:"'+$log+'"') -WindowStyle Hidden -PassThru
   if(!$p.WaitForExit(180000)){throw 'Compile timeout'}
   if(!(Test-Path $log)-or (Get-Content $log -Raw)-notmatch 'Result: 0 errors, 0 warnings'){

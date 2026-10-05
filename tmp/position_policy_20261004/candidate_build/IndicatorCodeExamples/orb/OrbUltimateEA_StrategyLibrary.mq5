@@ -4050,11 +4050,15 @@ void OrbLibraryRefreshLayout()
    int chartH=(int)ChartGetInteger(0,CHART_HEIGHT_IN_PIXELS,0);
    if(chartW<=0||chartH<=0)return;
    // Scale the two-column canvas once per dashboard refresh, never per object.
+   double previousScale=g_libraryDashScale;
+   int previousX=g_libraryDashX,previousY=g_libraryDashY;
    g_libraryDashX=MathMax(0,MathMin(InpDashboardX,chartW/10));
    g_libraryDashY=MathMax(0,MathMin(InpDashboardY,chartH/10));
    g_libraryDashScale=MathMin(1.0,MathMin(
       (double)MathMax(1,chartW-g_libraryDashX-8)/1252.0,
-      (double)MathMax(1,chartH-g_libraryDashY-8)/736.0));
+      (double)MathMax(1,chartH-g_libraryDashY-8)/780.0));
+   if(previousX!=g_libraryDashX||previousY!=g_libraryDashY||MathAbs(previousScale-g_libraryDashScale)>1e-9)
+      g_mlJobPaint=0; // Resize must repaint ML controls in the same layout pass.
 }
 int OrbLibraryX(int x){return g_libraryDashX+(int)MathRound((x-InpDashboardX)*g_libraryDashScale);}
 int OrbLibraryY(int y){return g_libraryDashY+(int)MathRound((y-InpDashboardY)*g_libraryDashScale);}
@@ -7642,7 +7646,7 @@ void DrawDashboard()
 
    // Shell
    CreateRect("DASH_BG",x,y,W,H,C'24,30,42',C'90,178,255');
-   CreateRect("DASH_LIBRARY_BG",x+632,y,W,670,C'24,30,42',C'90,178,255');
+   CreateRect("DASH_LIBRARY_BG",x+632,y,W,780,C'24,30,42',C'90,178,255');
    DeleteByPrefix(PREFIX+"DASH_BT");DeleteByPrefix(PREFIX+"BTN_BT");DeleteByPrefix(PREFIX+"EDIT_BT");
    ObjectDelete(0,PREFIX+"DASH_SEP4");
    CreateRect("DASH_TOP",x,y,W,28,C'18,24,36',C'90,178,255');
@@ -7657,7 +7661,7 @@ void DrawDashboard()
 #include "../NativeMarginPreview.mqh"
 void RenderNativeBalance()
 {
-   int x=InpDashboardX+644,y=InpDashboardY+530;
+   int x=InpDashboardX+644,y=InpDashboardY+630;
    CreateLabel("DASH_NATIVE_BALANCE",x,y+4,"BALANCE (0=ACCOUNT)",C'184,196,210',8);
    CreateEdit("EDIT_NATIVE_BALANCE",x+158,y,108,22,DoubleToString(g_nativeRiskBalance,2));
    CreateButton("BTN_NATIVE_BALANCE",x+274,y,98,22,"APPLY BAL",C'38,101,176');
@@ -7674,7 +7678,7 @@ void UpdateDashboard()
 
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
-   OrbUserDraw();OrbPositionDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+400,false,!g_orbMoneyRisk); OrbClockUiDraw();
+   OrbUserDraw();OrbPositionDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+496,false,!g_orbMoneyRisk); OrbClockUiDraw();
    TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
@@ -7827,7 +7831,10 @@ void UpdateDashboard()
    CreateButton("BTN_TP",x+302,r2y,82,18,"FIX "+TargetLabel(),C'38,101,176');
    CreateButton("BTN_TMODE",x+388,r2y,76,18,RuntimeTargetModeLabel(),g_rtTargetMode==ORB_TARGET_R_LEG?C'80,80,80':C'38,101,176');
 
-   DirectionLauncher(PREFIX,x+12,y+330);
+   DirectionLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+330));
+   ObjectSetInteger(0,TCalId("DIRECTION"),OBJPROP_XSIZE,OrbLibrarySize(116));
+   ObjectSetInteger(0,TCalId("DIRECTION"),OBJPROP_YSIZE,OrbLibrarySize(20));
+   ObjectSetInteger(0,TCalId("DIRECTION"),OBJPROP_FONTSIZE,OrbLibrarySize(8));
    LossHoursLauncher(PREFIX,OrbLibraryX(x+480),OrbLibraryY(y+330),g_libraryDashScale);
    DailyQuotaLauncher(PREFIX,OrbLibraryX(InpDashboardX+12),OrbLibraryY(InpDashboardY+706),g_libraryDashScale);
    CreateLabel("DASH_DIRECTION_LOSSES",x+134,y+334,"MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R | "+DirectionLossText(),muted,8);
@@ -8039,7 +8046,11 @@ void UpdateDashboard()
    }
    OrbLbDraw();
    OrbRPickerDraw();
-   TCalLauncher(PREFIX,InpDashboardX+490,InpDashboardY+5,InpDashboardX+300,InpDashboardY+34,"SESSION LOCAL TIME");
+   TCalLauncher(PREFIX,OrbLibraryX(InpDashboardX+490),OrbLibraryY(InpDashboardY+5),
+      OrbLibraryX(InpDashboardX+300),OrbLibraryY(InpDashboardY+34),"SESSION LOCAL TIME");
+   ObjectSetInteger(0,TCalId("OPEN"),OBJPROP_XSIZE,OrbLibrarySize(116));
+   ObjectSetInteger(0,TCalId("OPEN"),OBJPROP_YSIZE,OrbLibrarySize(20));
+   ObjectSetInteger(0,TCalId("OPEN"),OBJPROP_FONTSIZE,OrbLibrarySize(8));
 }
 
 //=========================================================================

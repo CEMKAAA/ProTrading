@@ -20,14 +20,14 @@ string OrbUserRuntimeMetricKey()
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
    double saved=g_orbStrategyTimezone;g_orbStrategyTimezone=0;string signature=OrbCustomInputSignature();g_orbStrategyTimezone=saved;
    signature+=OrbClockMetricMeta(OrbBrokerOffsetHours(),(int)OrbClockProfile(),(int)OrbClockBrokerSeason(),(int)OrbClockExchangeSeason(),g_orbClockSession);
-   return OrbUserMetricKey(_Symbol,(int)_Period,signature,OrbCustomRuntimeDump(),p);
+   return OrbUserMetricKey(_Symbol,(int)_Period,signature+OrbPositionMetricMeta(g_orbPositions),OrbCustomRuntimeDump(),p);
 }
 void OrbUserLoadMetrics(int slot)
 {
    if(slot<0||slot>=ArraySize(g_userStrategies))return;
    OrbUserRecord r=g_userStrategies[slot];string v[];
    if(!OrbMlReadLines("OrbStrategyUserLibrary\\"+r.preset.id+".metrics",v,12,true))return;
-   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession),r.runtime,r.preset)||v[4]!="52")return;
+   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession)+OrbPositionMetricMeta(r.positions),r.runtime,r.preset)||v[4]!="52")return;
    double n[8];for(int i=3;i<=10;i++)if(!OrbMlNumber(v[i],n[i-3]))return;
    if(n[0]<=0||n[2]<0||n[3]<0||n[4]<0||n[3]+n[4]>n[2]||n[7]<0||n[7]>100)return;
    if(n[2]!=MathFloor(n[2])||n[3]!=MathFloor(n[3])||n[4]!=MathFloor(n[4]))return;

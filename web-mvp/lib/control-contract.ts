@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { universalRequestSchema, UNIVERSAL_RUNTIME } from "./universal-contract.ts";
 
 export const PROTOCOL_VERSION = 1;
 export const ENGINE_RUNTIME = "entrylab-adapter/v1";
@@ -56,7 +57,7 @@ export const configurationSchema = z.object({
 }).strict();
 export type Configuration = z.infer<typeof configurationSchema>;
 
-export const backtestRequestSchema = z.object({
+const legacyBacktestRequestSchema = z.object({
   version: z.literal(PROTOCOL_VERSION),
   installationId: identifier,
   idempotencyKey: identifier,
@@ -71,6 +72,7 @@ export const backtestRequestSchema = z.object({
   if (end <= start || end - start > 3660 * 86400000) ctx.addIssue({ code: "custom", message: "Date range must be positive and at most ten years" });
 });
 export type BacktestRequest = z.infer<typeof backtestRequestSchema>;
+export const backtestRequestSchema = z.union([legacyBacktestRequestSchema, universalRequestSchema]);
 
 export const pairingRequestSchema = z.object({ publicKey: z.string().min(50).max(1024), label: z.string().trim().min(1).max(80) }).strict();
 export const pairingCodeSchema = z.string().regex(/^[A-F0-9]{4}-[A-F0-9]{4}$/);
@@ -93,7 +95,7 @@ const tradeSchema = z.object({
   signalUtc: z.string().datetime(), entryUtc: z.string().datetime(), exitUtc: z.string().datetime().nullable(),
   entryPrice: positive, exitPrice: positive.nullable(), sl: positive, tp: positive,
   outcome: z.enum(["WIN", "LOSS", "FLAT", "OPEN", "DATA"]),
-  exitReason: z.enum(["TP", "SL", "REVERSE", "NAS", "TIME", "OPEN", "DATA"]),
+  exitReason: z.enum(["TP", "SL", "REVERSE", "NAS", "TIME", "OTHER", "OPEN", "DATA"]),
   netR: finite.nullable(), spreadPrice: finite.nonnegative().nullable(),
   slippagePrice: finite.nullable(), commission: finite.nullable(), swap: finite.nullable(),
 }).strict().superRefine((v, ctx) => {
@@ -105,9 +107,10 @@ const tradeSchema = z.object({
 });
 export const resultSchema = z.object({
   jobId: identifier, attemptId: identifier, configurationHash: digest, requestHash: digest,
-  engineRuntime: z.literal(ENGINE_RUNTIME), auditBuild: z.string().min(1).max(100),
+  engineRuntime: z.enum([ENGINE_RUNTIME, UNIVERSAL_RUNTIME]), auditBuild: z.string().min(1).max(100),
   brokerServer: z.string().min(1).max(100), symbol: z.string().min(1).max(64),
   coverage: z.object({ datasetFingerprint: digest, realTicks: integer, generatedTicks: z.literal(0),
+    mode:z.enum(["real_ticks","existing_audit"]).optional(),
     missingIntervals: z.array(z.object({ fromUtc: z.string().datetime(), toUtc: z.string().datetime() }).strict().refine(v => Date.parse(v.fromUtc) < Date.parse(v.toUtc))).max(1000) }).strict(),
   trades: z.array(tradeSchema).max(10000),
 }).strict().superRefine((v, ctx) => {

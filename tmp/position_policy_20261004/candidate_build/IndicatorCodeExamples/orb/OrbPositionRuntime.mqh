@@ -163,7 +163,7 @@ void ManagePositions()
 }
 void OrbPositionDraw()
 {
-   int x=InpDashboardX+656,y=InpDashboardY+310;
+   int x=InpDashboardX+644,y=InpDashboardY+408;
    CreateLabel("DASH_POS",x,y,"POSITIONS | MT5 native",C'90,178,255',8);
    CreateButton("BTN_POS_MODE",x,y+20,118,22,g_orbPositions.independent?"INDEPENDENT":"LEGACY",C'38,101,176');
    CreateLabel("DASH_POS_MAX",x+128,y+24,"MAX OPEN",clrWhite,8);

@@ -34,3 +34,21 @@ CREATE TABLE IF NOT EXISTS audit_events (
   id INTEGER PRIMARY KEY, at INTEGER NOT NULL, account_id TEXT, event TEXT NOT NULL, details_json TEXT NOT NULL
 );
 PRAGMA user_version = 1;
+CREATE TABLE IF NOT EXISTS identities (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id), email TEXT NOT NULL UNIQUE,
+  salt TEXT NOT NULL, password_hash TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS strategies (
+  account_id TEXT NOT NULL REFERENCES accounts(id), name TEXT NOT NULL,
+  configuration_json TEXT NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY(account_id,name)
+);
+CREATE TABLE IF NOT EXISTS terminal_status (
+  installation_id TEXT PRIMARY KEY REFERENCES installations(id), status_json TEXT NOT NULL, at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS trading (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id), installation_id TEXT NOT NULL,
+  generation TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 0, job_id TEXT,
+  revision INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS billing_events (id TEXT PRIMARY KEY, at INTEGER NOT NULL);

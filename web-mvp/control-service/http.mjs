@@ -1,5 +1,8 @@
 import { createServer } from "node:http";
 import { ControlError } from "./control-plane.mjs";
+import { readFileSync, existsSync } from "node:fs";
+import { eaCatalog } from "../lib/universal-contract.ts";
+import { billingCheckout, billingWebhook, billingConfigured } from "./subscription-provider.mjs";
 
 export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http://localhost:4310"] } = {}) {
   const rates = new Map();
@@ -21,11 +24,12 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (!req.url || req.url.includes("?") || req.url.includes("%")) throw new ControlError("INVALID_PATH", 400);
       const path = req.url, method = req.method, now = Date.now();
       for (const [key, rate] of rates) if (rate.until < now) rates.delete(key);
-      const rateKey = `${req.socket.remoteAddress}:${path === "/v1/pairings" ? "pair" : "all"}`;
+      const sensitive=["/v1/pairings","/v1/auth/login","/v1/auth/register"].includes(path);
+      const rateKey = `${req.socket.remoteAddress}:${sensitive ? "identity" : "all"}`;
       const rate = rates.get(rateKey) ?? { until: now + 60000, count: 0 };
-      if (++rate.count > (path === "/v1/pairings" ? 5 : 240)) throw new ControlError("RATE_LIMITED", 429);
+      if (++rate.count > (sensitive ? 5 : 240)) throw new ControlError("RATE_LIMITED", 429);
       rates.set(rateKey, rate);
-      let body = {};
+      let body = {},rawBody=Buffer.alloc(0);
       if (method === "POST") {
         if (req.headers["content-type"]?.split(";")[0] !== "application/json") throw new ControlError("JSON_REQUIRED", 415);
         let size = 0;
@@ -35,7 +39,8 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
           if (size > 4 * 1024 * 1024) throw new ControlError("BODY_TOO_LARGE", 413);
           chunks.push(chunk);
         }
-        try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new ControlError("INVALID_JSON", 400); }
+        rawBody=Buffer.concat(chunks);
+        try { body = JSON.parse(rawBody.toString("utf8")); } catch { throw new ControlError("INVALID_JSON", 400); }
         if (!body || typeof body !== "object" || Array.isArray(body)) throw new ControlError("INVALID_REQUEST", 400);
       }
       const browserToken = () => {
@@ -51,7 +56,22 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       };
       const keys = Object.keys(body);
       const exact = expectedKeys => { if (keys.length !== expectedKeys.length || keys.some(key => !expectedKeys.includes(key))) throw new ControlError("INVALID_REQUEST", 400); };
-      if (method === "GET" && path === "/health") return reply(200, { service: "stratum-control", protocolVersion: 1, authMode: "local-development", mt5Adapter: "not_connected", liveTradingAllowed: false });
+      if (method === "GET" && path === "/health") return reply(200, { service: "stratum-control", protocolVersion: 2, authMode: "local-development", mt5Adapter: "universal-connection", billingConfigured:billingConfigured(), liveTradingDefault:false });
+      if(method==="POST"&&path==="/v1/auth/register")return reply(201,plane.register(body));
+      if(method==="POST"&&path==="/v1/auth/login")return reply(200,plane.login(body));
+      if(method==="POST"&&path==="/v1/auth/logout"){exact([]);return reply(200,plane.logout(browserToken()));}
+      if(method==="GET"&&path==="/v1/catalog"){plane.browser(browserToken());return reply(200,eaCatalog);}
+      if(method==="POST"&&path==="/v1/subscription/checkout"){exact([]);return reply(200,await billingCheckout(plane,browserToken()));}
+      if(method==="POST"&&path==="/v1/subscription/webhook")return reply(200,await billingWebhook(plane,rawBody,req.headers["stripe-signature"]));
+      if(method==="GET"&&path==="/v1/strategies")return reply(200,{strategies:plane.strategies(browserToken())});
+      if(method==="POST"&&path==="/v1/strategies")return reply(200,plane.saveStrategy(browserToken(),body));
+      if(method==="POST"&&path==="/v1/trading")return reply(200,plane.setTrading(browserToken(),body));
+      if(method==="GET"&&path==="/v1/ea/download"){
+        const actor=plane.browser(browserToken());plane.entitlement(actor.accountId);
+        const file=new URL("../../IndicatorCodeExamples/universal/UniversalConnectionEA.ex5",import.meta.url);
+        if(!existsSync(file))throw new ControlError("EA_BUILD_UNAVAILABLE",503);
+        res.writeHead(200,{"Content-Type":"application/octet-stream","Content-Disposition":'attachment; filename="StratumConnection.ex5"'});return res.end(readFileSync(file));
+      }
       if (method === "GET" && path === "/v1/session") return reply(200, plane.sessionInfo(browserToken()));
       if (method === "POST" && path === "/v1/pairings") return reply(201, plane.beginPairing(body));
       if (method === "POST" && path === "/v1/pairings/review") { exact(["code"]); return reply(200, plane.reviewPairing(browserToken(), body.code)); }
@@ -69,6 +89,8 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (method === "POST" && path === "/v1/device/progress") return reply(200, plane.progress(device(), body));
       if (method === "POST" && path === "/v1/device/result") return reply(200, plane.finish(device(), body));
       if (method === "POST" && path === "/v1/device/failure") { exact(["jobId", "attemptId", "code"]); return reply(200, plane.fail(device(), body)); }
+      if(method==="POST"&&path==="/v1/device/status")return reply(200,plane.terminalStatus(device(),body));
+      if(method==="POST"&&path==="/v1/device/operation"){exact([]);return reply(200,plane.operation(device()));}
       throw new ControlError("NOT_FOUND", 404);
     } catch (error) {
       if (!res.writableEnded) reply(error instanceof ControlError ? error.status : 500, { error: error instanceof ControlError ? error.code : "INTERNAL_ERROR" });

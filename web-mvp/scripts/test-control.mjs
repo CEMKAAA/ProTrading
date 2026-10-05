@@ -10,8 +10,66 @@ import { DeviceClient } from "../control-service/device-client.mjs";
 import { keyPair, id, hash, makeProof, verifySigned, signed } from "../control-service/crypto.mjs";
 import { exampleRequest } from "../lib/control-example.ts";
 import { configurationSchema, resultSchema, summarizeResult } from "../lib/control-contract.ts";
+import { defaultConfiguration, universalConfigurationSchema, universalRequestSchema } from "../lib/universal-contract.ts";
+import { commandBody, packet, unpack, parseResult } from "../control-service/mt5-agent.mjs";
 
 const forbidden = (work, code) => assert.throws(work, error => error.code === code);
+function universal(f, family="orb") {
+  f.request={version:2,installationId:f.installation.id,idempotencyKey:id(),brokerServer:"Exness-MT5Trial15",symbol:"JP225m",
+    fromUtc:new Date(f.time()-14*86400000).toISOString(),toUtc:new Date(f.time()).toISOString(),auditWeeks:2,
+    dataPolicy:"existing_audit_semantics",configuration:defaultConfiguration(family)};
+  f.create=()=>f.plane.createJob(f.access,f.request);
+  return f;
+}
+
+test('all four complete input catalogs validate; missing/unknown values fail closed',()=>{
+ for(const family of ['orb','macross','sol','entrylab']){
+  const c=defaultConfiguration(family);assert.equal(universalConfigurationSchema.safeParse(c).success,true,family);
+  const missing=structuredClone(c);delete missing.inputs[Object.keys(missing.inputs)[0]];assert.equal(universalConfigurationSchema.safeParse(missing).success,false);
+  assert.equal(universalConfigurationSchema.safeParse({...c,runtime:{...c.runtime,execute:'BUY'}}).success,false);
+ }
+});
+test('line protocol cannot be injected through strategy name or broker server',()=>{
+ const f=universal(fixture());
+ assert.equal(universalConfigurationSchema.safeParse({...f.request.configuration,name:'x\ncommand=live'}).success,false);
+ assert.equal(universalRequestSchema.safeParse({...f.request,brokerServer:'x\ncommand=live'}).success,false);f.plane.close();
+});
+test('new registrations are unsubscribed; password authentication is real',()=>{
+ const plane=new ControlPlane();const a=plane.register({email:'first@example.com',password:'a-long-private-password'});
+ assert.equal(plane.sessionInfo(a.accessToken).subscriptionActive,false);
+ forbidden(()=>plane.strategies(a.accessToken),'ENTITLEMENT_EXPIRED');
+ forbidden(()=>plane.login({email:'first@example.com',password:'wrong'}),'INVALID_CREDENTIALS');
+ assert.equal(plane.browser(plane.login({email:'first@example.com',password:'a-long-private-password'}).accessToken).accountId,plane.browser(a.accessToken).accountId);plane.close();
+});
+test('strategy upsert restores every setting; other subscribers cannot see it',()=>{
+ const f=universal(fixture(),'entrylab'),c=f.request.configuration;c.name='My exact setup';c.runtime.maxOpen=20;c.runtime.nasGate=2;c.runtime.nasFlowMultiplier=1.5;c.runtime.timeMatrixEnabled=true;c.dayHourMasks[1]=1<<13;
+ f.plane.saveStrategy(f.access,c);c.runtime.maxOpen=10;f.plane.saveStrategy(f.access,c);
+ assert.deepEqual(f.plane.strategies(f.access),[c]);const other=f.plane.issueBrowserSession(f.plane.provisionAccount());assert.deepEqual(f.plane.strategies(other.accessToken),[]);f.plane.close();
+});
+test('Apply is research-only; Trading ON requires a complete result and recent matching terminal',()=>{
+ const f=universal(fixture());const job=f.create(),ticket=f.claim();
+ assert.equal(f.plane.operation(f.installation).payload.liveTradingAllowed,false);
+ forbidden(()=>f.plane.setTrading(f.access,{installationId:f.installation.id,enabled:true,jobId:job.id}),'AUDIT_REQUIRED');
+ const result=resultFor(f,ticket);result.engineRuntime='universal-adapter/v2';result.coverage.mode='existing_audit';f.plane.finish(f.installation,result);
+ forbidden(()=>f.plane.setTrading(f.access,{installationId:f.installation.id,enabled:true,jobId:job.id}),'TERMINAL_OFFLINE');
+ f.plane.terminalStatus(f.installation,{symbol:f.request.symbol,brokerServer:f.request.brokerServer,accountLogin:'123',runtime:'universal-adapter/v2',build:'test-fixture',openPositions:0,trading:false,configurationHash:'',error:''});
+ assert.equal(f.plane.setTrading(f.access,{installationId:f.installation.id,enabled:true,jobId:job.id}).enabled,true);
+ assert.equal(f.plane.operation(f.installation).payload.liveTradingAllowed,true);
+ f.advance(20000);assert.equal(f.plane.setTrading(f.access,{installationId:f.installation.id,enabled:false,jobId:null}).enabled,false);f.plane.close();
+});
+test('a newer Apply disables Trading; logout revokes authorization',()=>{
+ const f=universal(fixture());const job=f.create(),ticket=f.claim(),r=resultFor(f,ticket);r.engineRuntime='universal-adapter/v2';r.coverage.mode='existing_audit';f.plane.finish(f.installation,r);
+ f.plane.terminalStatus(f.installation,{symbol:f.request.symbol,brokerServer:f.request.brokerServer,accountLogin:'123',runtime:'universal-adapter/v2',build:'test-fixture',openPositions:0,trading:false,configurationHash:'',error:''});
+ f.plane.setTrading(f.access,{installationId:f.installation.id,enabled:true,jobId:job.id});f.advance(1);f.request.idempotencyKey=id();f.create();
+ assert.equal(f.plane.operation(f.installation).payload.liveTradingAllowed,false);f.plane.logout(f.access);forbidden(()=>f.plane.operation(f.installation),'CONTROLLER_LEASE_EXPIRED');f.plane.close();
+});
+test('local HMAC rejects tampering, binds settings and preserves DATA / actual R',()=>{
+ const f=universal(fixture()),job=f.create(),ticket=f.claim(),key='0123456789abcdef0123456789abcdef';
+ const body=commandBody('audit',ticket);assert.equal(unpack(packet(body,key),key).fields.command,'audit');assert.throws(()=>unpack(packet(body,key).replace('command=audit','command=live'),key));
+ const at=Date.parse(f.request.fromUtc)/1000;
+ const text=`jobId=${job.id}\nattemptId=${ticket.attemptId}\nconfigurationHash=${ticket.configurationHash}\nrequestHash=${ticket.requestHash}\nrows=2\nTRADES\n${at}|${at}|${at+60}|1|1.1|1.099|1.101|1.1009|0.9|1|1|TP|0.0001\n${at}|${at}|0|-1|1.1|1.101|1.099|0|0|0|0|DATA|\n`;
+ const r=parseResult(packet(text,key),key,ticket);assert.equal(r.trades[0].netR,.9);assert.equal(r.trades[1].outcome,'DATA');assert.equal(r.trades[1].netR,null);assert.equal(resultSchema.safeParse(r).success,true);f.plane.close();
+});
 function fixture(options = {}) {
   let time = Date.UTC(2026, 9, 4, 12);
   const signingKey = keyPair(), plane = new ControlPlane({ ...options, signingKey, now: () => time });

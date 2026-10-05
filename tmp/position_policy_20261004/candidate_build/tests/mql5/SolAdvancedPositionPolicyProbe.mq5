@@ -1,4 +1,52 @@
 #property strict
+// Simulated exposure only; this probe never starts the EA or submits orders.
+bool mockExposure=false;
+int mockOpen=2,mockSelected=0;
+int mockCloseCalls=0,mockModifyCalls=0;
+#include <Trade/Trade.mqh>
+class ProbeTrade:public CTrade
+{
+public:
+   bool PositionClose(const ulong ticket,const ulong deviation=ULONG_MAX)
+   {if(!mockExposure)return CTrade::PositionClose(ticket,deviation);mockCloseCalls++;return true;}
+   bool PositionClose(const string symbol,const ulong deviation=ULONG_MAX)
+   {if(!mockExposure)return CTrade::PositionClose(symbol,deviation);mockCloseCalls++;return true;}
+   bool PositionModify(const ulong ticket,const double sl,const double tp)
+   {if(!mockExposure)return CTrade::PositionModify(ticket,sl,tp);mockModifyCalls++;return true;}
+   bool PositionModify(const string symbol,const double sl,const double tp)
+   {if(!mockExposure)return CTrade::PositionModify(symbol,sl,tp);mockModifyCalls++;return true;}
+   uint ResultRetcode() const
+   {return mockExposure?TRADE_RETCODE_DONE:CTrade::ResultRetcode();}
+};
+#define CTrade ProbeTrade
+long RuntimeMagic();
+int ProbePositionsTotal(){return mockExposure?mockOpen:PositionsTotal();}
+ulong ProbePositionGetTicket(int index)
+{
+   if(!mockExposure)return PositionGetTicket(index);
+   mockSelected=index;return index>=0&&index<mockOpen?(ulong)(900000+index):0;
+}
+string ProbePositionGetString(ENUM_POSITION_PROPERTY_STRING key)
+{return mockExposure&&key==POSITION_SYMBOL?_Symbol:PositionGetString(key);}
+bool ProbePositionGetString(ENUM_POSITION_PROPERTY_STRING key,string &value)
+{if(!mockExposure)return PositionGetString(key,value);value=ProbePositionGetString(key);return true;}
+long ProbePositionGetInteger(ENUM_POSITION_PROPERTY_INTEGER key)
+{
+   if(!mockExposure)return PositionGetInteger(key);
+   if(key==POSITION_MAGIC)return RuntimeMagic();
+   if(key==POSITION_TYPE)return mockSelected%2==0?POSITION_TYPE_BUY:POSITION_TYPE_SELL;
+   if(key==POSITION_TIME)return (long)TimeCurrent()-3600;
+   return 0;
+}
+bool ProbePositionGetInteger(ENUM_POSITION_PROPERTY_INTEGER key,long &value)
+{if(!mockExposure)return PositionGetInteger(key,value);value=ProbePositionGetInteger(key);return true;}
+long ProbeAccountInfoInteger(ENUM_ACCOUNT_INFO_INTEGER key)
+{return mockExposure&&key==ACCOUNT_MARGIN_MODE?ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:AccountInfoInteger(key);}
+#define PositionsTotal ProbePositionsTotal
+#define PositionGetTicket ProbePositionGetTicket
+#define PositionGetString ProbePositionGetString
+#define PositionGetInteger ProbePositionGetInteger
+#define AccountInfoInteger ProbeAccountInfoInteger
 #define OnInit PolicyInit
 #define OnDeinit PolicyDeinit
 #define OnTick PolicyTick
@@ -12,9 +60,143 @@
 #undef OnTimer
 #undef OnChartEvent
 #undef OnTradeTransaction
+#undef PositionsTotal
+#undef PositionGetTicket
+#undef PositionGetString
+#undef PositionGetInteger
+#undef AccountInfoInteger
+#undef CTrade
 #include "MaPositionReference.mqh"
 int checks=0,failed=0;
 void Check(bool value,string name){checks++;if(!value){failed++;Print("FAIL ",name);}}
+void ClickTarget(string action)
+{
+   g_liqLibraryRPicker=true;g_liqLibraryOpen=false;g_liqLibraryOpenedAt=0;
+   LiqLibraryDraw();
+   if(action=="CUSTOM_APPLY")ObjectSetString(0,LiqLibraryObject("CUSTOM_VALUE"),OBJPROP_TEXT,"0.75");
+   string key=LiqLibraryObject(action);
+   Check(ObjectFind(0,key)>=0,"target control present");
+   long x=ObjectGetInteger(0,key,OBJPROP_XDISTANCE)+2;
+   double y=(double)ObjectGetInteger(0,key,OBJPROP_YDISTANCE)+2;
+   Check(LiqLibraryEvent(CHARTEVENT_CLICK,"",x,y),"target click consumed");
+}
+void CheckNativeNasCache()
+{
+   datetime closed=iTime(_Symbol,(ENUM_TIMEFRAMES)_Period,1),now=TimeCurrent(),opened=now-600;
+   Check(closed>0,"closed bar available for cache fixture");if(closed<=0)return;
+   LnNasPolicy old;LnNasDefaults(old);old.exitMode=2;old.flowVolume=true;old.flowMultiplier=9;
+   ArrayResize(g_lnNasEvents,1);ZeroMemory(g_lnNasEvents[0]);
+   g_lnNasEvents[0].at=now-20;g_lnNasEvents[0].dir=1;
+   g_lnNasEvents[0].stateAllowed=true;g_lnNasEvents[0].flowAllowed=true;LnNasIndexEvents();
+   g_lnNasBar=closed;g_lnNasSeed=opened;g_lnNasSignature="CURRENT_FIXTURE";
+   ArrayResize(g_lnNasNativeCaches,1);
+   g_lnNasNativeCaches[0].key=(string)old.sensitivity+"|"+(string)old.stateVolume+"|"+DoubleToString(old.stateMultiplier,8)
+      +"|"+(string)old.flowVolume+"|"+DoubleToString(old.flowMultiplier,8);
+   g_lnNasNativeCaches[0].signature=_Symbol+"|"+(string)_Period+"|"+(string)old.sensitivity+"|"
+      +(string)old.stateVolume+"|"+DoubleToString(old.stateMultiplier,8)+"|"
+      +(string)old.flowVolume+"|"+DoubleToString(old.flowMultiplier,8);
+   g_lnNasNativeCaches[0].bar=closed;g_lnNasNativeCaches[0].seed=opened;
+   ArrayResize(g_lnNasNativeCaches[0].events,1);ZeroMemory(g_lnNasNativeCaches[0].events[0]);
+   g_lnNasNativeCaches[0].events[0].at=opened+180;g_lnNasNativeCaches[0].events[0].dir=-1;
+   g_lnNasNativeCaches[0].events[0].stateAllowed=true;g_lnNasNativeCaches[0].events[0].flowAllowed=true;
+   ArrayResize(g_lnNasNativeCaches[0].state,1);g_lnNasNativeCaches[0].state[0]=0;
+   ArrayResize(g_lnNasNativeCaches[0].flow,1);g_lnNasNativeCaches[0].flow[0]=0;
+   ArrayResize(g_lnNasNativeCaches[0].buy,2);ArrayInitialize(g_lnNasNativeCaches[0].buy,-1);
+   ArrayResize(g_lnNasNativeCaches[0].sell,2);g_lnNasNativeCaches[0].sell[0]=0;g_lnNasNativeCaches[0].sell[1]=-1;
+   string current=LnNasPack(g_lnNas);ArrayFree(g_histRawCache);
+   Check(LnNasNativeExitAt(old,1,opened,now)==opened+180,"open trade uses its original NAS event stream");
+   Check(LnNasNativeExitAt(old,1,opened,now)==opened+180&&ArraySize(g_lnNasNativeCaches)==1,
+      "original policy cache reused without downloading or rebuilding");
+   Check(LnNasPack(g_lnNas)==current&&g_lnNasSignature=="CURRENT_FIXTURE"&&g_lnNasBar==closed
+      &&ArraySize(g_lnNasEvents)==1&&g_lnNasEvents[0].dir==1&&g_lnNasEvents[0].at==now-20
+      &&g_lnNasNextBuy[0]==0&&g_lnNasNextSell[0]==-1,"native exits leave audit/entry NAS cache untouched");
+   LnNasInvalidate();ArrayFree(g_lnNasNativeCaches);
+}
+void CheckApplyWithExposure()
+{
+   mockExposure=true;g_btRunning=false;ArrayFree(g_bridgePending);
+   LnNasDefaults(g_lnNas);g_lnNas.reverseExit=false;
+   for(ulong ticket=900000;ticket<900004;ticket++)
+   {for(int j=0;j<ArraySize(g_lnNasPlanFields);j++)GlobalVariableDel(TicketKey(ticket,g_lnNasPlanFields[j]));
+      GlobalVariableDel(TicketKey(ticket,"nasVersion"));}
+   g_targetModel=ERL_TARGET_FIXED_R;
+   Check(LnNasOpenCount()==2,"mock owns two opposite native positions");
+   Check(!LiqLibraryCanApply(),"full strategy replacement retains flat guard");
+   Check(LiqLibraryCanApply(false),"filter/R edits allowed with owned positions");
+   g_btRunning=true;Check(!LiqLibraryCanApply(false),"active batch backtest guard retained");g_btRunning=false;
+   ArrayResize(g_bridgePending,1);Check(!LiqLibraryCanApply(false),"pending bridge guard retained");ArrayFree(g_bridgePending);
+   string runtime=LiqLibraryFolder()+"\\nas_"+LiqLibraryHash(LnNasKey())+".txt",original="";
+   bool existed=FileIsExist(runtime,FILE_COMMON);
+   bool restore=existed&&LiqLibraryRead(runtime,original);
+   Check(!existed||restore,"runtime snapshot readable");
+   if(existed&&!restore){mockExposure=false;return;}
+   g_lnNasDraft=g_lnNas;
+   g_lnNasDraft.independent=true;g_lnNasDraft.gate=2;g_lnNasDraft.exitMode=2;
+   g_lnNasDraft.stateVolume=true;g_lnNasDraft.flowVolume=true;g_lnNasDraft.reverseExit=false;
+   g_lnNasPanel=true;LnNasDrawPanel();
+   ObjectSetString(0,LnNasObject("SVM"),OBJPROP_TEXT,"2.75");
+   ObjectSetString(0,LnNasObject("FVM"),OBJPROP_TEXT,"1.25");
+   ObjectSetString(0,LnNasObject("SENS"),OBJPROP_TEXT,"6");
+   ObjectSetString(0,LnNasObject("AGE"),OBJPROP_TEXT,"180");
+   ObjectSetString(0,LnNasObject("MAX"),OBJPROP_TEXT,"1");
+   ObjectSetString(0,LnNasObject("WAIT"),OBJPROP_TEXT,"03:20");
+   ObjectSetString(0,LnNasObject("RWAIT"),OBJPROP_TEXT,"00:45");
+   g_lnNasLastActionAt=0;g_configRefreshPending=false;
+   Check(LnNasPanelEvent(CHARTEVENT_OBJECT_CLICK,LnNasObject("APPLY")),"NAS Apply handled with exposure");
+   Check(g_lnNas.independent&&g_lnNas.maxSameOpen==1&&g_lnNas.gate==2&&g_lnNas.exitMode==2
+      &&g_lnNas.stateVolume&&g_lnNas.flowVolume&&!g_lnNas.reverseExit
+      &&g_lnNas.stateMultiplier==2.75&&g_lnNas.flowMultiplier==1.25&&g_lnNas.sensitivity==6
+      &&g_lnNas.entryAgeMinutes==180&&g_lnNas.waitMinutes==200&&g_lnNas.reverseWaitMinutes==45,
+      "NAS Apply reads every current field while MAX below exposure");
+   Check(g_configRefreshPending&&g_configRefreshRebuildSignals,"NAS Apply queues audit recalculation");
+   Check(LnNasOpenCount()==2,"applying lower MAX does not force liquidation");
+   LnNasPolicy owned;bool required=false,inverse=false;
+   LnNasPositionPolicy(900000,owned,required,inverse);
+   Check(owned.gate==0&&owned.exitMode==0&&!owned.reverseExit
+      &&!owned.independent&&!required&&!inverse,"owned positions retain original exit settings");
+   Check(LnNasPreserveOwnedPolicies(),"repeated Apply can preserve owned settings");
+   LnNasPositionPolicy(900000,owned,required,inverse);
+   Check(owned.gate==0&&owned.exitMode==0,"repeated Apply cannot overwrite an open position snapshot");
+   string packed=LnNasPack(g_lnNas);
+   Check(LnNasLoadRuntime()&&LnNasPack(g_lnNas)==packed,"applied NAS settings survive reload");
+   Check(LnNasStorePositionPolicy(900002),"future trade stores new exit policy");
+   LnNasPositionPolicy(900002,owned,required,inverse);
+   Check(LnNasPack(owned)==packed,"future trade uses newly applied NAS policy");
+   LnNasCopyPositionPolicy(900002,900003);
+   LnNasPositionPolicy(900003,owned,required,inverse);
+   Check(LnNasPack(owned)==packed,"position identifier migration retains policy");
+   g_lnNas.reverseExit=true;g_lnNas.reverseWaitMinutes=0;
+   // Old reverse OFF must remain OFF even if the new global policy enables it.
+   Check(LnNasCloseCausalReverse(TimeCurrent(),1,false),"reverse close dispatch succeeds");
+   Check(mockCloseCalls==0,"old reverse OFF stays OFF when new settings enable reverse");
+   g_lnNas.reverseExit=false;
+   SetPlan(900001,"nasReverse",1);SetPlan(900001,"nasRWait",1);
+   Check(LnNasCloseCausalReverse(TimeCurrent(),1,false)&&mockCloseCalls==1,
+      "old reverse ON stays ON when new settings disable reverse");
+   mockCloseCalls=0;
+   LnNasManageNative();Check(mockCloseCalls==0,"new NAS exit cannot retroactively close old NAS-OFF positions");
+   SetPlan(900001,"nasReverse",0);SetPlan(900001,"nasRWait",0);
+   CheckNativeNasCache();
+   g_lnNas.gate=0;g_lnNas.exitMode=0;g_fileBridgeOnlyMode=false;
+   ErlSignal signal;ZeroMemory(signal);signal.dir=1;signal.availableTime=TimeCurrent();
+   Check(!LnNasLiveAccept(signal)&&g_lastBlock=="MAX_OPEN","lower MAX blocks only future entries");
+   g_lnNasPanel=false;DeleteByPrefix(PFX+"NAS_");
+   g_configRefreshPending=false;ClickTarget("CUSTOM_APPLY");
+   Check(g_target==ERL_RR_CUSTOM&&TargetR(g_target)==0.75&&!g_liqLibraryRPicker
+      &&g_configRefreshPending,"custom R applies with owned positions and queues audit");
+   g_configRefreshPending=false;ClickTarget("RSTEP100");
+   Check(TargetR(g_target)==5.0&&!g_liqLibraryRPicker&&g_configRefreshPending,
+      "preset R applies with owned positions and queues audit");
+   Check(LnNasOpenCount()==2,"R edits do not liquidate positions");
+   Check(mockCloseCalls==0&&mockModifyCalls==0,"Apply never closes or modifies existing native orders");
+   for(ulong ticket=900000;ticket<900004;ticket++)
+   {for(int j=0;j<ArraySize(g_lnNasPlanFields);j++)GlobalVariableDel(TicketKey(ticket,g_lnNasPlanFields[j]));
+      GlobalVariableDel(TicketKey(ticket,"nasVersion"));}
+   if(restore)Check(LiqLibraryAtomicWrite(runtime,original),"runtime fixture restored");
+   else Check(FileDelete(runtime,FILE_COMMON),"runtime fixture removed");
+   mockExposure=false;g_configRefreshPending=false;g_configRefreshRebuildSignals=false;
+   EventKillTimer();
+}
 void CheckMaReference()
 {
    PolicyMaEvent reference[];ErlSignal events[];
@@ -99,6 +281,7 @@ void OnStart()
    Check(LnNasParseDuration("99:59",wait,5999)&&wait==5999,"MaCross reverse wait range");
    Check(!LnNasParseDuration("25:00",wait),"NAS wait range unchanged");
    CheckMaReference();
+   CheckApplyWithExposure();
    int f=FileOpen(MQLInfoString(MQL_PROGRAM_NAME)+".txt",FILE_WRITE|FILE_TXT|FILE_ANSI);
    if(f!=INVALID_HANDLE){FileWriteString(f,"checks="+(string)checks+" failed="+(string)failed);FileClose(f);}
 }

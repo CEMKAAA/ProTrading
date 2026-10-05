@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+import { universalConfigurationSchema, UNIVERSAL_RUNTIME } from "../lib/universal-contract.ts";
 import { backtestRequestSchema, deviceProofSchema, pairingRequestSchema, progressSchema, resultSchema, summarizeResult, ENGINE_RUNTIME } from "../lib/control-contract.ts";
 import { checkedPublicKey, hash, id, keyPair, signed, token, verifySigned } from "./crypto.mjs";
 
@@ -28,6 +30,86 @@ export class ControlPlane {
   }
   event(accountId, event, details = {}) { this.run("INSERT INTO audit_events(at,account_id,event,details_json) VALUES(?,?,?,?)", this.now(), accountId, event, JSON.stringify(details)); }
   close() { this.db.close(); }
+  register(input) {
+    const v=parse(z.object({email:z.string().email().max(254),password:z.string().min(12).max(128)}).strict(),input);
+    const email=v.email.toLowerCase(),salt=randomBytes(16).toString("hex"),accountId=id();
+    return this.atomic(()=>{
+      requireThat(!this.get("SELECT account_id FROM identities WHERE email=?",email),"EMAIL_UNAVAILABLE",409);
+      this.provisionAccount(accountId,0);
+      this.run("INSERT INTO identities VALUES(?,?,?,?)",accountId,email,salt,scryptSync(v.password,salt,64).toString("hex"));
+      return this.issueBrowserSession(accountId);
+    });
+  }
+  login(input) {
+    const v=parse(z.object({email:z.string().email().max(254),password:z.string().min(1).max(128)}).strict(),input);
+    const row=this.get("SELECT * FROM identities WHERE email=?",v.email.toLowerCase());
+    const derived=scryptSync(v.password,row?.salt??"invalid-login-salt",64);
+    requireThat(row&&timingSafeEqual(derived,Buffer.from(row.password_hash,"hex")),"INVALID_CREDENTIALS",401);
+    return this.issueBrowserSession(row.account_id);
+  }
+  logout(accessToken) {
+    const actor=this.browser(accessToken);
+    this.run("DELETE FROM leases WHERE session_id=?",actor.sessionId);
+    this.run("UPDATE jobs SET state='cancelled',failure_code='SESSION_ENDED',updated_at=? WHERE account_id=? AND state IN ('queued','running')",this.now(),actor.accountId);
+    this.run("DELETE FROM sessions WHERE id=?",actor.sessionId);
+    this.run("UPDATE trading SET enabled=0,revision=revision+1 WHERE account_id=?",actor.accountId);
+    return {loggedOut:true};
+  }
+  saveStrategy(accessToken,input) {
+    const actor=this.browser(accessToken);this.entitlement(actor.accountId);
+    const c=parse(universalConfigurationSchema,input);
+    requireThat(this.get("SELECT COUNT(*) AS n FROM strategies WHERE account_id=?",actor.accountId).n<1024
+      ||this.get("SELECT name FROM strategies WHERE account_id=? AND name=?",actor.accountId,c.name),"STRATEGY_LIMIT",409);
+    this.run("INSERT INTO strategies VALUES(?,?,?,?) ON CONFLICT(account_id,name) DO UPDATE SET configuration_json=excluded.configuration_json,updated_at=excluded.updated_at",actor.accountId,c.name,JSON.stringify(c),this.now());
+    return {saved:true,name:c.name};
+  }
+  strategies(accessToken) {
+    const actor=this.browser(accessToken);this.entitlement(actor.accountId);
+    return this.all("SELECT configuration_json FROM strategies WHERE account_id=? ORDER BY name",actor.accountId).map(r=>JSON.parse(r.configuration_json));
+  }
+  terminalStatus(installation,input) {
+    this.currentLease(installation);
+    const v=parse(z.object({symbol:z.string().min(1).max(64),brokerServer:z.string().min(1).max(100),accountLogin:z.string().max(32),
+      runtime:z.literal(UNIVERSAL_RUNTIME),build:z.string().max(100),openPositions:z.number().int().min(0),
+      trading:z.boolean(),configurationHash:z.string().max(64),error:z.string().max(200)}).strict(),input);
+    this.run("INSERT INTO terminal_status VALUES(?,?,?) ON CONFLICT(installation_id) DO UPDATE SET status_json=excluded.status_json,at=excluded.at",installation.id,JSON.stringify(v),this.now());
+    return {accepted:true};
+  }
+  setTrading(accessToken,input) {
+    const v=parse(z.object({installationId:z.string().uuid(),enabled:z.boolean(),jobId:z.string().uuid().nullable()}).strict(),input);
+    const actor=this.browser(accessToken),installation=this.ownedInstallation(actor,v.installationId);
+    return this.atomic(()=>{
+      if(v.enabled){
+        this.entitlement(actor.accountId);const lease=this.currentLease(installation);
+        requireThat(lease.session_id===actor.sessionId,"NOT_ACTIVE_CONTROLLER",403);
+        const job=this.get("SELECT * FROM jobs WHERE id=? AND account_id=? AND installation_id=?",v.jobId,actor.accountId,installation.id);
+        requireThat(job?.state==="completed"&&job.generation===lease.generation,"AUDIT_REQUIRED",409);
+        const result=JSON.parse(job.result_json),request=JSON.parse(job.request_json);
+        requireThat(request.version===2&&result.summary.coverageComplete&&result.summary.data===0,"AUDIT_INCOMPLETE",409);
+        requireThat(!this.get("SELECT id FROM jobs WHERE account_id=? AND created_at>?",actor.accountId,job.created_at),"NEWER_CONFIGURATION_EXISTS",409);
+        const status=this.get("SELECT * FROM terminal_status WHERE installation_id=?",installation.id);
+        requireThat(status&&status.at>this.now()-15000,"TERMINAL_OFFLINE",409);
+        const current=JSON.parse(status.status_json);
+        requireThat(current.symbol===request.symbol&&current.brokerServer===request.brokerServer&&current.runtime===UNIVERSAL_RUNTIME,"TERMINAL_MARKET_MISMATCH",409);
+        requireThat(current.openPositions===0||current.configurationHash===job.configuration_hash,"OPEN_POSITIONS_DIFFERENT_SETUP",409);
+        this.run("INSERT INTO trading VALUES(?,?,?,1,?,1,?) ON CONFLICT(account_id) DO UPDATE SET installation_id=excluded.installation_id,generation=excluded.generation,enabled=1,job_id=excluded.job_id,revision=trading.revision+1,updated_at=excluded.updated_at",actor.accountId,installation.id,lease.generation,job.id,this.now());
+      }else this.run("UPDATE trading SET enabled=0,revision=revision+1,updated_at=? WHERE account_id=?",this.now(),actor.accountId);
+      this.event(actor.accountId,v.enabled?"trading_requested_on":"trading_requested_off",{jobId:v.jobId,installationId:installation.id});
+      return this.tradingInfo(actor.accountId);
+    });
+  }
+  tradingInfo(accountId) {
+    const row=this.get("SELECT * FROM trading WHERE account_id=?",accountId);
+    return row?{enabled:!!row.enabled,jobId:row.job_id,revision:row.revision,installationId:row.installation_id}:{enabled:false,jobId:null,revision:0};
+  }
+  operation(installation) {
+    const lease=this.currentLease(installation);
+    const row=this.get("SELECT * FROM trading WHERE account_id=?",installation.account_id);
+    const job=row?.enabled&&row.generation===lease.generation&&row.installation_id===installation.id?this.get("SELECT * FROM jobs WHERE id=? AND state='completed'",row.job_id):null;
+    return this.ticket({version:1,kind:"operation_lease",audience:"stratum-mt5",installationId:installation.id,accountId:installation.account_id,
+      generation:lease.generation,expiresAt:Math.min(lease.expires_at,this.now()+15000),liveTradingAllowed:!!job,
+      configurationHash:job?.configuration_hash??null,request:job?JSON.parse(job.request_json):null});
+  }
 
   // Internal identity-provider/operator boundary, deliberately not an HTTP signup endpoint.
   provisionAccount(accountId = id(), entitlementUntil = this.now() + 86400000) {
@@ -55,6 +137,8 @@ export class ControlPlane {
     const actor = this.browser(accessToken);
     const lease = this.get("SELECT installation_id AS installationId,expires_at AS expiresAt,session_id AS sessionId FROM leases WHERE account_id=?", actor.accountId);
     return { accountId: actor.accountId, entitlementUntil: actor.entitlementUntil, subscriptionActive: actor.entitlementUntil > this.now(),
+      email:this.get("SELECT email FROM identities WHERE account_id=?",actor.accountId)?.email??null,
+      trading:this.tradingInfo(actor.accountId),terminalStatuses:this.all("SELECT installation_id AS installationId,status_json,at FROM terminal_status WHERE installation_id IN (SELECT id FROM installations WHERE account_id=?)",actor.accountId).map(r=>({...JSON.parse(r.status_json),installationId:r.installationId,reportedAt:r.at})),
       installations: this.all("SELECT id,label,state,created_at AS createdAt FROM installations WHERE account_id=? ORDER BY created_at DESC", actor.accountId),
       lease: lease ? { installationId: lease.installationId, expiresAt: lease.expiresAt, active: lease.expiresAt > this.now(), controlledHere: lease.sessionId === actor.sessionId } : null };
   }
@@ -104,6 +188,7 @@ export class ControlPlane {
       this.run("UPDATE jobs SET state='cancelled',failure_code='CONTROLLER_REPLACED',updated_at=? WHERE account_id=? AND state IN ('queued','running')", this.now(), actor.accountId);
       this.run("INSERT INTO leases(account_id,installation_id,session_id,generation,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,generation=excluded.generation,expires_at=excluded.expires_at", actor.accountId, installationId, actor.sessionId, generation, expiresAt);
       this.event(actor.accountId, "controller_activated", { installationId, generation });
+      this.run("UPDATE trading SET enabled=0,revision=revision+1 WHERE account_id=?",actor.accountId);
       return { installationId, generation, expiresAt };
     });
   }
@@ -160,6 +245,7 @@ export class ControlPlane {
       this.expireJobs();
       requireThat(!this.get("SELECT id FROM jobs WHERE account_id=? AND state IN ('queued','running')", actor.accountId), "BACKTEST_ALREADY_ACTIVE", 409);
       const jobId = id();
+      if(request.version===2)this.run("UPDATE trading SET enabled=0,revision=revision+1 WHERE account_id=?",actor.accountId);
       this.run("INSERT INTO jobs(id,account_id,installation_id,generation,idempotency_key,request_json,configuration_hash,request_hash,state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'queued',?,?)", jobId, actor.accountId, installation.id, lease.generation, request.idempotencyKey, JSON.stringify(request), configurationHash, requestHash, this.now(), this.now());
       this.event(actor.accountId, "backtest_queued", { jobId, configurationHash, requestHash });
       return this.viewJob(this.get("SELECT * FROM jobs WHERE id=?", jobId));
@@ -183,7 +269,7 @@ export class ControlPlane {
     const lease = this.get("SELECT expires_at FROM leases WHERE account_id=? AND generation=?", row.account_id, row.generation);
     return this.ticket({ version: 1, kind: "backtest_job", audience: "stratum-mt5", accountId: row.account_id, installationId: row.installation_id,
       generation: row.generation, jobId: row.id, attemptId: row.attempt_id, configurationHash: row.configuration_hash, requestHash: row.request_hash,
-      engineRuntime: ENGINE_RUNTIME, expiresAt: Math.min(row.claim_until, lease?.expires_at ?? 0), liveTradingAllowed: false, request: JSON.parse(row.request_json) });
+      engineRuntime: JSON.parse(row.request_json).version===2?UNIVERSAL_RUNTIME:ENGINE_RUNTIME, expiresAt: Math.min(row.claim_until, lease?.expires_at ?? 0), liveTradingAllowed: false, request: JSON.parse(row.request_json) });
   }
   runningJob(installation, jobId, attemptId) {
     const lease = this.currentLease(installation), row = this.get("SELECT * FROM jobs WHERE id=? AND installation_id=? AND account_id=?", jobId, installation.id, installation.account_id);
@@ -219,6 +305,7 @@ export class ControlPlane {
       const row = this.runningJob(installation, result.jobId, result.attemptId), request = JSON.parse(row.request_json);
       requireThat(result.configurationHash === row.configuration_hash && result.requestHash === row.request_hash, "RESULT_CONFIG_MISMATCH", 409);
       requireThat(result.symbol === request.symbol && result.brokerServer === request.brokerServer, "RESULT_MARKET_MISMATCH", 409);
+      requireThat(result.engineRuntime===(request.version===2?UNIVERSAL_RUNTIME:ENGINE_RUNTIME),"RESULT_RUNTIME_MISMATCH",409);
       const from = Date.parse(request.fromUtc), to = Date.parse(request.toUtc);
       requireThat(result.coverage.missingIntervals.every(i => Date.parse(i.fromUtc) >= from && Date.parse(i.toUtc) <= to), "COVERAGE_OUTSIDE_WINDOW", 400);
       requireThat(result.trades.every(t => Date.parse(t.entryUtc) >= from && Date.parse(t.entryUtc) < to && (t.exitUtc === null || Date.parse(t.exitUtc) <= to)), "RESULT_OUTSIDE_WINDOW", 400);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 const base="http://127.0.0.1:4310";
-for(const [route,expected] of [["/","Your ideas."],["/studio","Put your idea to the test."]]) {
+for(const [route,expected] of [["/","Your ideas."],["/studio","Your controls."]]) {
  const res=await fetch(base+route);assert.equal(res.status,200,route);
  const html=await res.text();assert.ok(html.includes(expected),`Product content on ${route}`);
  assert.ok(!html.includes("Your site is taking shape"),"Starter was replaced");

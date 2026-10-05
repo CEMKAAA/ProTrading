@@ -119,6 +119,79 @@ bool LnNasCompatible(const LnNasPolicy &p)
       &&AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)return false;
    return true;
 }
+// Reuse ticket plans: configuration edits affect future entries, not open trades.
+string g_lnNasPlanFields[]={"nasGate","nasExit","nasSV","nasFV","nasIndependent","nasReverse",
+   "nasSVM","nasFVM","nasSens","nasWait","nasAge","nasMax","nasRWait","nasRequired","nasInverse"};
+bool LnNasStorePositionPolicy(ulong ticket)
+{
+   if(GetPlan(ticket,"nasVersion",0)==1)return true;
+   double values[]={g_lnNas.gate,g_lnNas.exitMode,(double)g_lnNas.stateVolume,(double)g_lnNas.flowVolume,
+      (double)g_lnNas.independent,(double)g_lnNas.reverseExit,g_lnNas.stateMultiplier,g_lnNas.flowMultiplier,
+      g_lnNas.sensitivity,g_lnNas.waitMinutes,g_lnNas.entryAgeMinutes,g_lnNas.maxSameOpen,g_lnNas.reverseWaitMinutes,
+      (double)(g_targetModel==ERL_TARGET_OPPOSITE_SIGNAL),(double)g_invertMode};
+   for(int i=0;i<ArraySize(values);i++)
+      if(GlobalVariableSet(TicketKey(ticket,g_lnNasPlanFields[i]),values[i])==0)return false;
+   return GlobalVariableSet(TicketKey(ticket,"nasVersion"),1)>0;
+}
+void LnNasCopyPositionPolicy(ulong from,ulong to)
+{
+   for(int i=0;i<ArraySize(g_lnNasPlanFields);i++)CopyPlanField(from,to,g_lnNasPlanFields[i]);
+   CopyPlanField(from,to,"nasVersion");
+}
+void LnNasPositionPolicy(ulong ticket,LnNasPolicy &p,bool &required,bool &inverse)
+{
+   p=g_lnNas;required=g_targetModel==ERL_TARGET_OPPOSITE_SIGNAL;inverse=g_invertMode;
+   if(GetPlan(ticket,"nasVersion",0)!=1)return;
+   p.gate=(int)GetPlan(ticket,"nasGate");p.exitMode=(int)GetPlan(ticket,"nasExit");
+   p.stateVolume=GetPlan(ticket,"nasSV")!=0;p.flowVolume=GetPlan(ticket,"nasFV")!=0;
+   p.independent=GetPlan(ticket,"nasIndependent")!=0;p.reverseExit=GetPlan(ticket,"nasReverse")!=0;
+   p.stateMultiplier=GetPlan(ticket,"nasSVM");p.flowMultiplier=GetPlan(ticket,"nasFVM");
+   p.sensitivity=(int)GetPlan(ticket,"nasSens");p.waitMinutes=(int)GetPlan(ticket,"nasWait");
+   p.entryAgeMinutes=(int)GetPlan(ticket,"nasAge");p.maxSameOpen=(int)GetPlan(ticket,"nasMax");
+   p.reverseWaitMinutes=(int)GetPlan(ticket,"nasRWait");
+   required=GetPlan(ticket,"nasRequired")!=0;inverse=GetPlan(ticket,"nasInverse")!=0;
+}
+bool LnNasPreserveOwnedPolicies()
+{
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0||PositionGetString(POSITION_SYMBOL)!=_Symbol||!IsOwnMagic(PositionGetInteger(POSITION_MAGIC)))continue;
+      if(!LnNasStorePositionPolicy(ticket))
+      {g_liqLibraryStatus="Open position settings could not be saved; retry";return false;}
+   }
+   return true;
+}
+// Isolate the existing NAS cache for older open-trade configurations. ArraySwap
+// avoids copying histories and retains one closed-bar calculation per policy.
+struct LnNasNativeCache
+{
+   string key,signature;datetime bar,seed;
+   LnNasEvent events[];int state[],flow[],buy[],sell[];
+};
+LnNasNativeCache g_lnNasNativeCaches[];
+void LnNasSwapNativeCache(LnNasNativeCache &cache)
+{
+   ArraySwap(g_lnNasEvents,cache.events);ArraySwap(g_lnNasPrevState,cache.state);
+   ArraySwap(g_lnNasPrevFlow,cache.flow);ArraySwap(g_lnNasNextBuy,cache.buy);ArraySwap(g_lnNasNextSell,cache.sell);
+   string signature=g_lnNasSignature;g_lnNasSignature=cache.signature;cache.signature=signature;
+   datetime bar=g_lnNasBar,seed=g_lnNasSeed;g_lnNasBar=cache.bar;g_lnNasSeed=cache.seed;cache.bar=bar;cache.seed=seed;
+}
+datetime LnNasNativeExitAt(const LnNasPolicy &policy,int dir,datetime opened,datetime now)
+{
+   if(policy.exitMode==0)return 0;
+   string key=(string)policy.sensitivity+"|"+(string)policy.stateVolume+"|"+DoubleToString(policy.stateMultiplier,8)
+      +"|"+(string)policy.flowVolume+"|"+DoubleToString(policy.flowMultiplier,8);
+   int slot=-1;
+   for(int i=0;i<ArraySize(g_lnNasNativeCaches);i++)if(g_lnNasNativeCaches[i].key==key){slot=i;break;}
+   if(slot<0)
+   {slot=ArraySize(g_lnNasNativeCaches);ArrayResize(g_lnNasNativeCaches,slot+1);g_lnNasNativeCaches[slot].key=key;}
+   LnNasPolicy current=g_lnNas;string status=g_lnNasStatus;
+   LnNasSwapNativeCache(g_lnNasNativeCaches[slot]);g_lnNas=policy;
+   datetime at=LnNasExitAt(dir,opened,now,policy.waitMinutes);
+   LnNasSwapNativeCache(g_lnNasNativeCaches[slot]);g_lnNas=current;g_lnNasStatus=status;
+   return at;
+}
 void LnNasInvalidate(){g_lnNasBar=0;g_lnNasSeed=0;g_lnNasSignature="";g_lnNasOverlayBar=0;g_lnNasOverlayRetryAt=0;ArrayFree(g_lnNasEvents);ArrayFree(g_lnNasDelayed);ArrayFree(g_lnNasRejected);}
 bool LnNasDelayed(string id)
 {for(int i=0;i<ArraySize(g_lnNasDelayed);i++)if(g_lnNasDelayed[i]==id)return true;return false;}
@@ -325,7 +398,6 @@ bool LnNasLiveAccept(ErlSignal &signal)
 }
 bool LnNasCloseCausalReverse(datetime signalAt,int direction,bool required)
 {
-   if(!required&&!g_lnNas.reverseExit)return true;
    bool ok=true;
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -336,7 +408,10 @@ bool LnNasCloseCausalReverse(datetime signalAt,int direction,bool required)
       if(dir==direction)continue;
       datetime opened=(datetime)PositionGetInteger(POSITION_TIME);
       if(signalAt<=opened)continue;
-      if(!required&&TimeCurrent()<opened+(datetime)(g_lnNas.reverseWaitMinutes*60))continue;
+      LnNasPolicy policy;bool positionRequired=required,inverse=false;
+      LnNasPositionPolicy(ticket,policy,positionRequired,inverse);
+      if(!positionRequired&&!policy.reverseExit)continue;
+      if(!positionRequired&&TimeCurrent()<opened+(datetime)(policy.reverseWaitMinutes*60))continue;
       if(!trade.PositionClose(ticket)||trade.ResultRetcode()!=TRADE_RETCODE_DONE)ok=false;
    }
    return ok;
@@ -358,7 +433,6 @@ void LnNasRetryPending()
 }
 void LnNasManageNative()
 {
-   if(!LnNasActive()||(g_lnNas.exitMode==0&&!g_lnNas.reverseExit))return;
    datetime now=TimeCurrent();
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
@@ -367,8 +441,12 @@ void LnNasManageNative()
          ||!IsOwnMagic((long)PositionGetInteger(POSITION_MAGIC)))continue;
       datetime opened=(datetime)PositionGetInteger(POSITION_TIME);
       int dir=PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?1:-1;
-      datetime reverse=LnNasReverseAt(g_histRawCache,dir,opened,now,g_lnNas.reverseWaitMinutes);
-      datetime nas=LnNasExitAt(dir,opened,now,g_lnNas.waitMinutes);
+      LnNasPolicy policy,current=g_lnNas;bool required=false,inverse=false,originalInverse=g_invertMode;
+      LnNasPositionPolicy(ticket,policy,required,inverse);g_lnNas=policy;g_invertMode=inverse;
+      bool active=LnNasActive()&&(policy.exitMode!=0||policy.reverseExit);
+      datetime reverse=active?LnNasReverseAt(g_histRawCache,dir,opened,now,policy.reverseWaitMinutes):0;
+      g_lnNas=current;g_invertMode=originalInverse;
+      datetime nas=active?LnNasNativeExitAt(policy,dir,opened,now):0;
       if((reverse>0&&reverse<=now)||(nas>0&&nas<=now))
       {
          if(!trade.PositionClose(ticket)||trade.ResultRetcode()!=TRADE_RETCODE_DONE)
@@ -623,9 +701,8 @@ bool LnNasPanelEvent(int id,string object,long mx=0,double my=0)
    if(!LnNasCompatible(next)||(g_targetModel==ERL_TARGET_OPPOSITE_SIGNAL
       &&(next.gate!=0||next.exitMode!=0||next.independent||next.reverseExit!=InpCloseOnReverse||next.reverseWaitMinutes>0)))
    {g_lnNasStatus="Filter/target/account combination unavailable";LnNasDrawPanel();return true;}
-   if(!LiqLibraryCanApply()){g_lnNasStatus=g_liqLibraryStatus;LnNasDrawPanel();return true;}
-   if(next.independent&&next.maxSameOpen>0&&LnNasOpenCount()>next.maxSameOpen)
-   {g_lnNasStatus="MAX below current OPEN count; close exposure first";LnNasDrawPanel();return true;}
+   if(!LiqLibraryCanApply(false)){g_lnNasStatus=g_liqLibraryStatus;LnNasDrawPanel();return true;}
+   if(!LnNasPreserveOwnedPolicies()){g_lnNasStatus=g_liqLibraryStatus;LnNasDrawPanel();return true;}
    LnNasPolicy previous=g_lnNas;g_lnNas=next;
    if(!LnNasSaveRuntime()){g_lnNas=previous;g_lnNasStatus="Settings save failed";LnNasDrawPanel();return true;}
    g_lnNasDraft=g_lnNas;LnNasInvalidate();g_lnNasStatus="Applied (NAS on chart TF; exits native MT5 only)";
