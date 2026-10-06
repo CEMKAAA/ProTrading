@@ -12,6 +12,11 @@ for(const [route,expected] of [["/","Your ideas."],["/studio","Your controls."]]
   assert.ok(!html.includes('<html lang="en" class="dark"'),"Light theme is not overridden at root");
   assert.ok(html.includes("three-dimensional gold Stratum coin"),"Hero 3D scene renders its accessible description");
   assert.ok(html.includes("Gold and silver market tokens"),"Second 3D scene renders its accessible description");
+  assert.equal((html.match(/class="scroll-chapter-track"/g)??[]).length,7,"All chapter transitions render on the home page");
+ } else {
+  for(const label of ["Strategy library","Entry builder","YOUR CONTROL DECK","Geometry","Time Matrix"])assert.ok(html.includes(label),`Control-room launcher ${label}`);
+  assert.ok(html.includes('role="switch"')&&html.includes('aria-checked="false"'),"Accessible disabled lever switches render");
+  assert.ok(html.includes("Pause coin animation"),"Coin flow starts automatically but can be paused");
  }
  console.log(`PASS ${route}: HTTP 200, metadata/product content, disclosure, controls, anchors`);
 }

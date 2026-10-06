@@ -1,6 +1,9 @@
 # Stratum: Single-EA Connection Architecture
 
-Status: executable control-plane foundation, local development only.
+Status: universal four-engine MT5 adapter and control plane implemented;
+public production deployment remains gated. Current verification and limitations
+are maintained in `MT5_AUTHORIZATION_VERIFICATION.md`, which supersedes the
+early v1 implementation-status table below.
 One personalized connection EA is the product boundary. The four production EAs
 are reference systems, not four separately deployed customer integrations.
 
@@ -65,8 +68,9 @@ and parity tests, not merely more enum names in the request schema.
   and cached-result access. A local dashboard toggle cannot bypass these guards.
 - The web sends configuration and authority; local EA evaluation is not a cloud
   signal-per-tick dependency. Licenses refresh outside the hot calculation path.
-- Backtest authority and live authority are separate. The implemented foundation
-  issues backtest-only tickets; a live permission endpoint does not yet exist.
+- Backtest authority and live authority are separate. The universal adapter
+  supports explicit Trading ON after a matching complete audit; Apply is never
+  a live permission request. Native authority is independently verified in EX5.
 - Known subscription expiry bounds every lease. Revocation/connection failure
   blocks new work as soon as observed, and no later than the lease deadline.
 - Existing positions retain protective SL/TP and emergency/risk-reducing
@@ -88,7 +92,7 @@ and parity tests, not merely more enum names in the request schema.
 | Studio connection UI | `components/connection-panel.tsx` | Real local API; no fake terminal state |
 | Development protocol probe | `control-service/device-dev.mjs` | Not an EA; rejects work with `MT5_ADAPTER_NOT_CONNECTED` |
 | Subscriber identity and billing | Provider boundary in control plane | Not configured; production startup refused |
-| MT5 rule/audit adapter and connection EX5 | Product runtime boundary | Not implemented or shipped in this change |
+| MT5 rule/audit adapter and connection EX5 | `IndicatorCodeExamples/universal` | Four canonical engines bundled; local native verification, public release gated |
 
 The web site remains a static export. The Node control service is a separate
 process; adding it does not magically create API routes in the static deployment.
@@ -243,8 +247,9 @@ matching engine build. Authorization does not solve overfitting or fill accuracy
 | POST | `/v1/device/heartbeat`, `/claim` | Approved device, active controller and entitlement |
 | POST | `/v1/device/progress`, `/result`, `/failure` | Device proof + current generation/attempt |
 
-No database credentials, account passwords, signing private keys, or live order
-endpoint are exposed to the browser. Same-origin HTTPS deployment and genuine
+No database credentials, broker passwords or signing private keys are exposed
+to the browser. The browser can request scoped Trading ON/OFF, not submit raw
+broker orders. Same-origin HTTPS deployment and genuine
 identity/billing verification are required before opening this service remotely.
 
 ## 8. Run And Test

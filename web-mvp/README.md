@@ -33,16 +33,20 @@ Theme is deliberately light, as requested. It does not follow OS dark preference
   loopback control service. It supports reviewed one-use installation pairing,
   one active controller generation, signed immutable research jobs, work-based
   progress, ownership-scoped results, revocation, and durable SQLite state.
-  This is explicitly local development, not subscriber/billing authentication.
+  The universal connection EX5 bundles the four existing engines. It verifies
+  server-signed EA commands itself, while the companion handles device proofs.
+  Register/login and subscription-provider code exist; public production
+  identity/billing deployment is not configured.
 
 ## Not Implemented Or Claimed
 
-There is no production subscription/login integration, real market-data feed,
-live strategy execution, actual MT5 execution adapter, downloadable certified EX5,
-or production audit engine connected to this website. Protocol pairing can be
-tested locally, but the development probe is not an EA. Synthetic results are not investment-performance
-evidence. The demo mirrors BUY logic for SELL; the intended full builder must
-support independent BUY/SELL sequences and stateful engines.
+There is no publicly deployed production subscription service or independently
+certified installer. The universal MT5 adapter is implemented separately from the
+synthetic demo and requires an approved installation and leased server authority.
+See `docs/MT5_AUTHORIZATION_VERIFICATION.md` for tests and remaining release gates.
+`device-dev.mjs` remains a protocol-only probe; use `mt5-agent.mjs` with the
+connection EX5 for real broker-backed audits. Synthetic results are not investment
+performance evidence and must never be confused with native audit results.
 
 The fixture replay is OHLC-based, not tick-based. It marks both-boundary candle
 ambiguity DATA. Example spread is included in fill geometry; commission, swap,

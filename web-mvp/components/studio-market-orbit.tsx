@@ -1,5 +1,8 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { Pause, Play } from "lucide-react";
+import { studioCoinPose } from "@/lib/scene-motion";
+import { useMotionPreference } from "@/lib/use-motion-preference";
 
 const markets = [
   ["BTCUSD", "BTC", "#e8b650", "#584018"], ["EURUSD", "FX", "#b6d0df", "#27475c"],
@@ -9,6 +12,8 @@ const markets = [
 
 export default function StudioMarketOrbit() {
   const host = useRef<HTMLDivElement>(null), [fallback, setFallback] = useState(false);
+  const [paused, setPaused] = useState(false), pausedRef = useRef(false);
+  const reduced = useMotionPreference();
   useEffect(() => {
     const element = host.current; if (!element) return;
     let disposed = false, cleanup: (() => void) | undefined;
@@ -64,19 +69,28 @@ export default function StudioMarketOrbit() {
         while (root?.parent && root.parent !== scene) root = root.parent;
         hovered = root?.userData.index ?? -1; renderer.domElement.style.cursor = hovered >= 0 ? "grab" : "default";
       };
-      const leave = () => { hovered = -1; };
+      const leave = () => { hovered = -1; pointer.set(9, 9); renderer.domElement.style.cursor = "default"; };
       renderer.domElement.addEventListener("pointermove", move); renderer.domElement.addEventListener("pointerleave", leave);
       const render = (now: number) => {
         frame = requestAnimationFrame(render);
         if (document.hidden || !visible || now - lastFrame < 32) { if(document.hidden || !visible)lastFrame=now; return; }
-        const dt = Math.min((now-lastFrame)/1000, .05); lastFrame=now; if (!motion.matches) activeTime += dt;
-        const mobile = width < 500, count = mobile ? 3 : coins.length;
+        const dt = Math.min((now-lastFrame)/1000, .1); lastFrame=now;
+        if (!motion.matches && !pausedRef.current) activeTime += dt;
+        const mobile = width < 500;
+        // Re-evaluate a stationary pointer as coins move underneath it.
+        if (pointer.x !== 9) {
+          raycaster.setFromCamera(pointer, camera);
+          let root = raycaster.intersectObjects(coins.map(c => c.coin), true)[0]?.object;
+          while (root?.parent && root.parent !== scene) root = root.parent;
+          hovered = root?.userData.index ?? -1;
+          renderer.domElement.style.cursor = hovered >= 0 ? "grab" : "default";
+        }
         coins.forEach((state, i) => {
-          state.coin.visible = i < count; const step = (viewWidth - 2.7) / Math.max(1, count-1), t = activeTime*.38 + i*1.8;
-          state.hover += ((i === hovered ? 1 : 0) - state.hover) * .1;
-          state.turn += dt * (motion.matches ? 0 : i === hovered ? 2.2 : .08);
-          state.coin.position.set(-viewWidth/2+1.35+i*step+Math.sin(t)*.28, Math.sin(t*.85)*.65+(i%2?.35:-.25), Math.cos(t)*.3);
-          state.coin.rotation.set(Math.sin(t)*.19, Math.sin(t*.7)*.33+Math.sin(state.turn)*.2+state.hover*.5, Math.sin(t)*.13);
+          const pose = studioCoinPose(i, coins.length, viewWidth, activeTime);
+          state.hover += ((i === hovered ? 1 : 0) - state.hover) * (1-Math.exp(-dt*10));
+          state.turn += dt * (motion.matches || pausedRef.current ? 0 : i === hovered ? 1.8 : 0);
+          state.coin.position.set(pose.x, pose.y, pose.z);
+          state.coin.rotation.set(pose.rotationX, pose.rotationY+state.turn+state.hover*.3, pose.rotationZ);
           state.coin.scale.setScalar((mobile?.75:.92)*(1+state.hover*.1));
         });
         renderer.render(scene, camera);
@@ -87,7 +101,8 @@ export default function StudioMarketOrbit() {
     }).catch(()=>{if(!disposed)setFallback(true);});
     return()=>{disposed=true;cleanup?.();};
   },[]);
-  return <div className="studio-orbit" ref={host} aria-label="Interactive three-dimensional market coins: BTCUSD, EURUSD, XAUUSD, USDJPY and JP225">
-    {fallback&&<div className="studio-orbit-fallback">{markets.slice(0,3).map(([pair,mark])=><div className="studio-fallback-coin" key={pair}><strong>{mark}</strong><span>{pair}</span></div>)}</div>}
+  return <div className="studio-orbit" ref={host} data-paused={paused || reduced} aria-label="Interactive three-dimensional market coins: BTCUSD, EURUSD, XAUUSD, USDJPY and JP225">
+    {fallback&&<div className="studio-orbit-fallback">{markets.map(([pair,mark],i)=><div className="studio-fallback-coin" style={{animationDelay:`${-i*8}s`}} key={pair}><strong>{mark}</strong><span>{pair}</span></div>)}</div>}
+    <button type="button" className="studio-orbit-pause" disabled={reduced} aria-label={reduced?"Coin motion disabled by device preference":paused?"Resume coin animation":"Pause coin animation"} onClick={()=>{pausedRef.current=!paused;setPaused(!paused);}}>{paused || reduced?<Play size={13}/>:<Pause size={13}/>}<span>{reduced?"Motion off":paused?"Resume":"Pause"}</span></button>
   </div>;
 }

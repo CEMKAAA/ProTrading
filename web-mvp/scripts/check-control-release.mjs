@@ -9,6 +9,8 @@ assert.ok(existsSync(clientRoot), "Build the static client first");
 const keys = JSON.parse(readFileSync(join(root, "control-service", ".state", "signing-key.json"), "utf8"));
 const access = JSON.parse(readFileSync(join(root, "control-service", ".state", "dev-access.json"), "utf8"));
 const privateMaterial = keys.privateKey.split("\n").find(line => line && !line.startsWith("---"));
+const eaKeys=JSON.parse(readFileSync(join(root,"control-service",".state","ea-signing-key.json"),"utf8"));
+const eaPrivateMaterial=eaKeys.privateKey.split("\n").find(line=>line&&!line.startsWith("---"));
 assert.ok(privateMaterial && access.accessToken);
 const queue = [clientRoot]; let files = 0;
 while (queue.length) {
@@ -19,13 +21,14 @@ while (queue.length) {
     if (!entry.isFile()) continue;
     const bytes = readFileSync(path); files++;
     assert.ok(!bytes.includes(Buffer.from(privateMaterial)), `Private signing material in client artifact: ${entry.name}`);
+    assert.ok(!bytes.includes(Buffer.from(eaPrivateMaterial)), `EA private signing material in client artifact: ${entry.name}`);
     assert.ok(!bytes.includes(Buffer.from(access.accessToken)), `Development credential in client artifact: ${entry.name}`);
   }
 }
 const health = await (await fetch("http://127.0.0.1:4321/health")).json();
-assert.equal(health.liveTradingAllowed, false);
+assert.equal(health.liveTradingDefault, false);
 assert.equal(health.authMode, "local-development");
-assert.equal(health.mt5Adapter, "not_connected");
+assert.equal(health.mt5Adapter, "universal-connection");
 const sessionResponse = await fetch("http://127.0.0.1:4321/v1/session", { headers: { Authorization: `Bearer ${access.accessToken}` } });
 assert.equal(sessionResponse.status, 200);
-console.log(`PASS: ${files} client artifacts contain neither local private signing material nor the development access token; persistent local API authenticates, MT5 not connected, live trading disabled.`);
+console.log(`PASS: ${files} client artifacts contain no server private signing material or development access token; local API authenticates and trading defaults OFF. This is not a production deployment certificate.`);

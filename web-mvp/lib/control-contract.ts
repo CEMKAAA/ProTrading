@@ -80,6 +80,7 @@ export const deviceProofSchema = z.object({
   version: z.literal(PROTOCOL_VERSION), installationId: identifier, method: z.enum(["GET", "POST"]),
   path: z.string().regex(/^\/v1\/device\/[a-z0-9/-]+$/), bodyHash: digest,
   issuedAt: integer, nonce: identifier, signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
+  agentId: identifier.optional(),
 }).strict();
 export type DeviceProof = z.infer<typeof deviceProofSchema>;
 
@@ -101,7 +102,7 @@ const tradeSchema = z.object({
 }).strict().superRefine((v, ctx) => {
   if (Date.parse(v.entryUtc) < Date.parse(v.signalUtc) || (v.exitUtc !== null && Date.parse(v.exitUtc) < Date.parse(v.entryUtc))) ctx.addIssue({ code: "custom", message: "Invalid trade chronology" });
   if ((v.outcome === "WIN" && !(v.netR !== null && v.netR > 0)) || (v.outcome === "LOSS" && !(v.netR !== null && v.netR < 0)) || (v.outcome === "FLAT" && v.netR !== 0)) ctx.addIssue({ code: "custom", message: "Outcome must reflect net PnL after reported costs" });
-  if (["WIN", "LOSS", "FLAT"].includes(v.outcome) && (!v.exitUtc || v.exitPrice === null || ["OPEN", "DATA"].includes(v.exitReason))) ctx.addIssue({ code: "custom", message: "Closed trade requires a known exit" });
+  if (["WIN", "LOSS", "FLAT"].includes(v.outcome) && (!v.exitUtc || ["OPEN", "DATA"].includes(v.exitReason))) ctx.addIssue({ code: "custom", message: "Closed trade requires a known exit time and reason" });
   if (["OPEN", "DATA"].includes(v.outcome) && v.netR !== null) ctx.addIssue({ code: "custom", message: "Unknown/unclosed outcome cannot be assigned realized R" });
   if (v.outcome === "OPEN" && (v.exitUtc !== null || v.exitPrice !== null || v.exitReason !== "OPEN")) ctx.addIssue({ code: "custom", message: "Open trade cannot have a final exit" });
 });
@@ -115,6 +116,8 @@ export const resultSchema = z.object({
   trades: z.array(tradeSchema).max(10000),
 }).strict().superRefine((v, ctx) => {
   if (new Set(v.trades.map(t => t.id)).size !== v.trades.length) ctx.addIssue({ code: "custom", message: "Duplicate trade ids" });
+  if(v.coverage.mode!=="existing_audit"&&v.trades.some(t=>["WIN","LOSS","FLAT"].includes(t.outcome)&&t.exitPrice===null))
+    ctx.addIssue({code:"custom",message:"Real-tick result requires observed closing prices; legacy audit prices may be explicitly unknown"});
 });
 export type BacktestResult = z.infer<typeof resultSchema>;
 

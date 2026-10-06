@@ -1,4 +1,4 @@
-import { makeProof, verifySigned, hash } from "./crypto.mjs";
+import { makeProof, verifySigned, hash, id } from "./crypto.mjs";
 
 export class DeviceClient {
   constructor({ apiUrl, installationId, privateKey, pinnedServerPublicKey }) {
@@ -6,12 +6,13 @@ export class DeviceClient {
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("HTTPS required");
     if (url.pathname !== "/" || url.search || url.hash || url.username || url.password) throw new Error("API origin required");
     this.apiUrl = url.origin; this.installationId = installationId; this.privateKey = privateKey; this.serverKey = pinnedServerPublicKey;
+    this.agentId = id();this.connected = false;
   }
   async request(path, body = {}, method = "POST") {
-    const proof = makeProof(this.installationId, method, path, body, this.privateKey);
+    const proof = makeProof(this.installationId, method, path, body, this.privateKey, Date.now(), this.agentId);
     const response = await fetch(this.apiUrl + path, { method, headers: { "Content-Type": "application/json", "X-Stratum-Proof": Buffer.from(JSON.stringify(proof)).toString("base64url") }, ...(method === "POST" ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(10000), redirect: "error" });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error ?? "CONTROL_SERVICE_ERROR");
+    if (!response.ok) {if(["AGENT_SESSION_EXPIRED","AGENT_CONTROLLER_CHANGED"].includes(data.error))this.connected=false;throw new Error(data.error ?? "CONTROL_SERVICE_ERROR");}
     return data;
   }
   verified(envelope, kind) {
@@ -28,7 +29,8 @@ export class DeviceClient {
     if(p.liveTradingAllowed&&p.configurationHash!==hash(p.request.configuration))throw new Error("OPERATION_CONFIG_MISMATCH");
     return p;
   }
-  async heartbeat() { this.lease = this.verified(await this.request("/v1/device/heartbeat"), "research_lease"); return this.lease; }
+  async heartbeat() { if(!this.connected){await this.request('/v1/device/connect');this.connected=true;}
+    this.lease = this.verified(await this.request("/v1/device/heartbeat"), "research_lease"); return this.lease; }
   async claim() {
     const { job } = await this.request("/v1/device/claim");
     return job ? this.verified(job, "backtest_job") : null;

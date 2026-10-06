@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 import { ControlError } from "./control-plane.mjs";
-import { readFileSync, existsSync } from "node:fs";
 import { eaCatalog } from "../lib/universal-contract.ts";
 import { billingCheckout, billingWebhook, billingConfigured } from "./subscription-provider.mjs";
+import { personalPackage,verifiedArtifacts } from "./delivery.mjs";
 
-export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http://localhost:4310"] } = {}) {
+export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http://localhost:4310"], auth = null } = {}) {
   const rates = new Map();
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -15,7 +15,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (!["127.0.0.1", "localhost", "[::1]"].some(h => req.headers.host === `${h}:${expected}`)) throw new ControlError("INVALID_HOST", 403);
       const origin = req.headers.origin;
       if (origin && !origins.includes(origin)) throw new ControlError("ORIGIN_DENIED", 403);
-      if (origin) { res.setHeader("Access-Control-Allow-Origin", origin); res.setHeader("Vary", "Origin"); }
+      if (origin) { res.setHeader("Access-Control-Allow-Origin", origin); res.setHeader("Access-Control-Allow-Credentials", "true"); res.setHeader("Vary", "Origin"); }
       if (req.method === "OPTIONS") {
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Stratum-Proof");
@@ -24,7 +24,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (!req.url || req.url.includes("?") || req.url.includes("%")) throw new ControlError("INVALID_PATH", 400);
       const path = req.url, method = req.method, now = Date.now();
       for (const [key, rate] of rates) if (rate.until < now) rates.delete(key);
-      const sensitive=["/v1/pairings","/v1/auth/login","/v1/auth/register"].includes(path);
+      const sensitive=["/v1/pairings","/v1/auth/login","/v1/auth/register","/v1/ea/enroll","/v1/ea/package"].includes(path);
       const rateKey = `${req.socket.remoteAddress}:${sensitive ? "identity" : "all"}`;
       const rate = rates.get(rateKey) ?? { until: now + 60000, count: 0 };
       if (++rate.count > (sensitive ? 5 : 240)) throw new ControlError("RATE_LIMITED", 429);
@@ -45,33 +45,58 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       }
       const browserToken = () => {
         const authorization = req.headers.authorization;
-        if (!authorization?.startsWith("Bearer ")) throw new ControlError("UNAUTHORIZED", 401);
-        return authorization.slice(7);
+        if (authorization?.startsWith("Bearer ") && authorization !== 'Bearer cookie-session') return authorization.slice(7);
+        const value=req.headers.cookie?.split(';').map(x=>x.trim()).find(x=>x.startsWith('stratum_session='))?.slice(16);
+        if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value)) throw new ControlError("UNAUTHORIZED", 401);
+        if (method==='POST' && !origin) throw new ControlError('CSRF_ORIGIN_REQUIRED',403);
+        return value;
       };
+      let authenticatedDevice;
       const device = () => {
+        if(authenticatedDevice)return authenticatedDevice;
         let proof;
         try { const header = req.headers["x-stratum-proof"]; if (typeof header !== "string" || header.length > 2048) throw new Error(); proof = JSON.parse(Buffer.from(header, "base64url").toString("utf8")); }
         catch { throw new ControlError("INVALID_DEVICE_PROOF", 401); }
-        return plane.authenticateDevice(proof, method, path, body);
+        return authenticatedDevice=plane.authenticateDevice(proof, method, path, body);
       };
       const keys = Object.keys(body);
       const exact = expectedKeys => { if (keys.length !== expectedKeys.length || keys.some(key => !expectedKeys.includes(key))) throw new ControlError("INVALID_REQUEST", 400); };
-      if (method === "GET" && path === "/health") return reply(200, { service: "stratum-control", protocolVersion: 2, authMode: "local-development", mt5Adapter: "universal-connection", billingConfigured:billingConfigured(), liveTradingDefault:false });
-      if(method==="POST"&&path==="/v1/auth/register")return reply(201,plane.register(body));
-      if(method==="POST"&&path==="/v1/auth/login")return reply(200,plane.login(body));
-      if(method==="POST"&&path==="/v1/auth/logout"){exact([]);return reply(200,plane.logout(browserToken()));}
+      const cookie=(value,maxAge=43200)=>res.setHeader('Set-Cookie',`stratum_session=${value}; Path=/v1; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
+      if (method === "GET" && path === "/health") return reply(200, { service: "stratum-control", protocolVersion: 2, authMode: auth?.mode??"local-development", mt5Adapter: "universal-connection", billingConfigured:billingConfigured(), liveTradingDefault:false });
+      if(method==="POST"&&(path==="/v1/auth/register"||path==="/v1/auth/login")){
+        const result=await (auth??plane)[path.endsWith('register')?'register':'login'](body);
+        if(auth&&result.accessToken){cookie(result.accessToken);return reply(path.endsWith('register')?201:200,{accessToken:'cookie-session',expiresAt:result.expiresAt});}
+        return reply(path.endsWith('register')?201:200,result);
+      }
+      if(method==="POST"&&path==="/v1/auth/logout"){
+        exact([]);cookie('',0);return reply(200,await (auth??plane).logout(browserToken()));
+      }
+      if(auth){
+        if(path.startsWith('/v1/device/'))await auth.forDevice(device(),path);
+        else if(path==='/v1/ea/enroll'){
+          const {hash}=await import('./crypto.mjs');
+          const ticket=typeof body.enrollmentToken==='string'&&plane.get('SELECT account_id FROM enrollment_tickets WHERE token_hash=? AND used=0 AND expires_at>?',hash(body.enrollmentToken),plane.now());
+          if(!ticket)throw new ControlError('ENROLLMENT_EXPIRED_OR_USED',403);
+          await auth.forAccount(ticket.account_id);
+        }else if(!['/v1/pairings','/v1/subscription/webhook'].includes(path))await auth.forBrowser(browserToken());
+      }
+      if(method==='GET'&&path==='/v1/auth/session'){plane.browser(browserToken());return reply(200,{accessToken:auth?'cookie-session':browserToken()});}
       if(method==="GET"&&path==="/v1/catalog"){plane.browser(browserToken());return reply(200,eaCatalog);}
       if(method==="POST"&&path==="/v1/subscription/checkout"){exact([]);return reply(200,await billingCheckout(plane,browserToken()));}
       if(method==="POST"&&path==="/v1/subscription/webhook")return reply(200,await billingWebhook(plane,rawBody,req.headers["stripe-signature"]));
-      if(method==="GET"&&path==="/v1/strategies")return reply(200,{strategies:plane.strategies(browserToken())});
-      if(method==="POST"&&path==="/v1/strategies")return reply(200,plane.saveStrategy(browserToken(),body));
+      if(method==="GET"&&path==="/v1/strategies")return reply(200,{strategies:await (auth??plane).strategies(browserToken())});
+      if(method==="POST"&&path==="/v1/strategies")return reply(200,await (auth??plane).saveStrategy(browserToken(),body));
       if(method==="POST"&&path==="/v1/trading")return reply(200,plane.setTrading(browserToken(),body));
       if(method==="GET"&&path==="/v1/ea/download"){
         const actor=plane.browser(browserToken());plane.entitlement(actor.accountId);
-        const file=new URL("../../IndicatorCodeExamples/universal/UniversalConnectionEA.ex5",import.meta.url);
-        if(!existsSync(file))throw new ControlError("EA_BUILD_UNAVAILABLE",503);
-        res.writeHead(200,{"Content-Type":"application/octet-stream","Content-Disposition":'attachment; filename="StratumConnection.ex5"'});return res.end(readFileSync(file));
+        const {binary}=verifiedArtifacts(plane);
+        res.writeHead(200,{"Content-Type":"application/octet-stream","Content-Disposition":'attachment; filename="StratumConnection.ex5"'});return res.end(binary);
       }
+      if(method==="POST"&&path==="/v1/ea/package"){
+        exact([]);const bundle=await personalPackage(plane,browserToken(),`http://127.0.0.1:${expected}`);
+        res.writeHead(200,{"Content-Type":"application/zip","Content-Disposition":`attachment; filename="${bundle.filename}"`});return res.end(bundle.bytes);
+      }
+      if(method==="POST"&&path==="/v1/ea/enroll")return reply(201,plane.enrollInstallation(body));
       if (method === "GET" && path === "/v1/session") return reply(200, plane.sessionInfo(browserToken()));
       if (method === "POST" && path === "/v1/pairings") return reply(201, plane.beginPairing(body));
       if (method === "POST" && path === "/v1/pairings/review") { exact(["code"]); return reply(200, plane.reviewPairing(browserToken(), body.code)); }
@@ -91,6 +116,9 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (method === "POST" && path === "/v1/device/failure") { exact(["jobId", "attemptId", "code"]); return reply(200, plane.fail(device(), body)); }
       if(method==="POST"&&path==="/v1/device/status")return reply(200,plane.terminalStatus(device(),body));
       if(method==="POST"&&path==="/v1/device/operation"){exact([]);return reply(200,plane.operation(device()));}
+      if(method==="POST"&&path==="/v1/device/command")return reply(200,plane.eaCommand(device(),body));
+      if(method==="POST"&&path==="/v1/device/connect"){exact([]);return reply(200,plane.connectAgent(device()));}
+      if(method==="POST"&&path==="/v1/device/identity")return reply(200,plane.eaIdentity(device(),body));
       throw new ControlError("NOT_FOUND", 404);
     } catch (error) {
       if (!res.writableEnded) reply(error instanceof ControlError ? error.status : 500, { error: error instanceof ControlError ? error.code : "INTERNAL_ERROR" });

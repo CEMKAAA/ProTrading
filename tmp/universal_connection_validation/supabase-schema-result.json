@@ -1,0 +1,19 @@
+```json
+{
+  "status": "applied_and_verified",
+  "project_url": "https://uvzhrrqzzdjqtmydpvwo.supabase.co",
+  "migration": "stratum_auth_trial_v1",
+  "version": "20261006201232",
+  "preflight": {"public_tables": 0, "auth_users": 0},
+  "verified": {"tables": 3, "functions": 3, "signup_trigger": true, "policies": 3, "trial_days": 30},
+  "errors": [
+    {"operation": "search_docs", "detail": "Incorrect argument name; corrected retry succeeded"}
+  ],
+  "security_advisors": [
+    {"level": "INFO", "name": "rls_enabled_no_policy", "tables": ["stratum_private.accounts", "stratum_private.trial_claims"]}
+  ],
+  "other_edits": false,
+  "auth_settings_changed": false,
+  "old_project_changed": false
+}
+```

@@ -5,7 +5,9 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DeviceClient } from "./device-client.mjs";
 import { keyPair, hash } from "./crypto.mjs";
-import { universalConfigurationSchema, UNIVERSAL_RUNTIME } from "../lib/universal-contract.ts";
+import { UNIVERSAL_RUNTIME } from "../lib/universal-contract.ts";
+import { resultSchema } from "../lib/control-contract.ts";
+export { commandBody } from "./ea-authority.mjs";
 
 export function packet(body,key){return body+"\nHMAC="+createHmac("sha256",key).update(body).digest("hex");}
 export function unpack(text,key){
@@ -14,21 +16,7 @@ export function unpack(text,key){
   if(!/^[a-f0-9]{64}$/.test(signature)||!timingSafeEqual(expected,Buffer.from(signature,"hex")))throw new Error("LOCAL_PROOF_INVALID");
   return {body,fields:Object.fromEntries(body.split("\n").filter(l=>l.includes("=")).map(l=>[l.slice(0,l.indexOf("=")),l.slice(l.indexOf("=")+1)]))};
 }
-export function commandBody(kind,ticket,expiresAt=Date.now()+15000){
-  const c=universalConfigurationSchema.parse(ticket.request.configuration),r=ticket.request;
-  const rows=[`command=${kind}`,`issued=${Math.floor(Date.now()/1000)}`,`expires=${Math.floor(Math.min(expiresAt,Date.now()+15000)/1000)}`,
-    `family=${c.family}`,`name=${c.name}`,`symbol=${r.symbol}`,`brokerServer=${r.brokerServer}`,`configurationHash=${ticket.configurationHash}`,
-    `requestHash=${ticket.requestHash??hash(r)}`,`jobId=${ticket.jobId??""}`,`attemptId=${ticket.attemptId??""}`,`from=${Date.parse(r.fromUtc)/1000}`,`to=${Date.parse(r.toUtc)/1000}`,`weeks=${r.auditWeeks}`];
-  for(const [k,v] of Object.entries(c.inputs))rows.push(`i.${k}=${v}`);
-  for(const [k,v] of Object.entries(c.runtime))rows.push(`r.${k}=${v}`);
-  c.dayHourMasks.forEach((mask,i)=>rows.push(`m.${i}=${mask}`));
-  if(c.builder){for(const [k,v] of Object.entries(c.builder)){
-    if(!Array.isArray(v))rows.push(`b.${k}=${v}`);
-    else {rows.push(`b.${k}.count=${v.length}`);v.forEach((r,i)=>rows.push(`b.${k}.${i}=${[r.feature,r.comparator,r.threshold,r.gate,r.negate,r.period,r.rhsFeature,r.rhsPeriod].join(",")}`));}
-  }}
-  return rows.join("\n");
-}
-const iso=seconds=>new Date(Number(seconds)*1000).toISOString();
+const iso=seconds=>{if(!/^[0-9]{1,12}$/.test(seconds)||!Number.isSafeInteger(Number(seconds)))throw new Error('LOCAL_RESULT_TIMESTAMP_INVALID');return new Date(Number(seconds)*1000).toISOString();};
 export function parseResult(text,key,ticket){
   const {body,fields:f}=unpack(text,key);
   if(f.jobId!==ticket.jobId||f.attemptId!==ticket.attemptId)throw new Error("LOCAL_STALE_RESULT");
@@ -42,11 +30,11 @@ export function parseResult(text,key,ticket){
   const trades=rows.map((row,i)=>{
     const v=row.split("|");if(v.length!==13)throw new Error("LOCAL_RESULT_FORMAT");
     const valid=v[9]==="1",closed=v[10]==="1",netR=Number(v[8]),entryUtc=iso(v[1]);
-    if(!valid)missing.push({fromUtc:new Date(from).toISOString(),toUtc:new Date(to).toISOString()});
+    if(!valid&&!missing.length)missing.push({fromUtc:new Date(from).toISOString(),toUtc:new Date(to).toISOString()});
     const outcome=!valid?"DATA":!closed?"OPEN":netR>0?"WIN":netR<0?"LOSS":"FLAT";
     let exitReason=outcome==="DATA"?"DATA":outcome==="OPEN"?"OPEN":/nas/i.test(v[11])?"NAS":/reverse/i.test(v[11])?"REVERSE":/TP/i.test(v[11])?"TP":/SL|stop/i.test(v[11])?"SL":/time|eod/i.test(v[11])?"TIME":"OTHER";
     return {id:String(i+1),direction:Number(v[3])>0?"BUY":"SELL",signalUtc:iso(v[0]),entryUtc,
-      exitUtc:valid&&closed?iso(v[2]):null,entryPrice:Number(v[4]),sl:Number(v[5]),tp:Number(v[6]),exitPrice:valid&&closed?Number(v[7]):null,
+      exitUtc:valid&&closed?iso(v[2]):null,entryPrice:Number(v[4]),sl:Number(v[5]),tp:Number(v[6]),exitPrice:valid&&closed&&Number(v[7])>0?Number(v[7]):null,
       outcome,exitReason,netR:valid&&closed?netR:null,spreadPrice:v[12]===""?null:Number(v[12]),slippagePrice:null,commission:null,swap:null};
   });
   return {jobId:ticket.jobId,attemptId:ticket.attemptId,configurationHash:ticket.configurationHash,requestHash:ticket.requestHash,
@@ -83,11 +71,15 @@ export async function runAgent(argv=process.argv.slice(2)){
   console.log("MT5 agent watching. Apply performs research only. No Trading ON is requested by this process.");
   while(!stopping){
     try{
-      await client.heartbeat();
       const statusFile=join(config.folder,"status.txt");
       if(existsSync(statusFile)){
         const f=unpack(readFileSync(statusFile,"utf8"),key).fields;
-        if(Number(f.at)*1000<Date.now()-15000)throw new Error("TERMINAL_OFFLINE");
+        if(!/^[0-9]{1,12}$/.test(f.at)||Number(f.at)*1000<Date.now()-15000||Number(f.at)*1000>Date.now()+5000)throw new Error("TERMINAL_OFFLINE");
+        // Identity is display-only. Query it even if execution entitlement expired.
+        const identity=client.verified(await client.request('/v1/device/identity',{
+          symbol:f.symbol,brokerServer:f.brokerServer,accountLogin:f.accountLogin}),'ea_identity');
+        atomic(join(config.folder,'identity.txt'),identity.certificate);
+        await client.heartbeat();
         await client.request("/v1/device/status",{symbol:f.symbol,brokerServer:f.brokerServer,accountLogin:f.accountLogin,runtime:UNIVERSAL_RUNTIME,build:"canonical-bundle/v1",
           openPositions:Number(f.openPositions),trading:f.trading==="true",configurationHash:f.configurationHash,error:f.error});
       }else throw new Error("ATTACH_CONNECTION_EA");
@@ -99,11 +91,13 @@ export async function runAgent(argv=process.argv.slice(2)){
           const resultFile=join(config.folder,"result.txt");
           let resultText=existsSync(resultFile)?readFileSync(resultFile,"utf8"):null;
           if(resultText&&unpack(resultText,key).fields.jobId===active.jobId){
-            try {const result=parseResult(resultText,key,active);await client.request("/v1/device/result",result);}
+            try {const result=parseResult(resultText,key,active);const validation=resultSchema.safeParse(result);
+              if(!validation.success){console.error('Native result validation:',JSON.stringify(validation.error.issues.map(i=>({path:i.path,message:i.message}))));
+                writeFileSync(join(state,'last-invalid-result.txt'),resultText);throw new Error('LOCAL_RESULT_SCHEMA_INVALID');}
+              await client.request("/v1/device/result",result);}
             catch(error){if(!/STALE_JOB|LEASE|ENTITLEMENT/.test(error.message))await client.request("/v1/device/failure",{jobId:active.jobId,attemptId:active.attemptId,code:/^[A-Z0-9_]{1,80}$/.test(error.message)?error.message:"RESULT_VALIDATION_FAILED"});else throw error;}
             unlinkSync(resultFile);active=null;
           }else{
-            atomic(join(config.folder,"command.txt"),packet(commandBody("audit",active,client.lease.expiresAt),key));
             const progressFile=join(config.folder,"progress.txt");let phase="preparing",processed=0,total=null;
             if(existsSync(progressFile)){
               const p=unpack(readFileSync(progressFile,"utf8"),key).fields;
@@ -114,12 +108,14 @@ export async function runAgent(argv=process.argv.slice(2)){
             const order=["preparing","downloading","replaying","uploading"];
             if(order.indexOf(phase)<order.indexOf(lastPhase)){phase=lastPhase;processed=phaseDone;total=phase==="replaying"?100:null;}
             if(phase===lastPhase)processed=Math.max(processed,phaseDone);else phaseDone=0;
-            await client.request("/v1/device/progress",{jobId:active.jobId,attemptId:active.attemptId,phase,processed,total});
+            active=client.verified(await client.request("/v1/device/progress",{jobId:active.jobId,attemptId:active.attemptId,phase,processed,total}),"backtest_job");
+            const command=client.verified(await client.request("/v1/device/command",{jobId:active.jobId,attemptId:active.attemptId}),"ea_command");
+            atomic(join(config.folder,"command.txt"),command.command);
             lastPhase=phase;phaseDone=processed;lastProgress=phase;
           }
         }
       }
-      if(!active){const operation=await client.operation();atomic(join(config.folder,"command.txt"),operation.liveTradingAllowed?packet(commandBody("live",operation,operation.expiresAt),key):stopPacket());}
+      if(!active){const command=client.verified(await client.request("/v1/device/command",{jobId:null,attemptId:null}),"ea_command");atomic(join(config.folder,"command.txt"),command.command??stopPacket());}
     }catch(error){
       atomic(join(config.folder,"command.txt"),stopPacket());
       if(/STALE_JOB|CONTROLLER|ENTITLEMENT|PAIRING|CONFIG_MISMATCH/.test(error.message))active=null;
@@ -129,4 +125,4 @@ export async function runAgent(argv=process.argv.slice(2)){
   }
   atomic(join(config.folder,"command.txt"),stopPacket());
 }
-if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))runAgent().catch(e=>{console.error(e.message);process.exitCode=1;});
+if(process.argv[1]&&fileURLToPath(import.meta.url).endsWith('mt5-agent.mjs')&&resolve(process.argv[1])===fileURLToPath(import.meta.url))runAgent().catch(e=>{console.error(e.message);process.exitCode=1;});

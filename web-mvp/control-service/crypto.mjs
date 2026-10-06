@@ -26,7 +26,7 @@ export function signed(payload, privateKey) {
 export function verifySigned(envelope, publicKey) {
   try { return verify(null, Buffer.from(canonical(envelope.payload)), publicKey, Buffer.from(envelope.signature, "base64url")); } catch { return false; }
 }
-export function makeProof(installationId, method, path, body, privateKey, issuedAt = Date.now()) {
-  const payload = { version: 1, installationId, method, path, bodyHash: hash(body), issuedAt, nonce: id() };
+export function makeProof(installationId, method, path, body, privateKey, issuedAt = Date.now(), agentId) {
+  const payload = { version: 1, installationId, method, path, bodyHash: hash(body), issuedAt, nonce: id(), ...(agentId ? {agentId} : {}) };
   return { ...payload, signature: signed(payload, privateKey).signature };
 }

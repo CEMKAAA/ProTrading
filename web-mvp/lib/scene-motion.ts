@@ -15,3 +15,26 @@ export function marketPose(index: number, progress: number, seconds: number) {
     rotation: -.5 + p * Math.PI * 2 + stagger + seconds * .18,
   };
 }
+
+// The wrap occurs beyond the camera edges, never in the visible coin lane.
+export function studioCoinPose(index: number, count: number, viewWidth: number, seconds: number) {
+  const loop = Math.max(viewWidth + 4.8, count * 2.85);
+  const travel = index * loop / count + seconds * .72;
+  return {
+    x: ((travel % loop) + loop) % loop - loop / 2,
+    y: Math.sin(seconds * .5 + index * .9) * .55 + Math.cos(index * 1.7) * .3,
+    z: Math.cos(seconds * .35 + index) * .3,
+    rotationX: Math.sin(seconds * .4 + index) * .17,
+    rotationY: seconds * .34 + index * .6,
+    rotationZ: Math.sin(seconds * .3 + index) * .1,
+  };
+}
+
+export function chapterPose(progress: number) {
+  const p = clampProgress(progress);
+  const entrance = clampProgress(p / .22);
+  const departure = clampProgress((p - .75) / .25);
+  const ease = 1 - (1 - entrance) ** 3;
+  return { y: (1 - ease) * 80 - departure * 24, scale: .965 + ease * .035 - departure * .012,
+    radius: (1 - ease) * 56 + departure * 24 };
+}

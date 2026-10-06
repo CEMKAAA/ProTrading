@@ -12,6 +12,7 @@ import { exampleRequest } from "../lib/control-example.ts";
 import { configurationSchema, resultSchema, summarizeResult } from "../lib/control-contract.ts";
 import { defaultConfiguration, universalConfigurationSchema, universalRequestSchema } from "../lib/universal-contract.ts";
 import { commandBody, packet, unpack, parseResult } from "../control-service/mt5-agent.mjs";
+import { verifyEaCommand, eaKeyPair } from "../control-service/ea-authority.mjs";
 
 const forbidden = (work, code) => assert.throws(work, error => error.code === code);
 function universal(f, family="orb") {
@@ -34,12 +35,40 @@ test('line protocol cannot be injected through strategy name or broker server',(
  assert.equal(universalConfigurationSchema.safeParse({...f.request.configuration,name:'x\ncommand=live'}).success,false);
  assert.equal(universalRequestSchema.safeParse({...f.request,brokerServer:'x\ncommand=live'}).success,false);f.plane.close();
 });
-test('new registrations are unsubscribed; password authentication is real',()=>{
+test('new registrations get one 30-day demo; password authentication is real',()=>{
  const plane=new ControlPlane();const a=plane.register({email:'first@example.com',password:'a-long-private-password'});
- assert.equal(plane.sessionInfo(a.accessToken).subscriptionActive,false);
- forbidden(()=>plane.strategies(a.accessToken),'ENTITLEMENT_EXPIRED');
+ const s=plane.sessionInfo(a.accessToken);assert.equal(s.subscriptionActive,true);assert.equal(s.accessMode,'demo');assert.equal(s.trial.daysRemaining,30);
+ assert.deepEqual(plane.strategies(a.accessToken),[]);
  forbidden(()=>plane.login({email:'first@example.com',password:'wrong'}),'INVALID_CREDENTIALS');
  assert.equal(plane.browser(plane.login({email:'first@example.com',password:'a-long-private-password'}).accessToken).accountId,plane.browser(a.accessToken).accountId);plane.close();
+});
+test('subscriber names persist and cannot inject a command line',()=>{
+ const plane=new ControlPlane();const a=plane.register({email:'named@example.com',password:'a-long-private-password',displayName:'Cem Quant'});
+ assert.equal(plane.sessionInfo(a.accessToken).displayName,'Cem Quant');
+ forbidden(()=>plane.register({email:'bad@example.com',password:'a-long-private-password',displayName:'Cem\ncommand=live'}),'INVALID_REQUEST');
+ plane.close();
+});
+test('identity is server-signed, read-only and reports actual subscription expiry',()=>{
+ const f=fixture();f.plane.setDisplayName(f.account,'Cem Quant');
+ const body={symbol:'JP225m',brokerServer:'Exness-MT5Trial15',accountLogin:'123'};
+ const proof=makeProof(f.installation.id,'POST','/v1/device/identity',body,f.keys.privateKey,f.time(),id());
+ const installed=f.plane.authenticateDevice(proof,'POST',proof.path,body);
+ let result=f.plane.eaIdentity(installed,body);assert.ok(verifyEaCommand(result.payload.certificate,f.plane.eaSigningKey.publicKey));
+ assert.ok(result.payload.certificate.includes('subscriberName=Cem Quant\nsubscriptionActive=true'));
+ assert.ok(result.payload.certificate.includes('command=identity'));assert.equal(result.payload.liveTradingAllowed,false);
+ f.advance(86400001);
+ const next=makeProof(f.installation.id,'POST','/v1/device/identity',body,f.keys.privateKey,f.time(),id());
+ result=f.plane.eaIdentity(f.plane.authenticateDevice(next,'POST',next.path,body),body);
+ assert.ok(result.payload.certificate.includes('subscriptionActive=false'));assert.ok(result.payload.certificate.includes('controllerActive=false'));
+ forbidden(()=>f.plane.heartbeat(installed),'ENTITLEMENT_EXPIRED');f.plane.close();
+});
+test('identity endpoint still requires a device signature and rejects revoked installations',()=>{
+ const f=fixture(),body={symbol:'JP225m',brokerServer:'Exness-MT5Trial15',accountLogin:'123'};
+ const proof=makeProof(f.installation.id,'POST','/v1/device/identity',body,f.keys.privateKey,f.time(),id());
+ const forged=makeProof(f.installation.id,'POST','/v1/device/identity',body,keyPair().privateKey,f.time(),proof.agentId);
+ forbidden(()=>f.plane.authenticateDevice(forged,'POST',proof.path,body),'INVALID_SIGNATURE');
+ f.plane.revokeInstallation(f.access,f.installation.id);
+ forbidden(()=>f.plane.authenticateDevice(proof,'POST',proof.path,body),'INSTALLATION_REVOKED_OR_UNKNOWN');f.plane.close();
 });
 test('strategy upsert restores every setting; other subscribers cannot see it',()=>{
  const f=universal(fixture(),'entrylab'),c=f.request.configuration;c.name='My exact setup';c.runtime.maxOpen=20;c.runtime.nasGate=2;c.runtime.nasFlowMultiplier=1.5;c.runtime.timeMatrixEnabled=true;c.dayHourMasks[1]=1<<13;
@@ -89,6 +118,71 @@ function resultFor(f, ticket) {
     trades: [{ id: "1", direction: "BUY", signalUtc: f.request.fromUtc, entryUtc: f.request.fromUtc, exitUtc: new Date(Date.parse(f.request.fromUtc) + 60000).toISOString(),
       entryPrice: 1.1, exitPrice: 1.1009, sl: 1.099, tp: 1.101, outcome: "WIN", exitReason: "TP", netR: .9, spreadPrice: .0001, slippagePrice: null, commission: null, swap: null }] };
 }
+
+function reportTerminal(f) {
+  f.plane.terminalStatus(f.installation,{symbol:f.request.symbol,brokerServer:f.request.brokerServer,accountLogin:'123',
+    runtime:'universal-adapter/v2',build:'test-fixture',openPositions:0,trading:false,configurationHash:'',error:''});
+}
+test('EA authority is server-signed: knowing the local HMAC key cannot grant live trading',()=>{
+  const f=universal(fixture());f.create();const ticket=f.claim();reportTerminal(f);
+  const command=f.plane.eaCommand(f.installation,{jobId:ticket.jobId,attemptId:ticket.attemptId}).payload.command;
+  assert.ok(verifyEaCommand(command,f.plane.eaSigningKey.publicKey));
+  assert.equal(verifyEaCommand(command.replace('command=audit','command=live'),f.plane.eaSigningKey.publicKey),false);
+  assert.equal(verifyEaCommand(packet(commandBody('live',ticket),'0123456789abcdef0123456789abcdef'),f.plane.eaSigningKey.publicKey),false);
+  assert.equal(verifyEaCommand(command,eaKeyPair().publicKey),false);f.plane.close();
+});
+test('EA signed command binds device, MT5 login, exact configuration and increasing replay fence',()=>{
+  const f=universal(fixture());f.create();const ticket=f.claim();reportTerminal(f);
+  const get=()=>f.plane.eaCommand(f.installation,{jobId:ticket.jobId,attemptId:ticket.attemptId}).payload.command;
+  const first=get(),second=get(),fields=Object.fromEntries(first.split('\n').map(s=>s.split('=')));
+  assert.equal(fields.installationId,f.installation.id);assert.equal(fields.accountLogin,'123');
+  assert.equal(fields.configurationHash,ticket.configurationHash);assert.equal(fields.attemptId,ticket.attemptId);
+  assert.equal(Number(fields.expires)-Number(fields.issued),15);
+  assert.ok(second.includes('sequence=2\n'));f.plane.close();
+});
+test('EA command never authorizes live before explicit Trading ON and stops on OFF',()=>{
+  const f=universal(fixture());const job=f.create(),ticket=f.claim();reportTerminal(f);
+  const idle=()=>f.plane.eaCommand(f.installation,{jobId:null,attemptId:null}).payload.command;
+  assert.equal(idle(),null);const r=resultFor(f,ticket);r.engineRuntime='universal-adapter/v2';r.coverage.mode='existing_audit';f.plane.finish(f.installation,r);
+  assert.equal(idle(),null);f.plane.setTrading(f.access,{installationId:f.installation.id,jobId:job.id,enabled:true});
+  assert.ok(idle().startsWith('command=live\n'));f.plane.setTrading(f.access,{installationId:f.installation.id,jobId:null,enabled:false});
+  assert.equal(idle(),null);f.plane.close();
+});
+test('stale terminal, changed market, cancelled job and expired entitlement cannot obtain EA grants',()=>{
+  const f=universal(fixture());const job=f.create(),ticket=f.claim();const get=()=>f.plane.eaCommand(f.installation,{jobId:ticket.jobId,attemptId:ticket.attemptId});
+  forbidden(get,'TERMINAL_OFFLINE');reportTerminal(f);f.advance(15001);forbidden(get,'TERMINAL_OFFLINE');reportTerminal(f);
+  f.plane.cancelJob(f.access,job.id);forbidden(get,'STALE_JOB_ATTEMPT');
+  f.plane.provisionAccount(f.account,f.time()-1);forbidden(get,'ENTITLEMENT_EXPIRED');f.plane.close();
+});
+test('a copied installation key cannot run a second independent agent concurrently',()=>{
+  const f=fixture(),agentA=id(),agentB=id();
+  const call=(agentId,path)=>f.plane.authenticateDevice(makeProof(f.installation.id,'POST',path,{},f.keys.privateKey,f.time(),agentId),'POST',path);
+  f.plane.connectAgent(call(agentA,'/v1/device/connect'));
+  forbidden(()=>f.plane.connectAgent(call(agentB,'/v1/device/connect')),'AGENT_ALREADY_CONNECTED');
+  forbidden(()=>call(agentB,'/v1/device/command'),'AGENT_SESSION_EXPIRED');
+  f.advance(15001);f.plane.connectAgent(call(agentB,'/v1/device/connect'));
+  forbidden(()=>call(agentA,'/v1/device/heartbeat'),'AGENT_SESSION_EXPIRED');
+  f.plane.heartbeat(call(agentB,'/v1/device/heartbeat'));f.plane.close();
+});
+test('text-formatted MQL datetime cannot be silently interpreted as an epoch timestamp',()=>{
+  const f=universal(fixture());f.create();const ticket=f.claim(),key='0123456789abcdef0123456789abcdef';
+  const text=`jobId=${ticket.jobId}\nattemptId=${ticket.attemptId}\nconfigurationHash=${ticket.configurationHash}\nrequestHash=${ticket.requestHash}\nrows=1\nTRADES\n2026.10.06 14:00|2026.10.06 14:00|2026.10.06 14:01|1|1.1|1.099|1.101|1.101|1|1|1|TP|0.0001\n`;
+  assert.throws(()=>parseResult(packet(text,key),key,ticket),/LOCAL_RESULT_TIMESTAMP_INVALID/);f.plane.close();
+});
+test('Sol legacy zero exit price stays unknown, never fabricated from R or OHLC',()=>{
+  const f=universal(fixture(),'sol');f.create();const ticket=f.claim(),key='0123456789abcdef0123456789abcdef',at=Date.parse(f.request.fromUtc)/1000;
+  const text=`jobId=${ticket.jobId}\nattemptId=${ticket.attemptId}\nconfigurationHash=${ticket.configurationHash}\nrequestHash=${ticket.requestHash}\nrows=1\nTRADES\n${at}|${at}|${at+60}|1|1.1|1.099|1.101|0|1|1|1|TICK_TP|0.0001\n`;
+  const result=parseResult(packet(text,key),key,ticket);assert.equal(result.trades[0].exitPrice,null);assert.equal(result.trades[0].netR,1);
+  assert.equal(resultSchema.safeParse(result).success,true);result.coverage.mode='real_ticks';assert.equal(resultSchema.safeParse(result).success,false);f.plane.close();
+});
+test('changing the terminal account disables Trading instead of silently carrying authorization over',()=>{
+  const f=universal(fixture());const job=f.create(),ticket=f.claim();reportTerminal(f);
+  const r=resultFor(f,ticket);r.engineRuntime='universal-adapter/v2';r.coverage.mode='existing_audit';f.plane.finish(f.installation,r);
+  f.plane.setTrading(f.access,{installationId:f.installation.id,jobId:job.id,enabled:true});
+  f.plane.terminalStatus(f.installation,{symbol:f.request.symbol,brokerServer:f.request.brokerServer,accountLogin:'456',
+    runtime:'universal-adapter/v2',build:'test-fixture',openPositions:0,trading:false,configurationHash:'',error:''});
+  assert.equal(f.plane.operation(f.installation).payload.liveTradingAllowed,false);f.plane.close();
+});
 
 test("unauthenticated/forged user headers cannot authorize a browser", () => {
   const f = fixture(); forbidden(() => f.plane.sessionInfo("forged"), "UNAUTHORIZED"); f.plane.close();

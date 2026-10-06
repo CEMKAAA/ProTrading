@@ -1,0 +1,122 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { randomBytes } from 'node:crypto';
+import { once } from 'node:events';
+import { ControlPlane } from '../control-service/control-plane.mjs';
+import { SupabaseAuth } from '../control-service/supabase-auth.mjs';
+import { controlHttp } from '../control-service/http.mjs';
+import { id,keyPair,signed,hash } from '../control-service/crypto.mjs';
+import { defaultConfiguration } from '../lib/universal-contract.ts';
+
+const DAY=86400000;
+function fixture(){
+ let at=Date.now(),calls=0,refreshes=0,offline=false,revoked=false,confirmation=false;
+ const account=id(),sid=id(),jwt='verified-provider-jwt-not-a-browser-secret',refresh='private-refresh-token-never-in-ea';
+ const state={accountId:account,sessionId:sid,email:'demo@example.com',displayName:'Cem Quant',disabled:false,
+  accessActive:true,accessMode:'demo',paidUntil:0,serverNow:at,trial:{startsAt:at,expiresAt:at+30*DAY}};
+ const rows=[];
+ const p=new ControlPlane({now:()=>at});
+ const fetcher=async(url,options)=>{
+  calls++;if(offline)throw new Error('offline');const path=new URL(url).pathname,body=options.body?JSON.parse(options.body):{};
+  const reply=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
+  if(path==='/auth/v1/signup')return reply(confirmation?{user:{id:account}}:{access_token:jwt,refresh_token:refresh,expires_at:Math.floor(at/1000)+3600});
+  if(path==='/auth/v1/token'){
+   if(new URL(url).searchParams.get('grant_type')==='refresh_token')refreshes++;
+   else if(body.password!=='a-long-private-password')return reply({error_code:'invalid_credentials'},400);
+   return reply({access_token:jwt,refresh_token:refresh,expires_at:Math.floor(at/1000)+3600});
+  }
+  if(path==='/auth/v1/logout'){revoked=true;return new Response(null,{status:204});}
+  if(options.headers.Authorization!=='Bearer '+jwt)return reply({error:'bad JWT'},401);
+  if(path==='/rest/v1/rpc/stratum_access_state')return revoked?reply({message:'STRATUM_SESSION_INVALID'},401):reply({...state,serverNow:at});
+  if(path==='/rest/v1/stratum_strategies'){
+   if(options.method==='POST'){assert.equal(body.account_id,account);rows.splice(0,rows.length,{configuration:body.configuration});return new Response(null,{status:204});}
+   return reply(rows);
+  }
+  throw new Error('unexpected request '+path);
+ };
+ const auth=new SupabaseAuth(p,{url:'https://testproject.supabase.co',publishableKey:'sb_publishable_test',encryptionKey:randomBytes(32),fetcher});
+ const login=()=>auth.login({email:state.email,password:'a-long-private-password'});
+ return {p,auth,state,account,jwt,refresh,login,advance:ms=>at+=ms,calls:()=>calls,refreshes:()=>refreshes,
+  offline:v=>offline=v,revoke:()=>revoked=true,confirmation:v=>confirmation=v};
+}
+const rejects=(fn,code)=>assert.rejects(fn,e=>e.code===code);
+
+test('Supabase authority, not local trial or editable metadata, grants the demo',async()=>{
+ const f=fixture(),s=await f.login(),actor=f.p.browser(s.accessToken);
+ assert.equal(actor.accountId,f.account);assert.equal(f.p.sessionInfo(s.accessToken).accessMode,'demo');
+ assert.equal(f.p.sessionInfo(s.accessToken).trial.daysRemaining,30);
+ assert.equal(f.p.get('SELECT count(*) n FROM identities').n,0);
+ const row=f.p.get('SELECT sealed_tokens FROM supabase_sessions');
+ assert.ok(!row.sealed_tokens.includes(f.jwt));assert.ok(!row.sealed_tokens.includes(f.refresh));
+ f.p.provisionAccount(f.account,Date.now()+365*DAY);await f.auth.forBrowser(s.accessToken);
+ assert.equal(f.p.sessionInfo(s.accessToken).accessMode,'demo');assert.equal(f.p.get('SELECT entitlement_until FROM accounts').entitlement_until,0);f.p.close();
+});
+test('email confirmation cannot create a local browser session or local demo',async()=>{
+ const f=fixture();f.confirmation(true);const result=await f.auth.register({email:f.state.email,password:'a-long-private-password',displayName:'Cem'});
+ assert.equal(result.confirmationRequired,true);assert.equal(f.p.get('SELECT count(*) n FROM sessions').n,0);
+ assert.equal(f.p.get('SELECT count(*) n FROM account_trials').n,0);f.p.close();
+});
+test('expiry, renewed login and paid entitlement follow the immutable database timestamps',async()=>{
+ const f=fixture();let s=await f.login();const until=f.state.trial.expiresAt;f.advance(10*DAY);s=await f.login();
+ assert.equal(f.p.sessionInfo(s.accessToken).trial.daysRemaining,20);assert.equal(f.p.sessionInfo(s.accessToken).trial.expiresAt,Math.floor(until));
+ f.advance(20*DAY);f.state.accessMode='inactive';f.state.accessActive=false;s=await f.login();
+ assert.equal(f.p.sessionInfo(s.accessToken).subscriptionActive,false);assert.throws(()=>f.p.issueEnrollment(s.accessToken),e=>e.code==='ENTITLEMENT_EXPIRED');
+ f.state.paidUntil=f.state.trial.expiresAt+30*DAY;f.state.accessMode='paid';f.state.accessActive=true;await f.auth.forBrowser(s.accessToken);
+ assert.equal(f.p.sessionInfo(s.accessToken).accessMode,'paid');assert.equal(f.p.sessionInfo(s.accessToken).trial.expiresAt,Math.floor(until));f.p.close();
+});
+test('Supabase outage fails closed instead of using a previously cached paid/demo grant',async()=>{
+ const f=fixture(),s=await f.login();f.offline(true);
+ await rejects(()=>f.auth.forBrowser(s.accessToken),'AUTH_PROVIDER_UNAVAILABLE');
+ assert.equal(f.p.sessionInfo(s.accessToken).subscriptionActive,false);
+ assert.throws(()=>f.p.issueEnrollment(s.accessToken),e=>e.code==='ENTITLEMENT_EXPIRED');f.p.close();
+});
+test('external logout deletes local controller/session/tickets; old JWT cannot restore authority',async()=>{
+ const f=fixture(),s=await f.login();f.p.issueEnrollment(s.accessToken);f.revoke();
+ await rejects(()=>f.auth.forBrowser(s.accessToken),'SESSION_REVOKED');
+ assert.equal(f.p.get('SELECT count(*) n FROM sessions').n,0);assert.equal(f.p.get('SELECT count(*) n FROM enrollment_tickets').n,0);
+ assert.equal(f.p.accessState(f.account).accessActive,false);f.p.close();
+});
+test('single-flight refresh rotates once and encrypted tokens are bound to local session ID',async()=>{
+ const f=fixture(),s=await f.login(),actor=f.p.browser(s.accessToken);f.advance(3550000);
+ await Promise.all([f.auth.forBrowser(s.accessToken),f.auth.forBrowser(s.accessToken),f.auth.forBrowser(s.accessToken)]);
+ assert.equal(f.refreshes(),1);const sealed=f.p.get('SELECT sealed_tokens FROM supabase_sessions').sealed_tokens;
+ assert.throws(()=>f.auth.unseal(sealed,id()));assert.equal(f.auth.unseal(sealed,actor.sessionId).jwt,f.jwt);f.p.close();
+});
+test('incorrect provider session/account scope and stale authority cannot authorize',async()=>{
+ const f=fixture(),s=await f.login();f.state.sessionId=id();
+ await rejects(()=>f.auth.forBrowser(s.accessToken),'SESSION_SCOPE_MISMATCH');assert.equal(f.p.accessState(f.account).accessActive,false);f.p.close();
+ const g=fixture();await g.login();g.advance(10001);assert.equal(g.p.accessState(g.account).accessActive,false);g.p.close();
+});
+test('private strategies are stored through authenticated Supabase RLS requests',async()=>{
+ const f=fixture(),s=await f.login(),c=defaultConfiguration('entrylab');c.name='Cem exact strategy';c.runtime.maxOpen=20;
+ await f.auth.saveStrategy(s.accessToken,c);assert.deepEqual(await f.auth.strategies(s.accessToken),[c]);
+ assert.equal(f.p.get('SELECT count(*) n FROM strategies').n,0);f.p.close();
+});
+test('HTTP login returns only an HttpOnly cookie handle; cookie CSRF and developer bypass blocked',async()=>{
+ const f=fixture(),server=controlHttp(f.p,{auth:f.auth});server.listen(0,'127.0.0.1');await once(server,'listening');
+ const base=`http://127.0.0.1:${server.address().port}`,origin='http://127.0.0.1:4310';
+ const post=(path,body,headers={})=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)});
+ try{
+  const response=await post('/v1/auth/login',{email:f.state.email,password:'a-long-private-password'},{Origin:origin});assert.equal(response.status,200);
+  const data=await response.json();assert.equal(data.accessToken,'cookie-session');const cookie=response.headers.get('set-cookie');
+  assert.ok(cookie.includes('HttpOnly'));assert.ok(cookie.includes('SameSite=Strict'));assert.ok(!cookie.includes(f.jwt));
+  const headers={Cookie:cookie.split(';')[0],Authorization:'Bearer cookie-session',Origin:origin};
+  const session=await (await fetch(base+'/v1/session',{headers})).json();assert.equal(session.accountId,f.account);assert.equal(session.accessMode,'demo');
+  assert.equal((await post('/v1/trading',{}, {Cookie:headers.Cookie})).status,403);
+  assert.equal((await post('/v1/ea/package',{}, {...headers,Origin:'https://evil.example'})).status,403);
+  const local=f.p.issueBrowserSession(f.p.provisionAccount());
+  assert.equal((await fetch(base+'/v1/session',{headers:{Authorization:'Bearer '+local.accessToken}})).status,401);
+  assert.equal((await post('/v1/auth/logout',{},headers)).status,200);
+  assert.equal((await fetch(base+'/v1/session',{headers})).status,401);
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));f.p.close();}
+});
+test('owner-bound EA setup ticket uses fresh Supabase authority; native demo certificate stays signed',async()=>{
+ const f=fixture(),s=await f.login(),keys=keyPair(),t=f.p.issueEnrollment(s.accessToken);
+ const payload={enrollmentToken:t.enrollmentToken,publicKey:keys.publicKey,label:'Cem MT5'},pair=f.p.enrollInstallation({...payload,signature:signed(payload,keys.privateKey).signature});
+ f.p.approvePairing(s.accessToken,pair.code,pair.fingerprint);const install=f.p.get('SELECT * FROM installations WHERE id=?',pair.installationId);
+ await f.auth.forDevice(install,'/v1/device/identity');
+ const certificate=f.p.eaIdentity(install,{symbol:'JP225m',brokerServer:'Exness-MT5Trial15',accountLogin:'123'}).payload.certificate;
+ assert.ok(certificate.includes('accessMode=demo'));assert.ok(certificate.includes('subscriberName=Cem Quant'));
+ f.revoke();f.advance(4000);await rejects(()=>f.auth.forDevice(install,'/v1/device/heartbeat'),'SESSION_REVOKED');
+ assert.equal(f.p.get('SELECT used FROM enrollment_tickets WHERE token_hash=?',hash(t.enrollmentToken)).used,1);f.p.close();
+});

@@ -1,0 +1,165 @@
+{
+  "checkedAt": "2026-10-06T19:46:54.544Z",
+  "strategy": "jp225Close/Reverse0.25R",
+  "strategyId": "user_853fdb478ffc791a62835a66",
+  "symbol": "JP225m",
+  "baseline": "unmodified canonical MaCross source, saved-strategy application and normal historical audit",
+  "binarySha256": "55f0c5c47c05a7ff744d5b0a7bbc57b429b9888021c110c49790ae4eda2a0eb6",
+  "configurationSha256": "7fd91a58e13758189480516e1735e594733ba575baad41fb7ad18ba1e029b5f7",
+  "rows": 41,
+  "differences": [],
+  "labelDifferences": [
+    {
+      "trade": 2,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 4,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 5,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 6,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 7,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 9,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 11,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 13,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 16,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 18,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 19,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 21,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 22,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 23,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 24,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 25,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 26,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 27,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 28,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 31,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 32,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 33,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 35,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 36,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    },
+    {
+      "trade": 38,
+      "original": "TP025",
+      "universal": "TP_R0.25000000"
+    }
+  ],
+  "fromUtc": "2026-09-21T00:00:00.000Z",
+  "toUtc": "2026-10-05T00:00:00.000Z",
+  "original": {
+    "wins": 25,
+    "losses": 15,
+    "flat": 0,
+    "open": 1,
+    "data": 0,
+    "netR": -0.6851666666660001,
+    "maxClosedDrawdownR": 2.1021666666670002,
+    "winRate": 62.5,
+    "trust": "client_reported",
+    "coverageComplete": true
+  },
+  "universal": {
+    "wins": 25,
+    "losses": 15,
+    "flat": 0,
+    "open": 1,
+    "data": 0,
+    "netR": -0.6851666666660001,
+    "maxClosedDrawdownR": 2.1021666666670002,
+    "winRate": 62.5,
+    "trust": "client_reported",
+    "coverageComplete": true
+  },
+  "status": "PASS"
+}

@@ -1,0 +1,107 @@
+{
+  "checkedAt": "2026-10-06T19:15:24.756Z",
+  "installationId": "bc48a9dc-0c6c-4c05-999d-34bd0b208eac",
+  "compile": "0 errors, 0 warnings",
+  "binarySha256": "55f0c5c47c05a7ff744d5b0a7bbc57b429b9888021c110c49790ae4eda2a0eb6",
+  "families": [
+    {
+      "family": "orb",
+      "jobId": "ca7606a2-ff3b-456b-a68a-ab30ab0481aa",
+      "elapsedMs": 10121,
+      "wins": 6,
+      "losses": 3,
+      "flat": 0,
+      "open": 0,
+      "data": 0,
+      "netR": 3,
+      "maxClosedDrawdownR": 1,
+      "winRate": 66.66666666666666,
+      "trust": "client_reported",
+      "coverageComplete": true
+    },
+    {
+      "family": "macross",
+      "jobId": "9160d538-a958-4a88-a298-c721266d84d0",
+      "elapsedMs": 38444,
+      "wins": 67,
+      "losses": 75,
+      "flat": 0,
+      "open": 0,
+      "data": 0,
+      "netR": -8,
+      "maxClosedDrawdownR": 21,
+      "winRate": 47.183098591549296,
+      "trust": "client_reported",
+      "coverageComplete": true
+    },
+    {
+      "family": "sol",
+      "jobId": "873ad788-203b-4f63-9830-1552a1e54462",
+      "elapsedMs": 13147,
+      "wins": 4,
+      "losses": 5,
+      "flat": 0,
+      "open": 0,
+      "data": 0,
+      "netR": -1,
+      "maxClosedDrawdownR": 3,
+      "winRate": 44.44444444444444,
+      "trust": "client_reported",
+      "coverageComplete": true
+    },
+    {
+      "family": "entrylab",
+      "jobId": "e0453b8c-80db-455a-8765-663c2c46f20b",
+      "elapsedMs": 112145,
+      "wins": 905,
+      "losses": 1206,
+      "flat": 0,
+      "open": 1,
+      "data": 0,
+      "netR": -301,
+      "maxClosedDrawdownR": 312,
+      "winRate": 42.870677404073895,
+      "trust": "client_reported",
+      "coverageComplete": true
+    }
+  ],
+  "authorization": {
+    "explicitTradingOn": true,
+    "helperLossFailsClosed": true,
+    "expiredPacketRejected": true,
+    "tradingOff": true,
+    "localKeyForgeryRejected": true,
+    "oldControllerAuditRejected": true,
+    "revocationRejected": true
+  },
+  "chart": {
+    "subscriberPanel": true,
+    "orb": {
+      "trades": 9,
+      "drawn": 9,
+      "coordinateSamples": 9,
+      "failures": 0
+    },
+    "macross": {
+      "trades": 142,
+      "drawn": 142,
+      "coordinateSamples": 142,
+      "failures": 0
+    },
+    "sol": {
+      "trades": 9,
+      "drawn": 9,
+      "coordinateSamples": 9,
+      "failures": 0
+    },
+    "entrylab": {
+      "trades": 2112,
+      "drawn": 2112,
+      "coordinateSamples": 64,
+      "failures": 0
+    },
+    "connectionLossBadge": true,
+    "inactiveBadgeSignedVector": true
+  },
+  "status": "PASS"
+}

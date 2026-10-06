@@ -1,5 +1,7 @@
 #ifndef UNIVERSAL_RUNTIME_MQH
 #define UNIVERSAL_RUNTIME_MQH
+#include "UniversalAuthority.mqh"
+#include "UniversalAuthorityKey.mqh"
 input string InpInstallationId=""; // From installation pairing; no standalone execution.
 string g_ucKey="",g_ucFolder="",g_ucAuditFamily="",g_ucLiveFamily="";
 string g_ucJob="",g_ucAttempt="",g_ucConfig="",g_ucRequest="",g_ucError="";
@@ -10,6 +12,9 @@ int g_ucWeeks=2;
 ulong g_ucAuditUntil=0,g_ucNextRetry=0;
 int g_ucLockHandle=INVALID_HANDLE;
 string g_ucRecoveredHash="",g_ucRecoveredFamily="";
+string g_ucVerifiedPacket="",g_ucVerifiedBody="",g_ucSequenceKey="";
+ulong g_ucVerifiedUntil=0;
+long g_ucSequence=0;
 
 string UcRead(string path)
 {
@@ -37,18 +42,20 @@ string UcHmac(string text)
    ArrayCopy(outer,digest,64);if(CryptEncode(CRYPT_HASH_SHA256,outer,empty,result)!=32)return "";
    string hex="";for(int i=0;i<32;i++)hex+=StringFormat("%02x",result[i]);return hex;
 }
-string UcField(string body,string key)
-{
-   string lines[];int n=StringSplit(body,'\n',lines),size=StringLen(key);
-   for(int i=0;i<n;i++)if(StringSubstr(lines[i],0,size+1)==key+"=")return StringSubstr(lines[i],size+1);
-   return "";
-}
 bool UcVerified(string packet,string &body)
 {
-   int at=StringFind(packet,"\nHMAC=");if(at<0)return false;body=StringSubstr(packet,0,at);
-   if(StringSubstr(packet,at+6)!=UcHmac(body)||StringLen(g_ucKey)!=32)return false;
-   datetime expires=(datetime)StringToInteger(UcField(body,"expires")),issued=(datetime)StringToInteger(UcField(body,"issued"));
-   return issued<=TimeGMT()+5&&issued>=TimeGMT()-20&&expires>TimeGMT()&&expires-issued<=15;
+   // Local keys can request STOP, but can never grant audit/trading authority.
+   int stop=StringFind(packet,"\nHMAC=");
+   if(stop>=0){body=StringSubstr(packet,0,stop);return UcField(body,"command")=="stop"&&StringSubstr(packet,stop+6)==UcHmac(body);}
+   if(packet==g_ucVerifiedPacket){body=g_ucVerifiedBody;return GetTickCount64()<g_ucVerifiedUntil
+      &&UcField(body,"accountLogin")== (string)AccountInfoInteger(ACCOUNT_LOGIN)
+      &&UcField(body,"brokerServer")==AccountInfoString(ACCOUNT_SERVER)&&UcField(body,"symbol")==_Symbol;}
+   int at=StringFind(packet,"\nSERVER_RSA256=");if(at<0)return false;body=StringSubstr(packet,0,at);
+   if(!UcAuthorityScope(body,g_ucInstallation,(string)AccountInfoInteger(ACCOUNT_LOGIN),_Symbol,AccountInfoString(ACCOUNT_SERVER),TimeGMT(),g_ucSequence)
+      ||!UcRsaVerify(body,StringSubstr(packet,at+15),UC_AUTHORITY_MODULUS))return false;
+   g_ucSequence=StringToInteger(UcField(body,"sequence"));GlobalVariableSet(g_ucSequenceKey,(double)g_ucSequence);
+   g_ucVerifiedUntil=GetTickCount64()+(ulong)MathMin(15,MathMax(0,(long)StringToInteger(UcField(body,"expires"))-(long)TimeGMT()))*1000;
+   g_ucVerifiedPacket=packet;g_ucVerifiedBody=body;return true;
 }
 void UcSignedWrite(string path,string body){UcWrite(path,body+"\nHMAC="+UcHmac(body));}
 long UcMagic(string family)
@@ -229,12 +236,15 @@ datetime UcUtc(string family,datetime at)
    return at-sol_InpSolBrokerUtcOffsetMin*60;
 }
 string UcSafe(string s){StringReplace(s,"\n"," ");StringReplace(s,"\r"," ");StringReplace(s,"|","/");return s;}
+#include "UniversalChart.mqh"
 string UcTradeRow(string family,datetime signal,datetime entry,datetime exit,int direction,double price,double sl,double tp,double exitPrice,double netR,bool valid,bool closed,string reason,double spread)
 {
-   return (string)UcUtc(family,signal)+"|"+(string)UcUtc(family,entry)+"|"+(string)UcUtc(family,exit)+"|"+(string)direction+"|"+DoubleToString(price,12)+"|"+DoubleToString(sl,12)+"|"+DoubleToString(tp,12)+"|"+DoubleToString(exitPrice,12)+"|"+DoubleToString(netR,12)+"|"+(string)(int)valid+"|"+(string)(int)closed+"|"+UcSafe(reason)+"|"+(spread==EMPTY_VALUE?"":DoubleToString(spread*SymbolInfoDouble(_Symbol,SYMBOL_POINT),12))+"\n";
+   UcChartPush(signal,entry,exit,direction,price,sl,tp,netR,valid,closed,reason);
+   return (string)(long)UcUtc(family,signal)+"|"+(string)(long)UcUtc(family,entry)+"|"+(string)(long)UcUtc(family,exit)+"|"+(string)direction+"|"+DoubleToString(price,12)+"|"+DoubleToString(sl,12)+"|"+DoubleToString(tp,12)+"|"+DoubleToString(exitPrice,12)+"|"+DoubleToString(netR,12)+"|"+(string)(int)valid+"|"+(string)(int)closed+"|"+UcSafe(reason)+"|"+(spread==EMPTY_VALUE?"":DoubleToString(spread*SymbolInfoDouble(_Symbol,SYMBOL_POINT),12))+"\n";
 }
 void UcResult()
 {
+   UcChartClear();
    string rows="";int count=0;
    if(g_ucAuditFamily=="orb"){count=ArraySize(orb_g_axTrades);for(int i=0;i<count;i++){orb_AxTrade t=orb_g_axTrades[i];rows+=UcTradeRow("orb",t.signalTime,t.entryTime,t.exitTime,t.direction,t.entry,t.sl,t.tp,t.exitPrice,t.netR,t.valid,t.closed,t.reason,t.entrySpreadPoints);}}
    if(g_ucAuditFamily=="macross"){count=ArraySize(macross_g_axTrades);for(int i=0;i<count;i++){macross_AxTrade t=macross_g_axTrades[i];rows+=UcTradeRow("macross",t.signalTime,t.entryTime,t.exitTime,t.direction,t.entry,t.sl,t.tp,t.exitPrice,t.netR,t.valid,t.closed,t.reason,t.entrySpreadPoints);}}
@@ -243,12 +253,13 @@ void UcResult()
    if(count>10000){g_ucError="RESULT_ROW_LIMIT";UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nerror="+g_ucError);}
    else UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nconfigurationHash="+g_ucConfig+"\nrequestHash="+g_ucRequest+"\nrows="+(string)count+"\nTRADES\n"+rows);
    g_ucAuditPending=false;
+   g_ucChartPending=count>0&&count<=10000;
 }
 void UcAuditStep()
 {
    if(!g_ucAuditPending)return;
    g_ucLiveContext=false;g_ucRealm="A"+g_ucAuditFamily;
-   if(GetTickCount64()>=g_ucAuditUntil){g_ucAuditPending=false;g_ucError="AUDIT_AUTHORITY_EXPIRED";return;}
+   if(GetTickCount64()>=g_ucAuditUntil){g_ucError="AUDIT_AUTHORITY_EXPIRED";return;}
    string phase="replaying";int done=0,total=0;bool ready=false;
    if(g_ucAuditFamily=="sol")
    {
@@ -284,7 +295,12 @@ void UcAuditStep()
 
 void UcStatus()
 {
-   UcSignedWrite(g_ucFolder+"status.txt","symbol="+_Symbol+"\nbrokerServer="+AccountInfoString(ACCOUNT_SERVER)+"\naccountLogin="+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"\nopenPositions="+(string)UcOwned()+"\ntrading="+(g_ucTrading&&GetTickCount64()<g_ucAuthorityUntil?"true":"false")+"\nconfigurationHash="+g_ucLiveHash+"\nerror="+g_ucError+"\nat="+(string)TimeGMT());
+   UcSignedWrite(g_ucFolder+"status.txt","symbol="+_Symbol+"\nbrokerServer="+AccountInfoString(ACCOUNT_SERVER)+"\naccountLogin="+(string)AccountInfoInteger(ACCOUNT_LOGIN)+"\nopenPositions="+(string)UcOwned()+"\ntrading="+(g_ucTrading&&GetTickCount64()<g_ucAuthorityUntil?"true":"false")+"\nconfigurationHash="+g_ucLiveHash+"\nerror="+g_ucError+"\nat="+(string)(long)TimeGMT()
+      +"\nsubscriberName="+UcSafe(UcField(g_ucIdentityBody,"subscriberName"))+"\nidentityFresh="+(UcIdentityFresh()?"true":"false")
+      +"\nchartTrades="+(string)ArraySize(g_ucChartTrades)+"\nchartDrawn="+(string)g_ucChartCursor+"\nchartDone="+(g_ucChartPending?"false":"true")+"\nchartVerified="+(string)g_ucChartVerified+"\nchartFailures="+(string)g_ucChartFailures
+      +"\nhelloLabel="+ObjectGetString(0,UcPanelPrefix()+"hello",OBJPROP_TEXT)
+      +"\nsubscriptionLabel="+ObjectGetString(0,UcPanelPrefix()+"subscription",OBJPROP_TEXT)
+      +"\nconnectionLabel="+ObjectGetString(0,UcPanelPrefix()+"connection",OBJPROP_TEXT));
 }
 int UcInit()
 {
@@ -296,15 +312,17 @@ int UcInit()
    // Exclusive FILE_COMMON handle also fences duplicate terminals on this PC.
    g_ucLockHandle=FileOpen(g_ucFolder+"terminal.lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);
    if(g_ucLockHandle==INVALID_HANDLE)return INIT_FAILED;
+   g_ucSequenceKey="UC.AUTH."+StringSubstr(g_ucInstallation,0,36);
+   g_ucSequence=GlobalVariableCheck(g_ucSequenceKey)?(long)GlobalVariableGet(g_ucSequenceKey):0;
    string resume=UcRead(g_ucFolder+"resume.txt");int signature=StringFind(resume,"\nHMAC=");
    if(signature>=0){string body=StringSubstr(resume,0,signature);
       if(StringSubstr(resume,signature+6)==UcHmac(body)){g_ucRecoveredFamily=UcField(body,"family");g_ucRecoveredHash=UcField(body,"configurationHash");}}
-   g_ucTrading=false;EventSetTimer(1);UcStatus();Comment("STRATUM / STANDBY\nWeb authority required. Trading OFF.");return INIT_SUCCEEDED;
+   g_ucTrading=false;EventSetTimer(1);UcChartInit();UcStatus();Comment("");return INIT_SUCCEEDED;
 }
 void UcShutdown()
 {
    g_ucTrading=false;g_ucAuditPending=false;UcEngineRelease(g_ucAuditFamily,false);UcEngineRelease(g_ucLiveFamily,true);
-   if(g_ucLockHandle!=INVALID_HANDLE)FileClose(g_ucLockHandle);g_ucLockHandle=INVALID_HANDLE;EventKillTimer();Comment("");
+   if(g_ucLockHandle!=INVALID_HANDLE)FileClose(g_ucLockHandle);g_ucLockHandle=INVALID_HANDLE;EventKillTimer();UcChartShutdown();Comment("");
 }
 void UcLiveTick()
 {
@@ -327,14 +345,16 @@ void UcTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &reque
 }
 void UcTimer()
 {
+   UcIdentityRead();UcPanelUpdate();
    string body="",packet=UcRead(g_ucFolder+"command.txt");
    if(UcVerified(packet,body))
    {
       string command=UcField(body,"command");
-      g_ucAuditUntil=GetTickCount64()+(ulong)MathMax(0,(long)StringToInteger(UcField(body,"expires"))-(long)TimeGMT())*1000;
-      if(command=="audit"&&UcField(body,"jobId")!=g_ucJob)
+      g_ucAuditUntil=g_ucVerifiedUntil;
+      if(command=="audit"&&(UcField(body,"jobId")!=g_ucJob||UcField(body,"attemptId")!=g_ucAttempt))
       {
          g_ucTrading=false;g_ucJob=UcField(body,"jobId");g_ucAttempt=UcField(body,"attemptId");g_ucConfig=UcField(body,"configurationHash");g_ucRequest=UcField(body,"requestHash");
+         UcChartClear();
          g_ucFromUtc=(datetime)StringToInteger(UcField(body,"from"));g_ucToUtc=(datetime)StringToInteger(UcField(body,"to"));g_ucWeeks=(int)StringToInteger(UcField(body,"weeks"));
          g_ucAuditAsOf=g_ucToUtc+(datetime)((long)TimeCurrent()-(long)TimeGMT());
          g_ucAuditStarted=false;g_ucAuditPending=UcApply(body,false);
@@ -344,15 +364,14 @@ void UcTimer()
             else g_ucAuditAsOf=g_ucToUtc+sol_InpSolBrokerUtcOffsetMin*60;}
          if(!g_ucAuditPending)UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nerror="+(g_ucError==""?"SETTINGS_REJECTED":g_ucError));
       }
-      if(command=="stop"){g_ucTrading=false;g_ucAuditPending=false;}
+      if(command=="stop"){g_ucTrading=false;g_ucAuditUntil=0;g_ucVerifiedPacket="";g_ucVerifiedBody="";g_ucVerifiedUntil=0;}
       if(command=="live")
       {
          string hash=UcField(body,"configurationHash");
          if(hash==g_ucLiveHash||UcApply(body,true)){g_ucTrading=true;g_ucAuthorityUntil=g_ucAuditUntil;}
       }
    }
-   else {g_ucTrading=false;g_ucAuditPending=false;}
-   UcAuditStep();UcLiveManagement();UcStatus();
-   Comment("STRATUM / "+(g_ucTrading?"TRADING ON":"TRADING OFF")+"\n"+(g_ucAuditPending?"AUDIT / "+g_ucAuditFamily:"STANDBY")+"\n"+g_ucError);
+   else {g_ucTrading=false;g_ucAuditUntil=0;}
+   UcAuditStep();UcLiveManagement();UcChartStep();UcStatus();
 }
 #endif

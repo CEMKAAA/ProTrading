@@ -52,3 +52,31 @@ CREATE TABLE IF NOT EXISTS trading (
   revision INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS billing_events (id TEXT PRIMARY KEY, at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS ea_sequences (
+  installation_id TEXT PRIMARY KEY REFERENCES installations(id), sequence INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  installation_id TEXT PRIMARY KEY REFERENCES installations(id), agent_id TEXT NOT NULL,
+  generation TEXT NOT NULL, expires_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_profiles (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id), display_name TEXT NOT NULL
+);
+-- A demo is issued only by registration, never by login, download or billing.
+CREATE TABLE IF NOT EXISTS account_trials (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id), starts_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL CHECK(expires_at > starts_at)
+);
+CREATE TABLE IF NOT EXISTS enrollment_tickets (
+  token_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id),
+  expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS supabase_accounts (
+  account_id TEXT PRIMARY KEY REFERENCES accounts(id), email TEXT NOT NULL,
+  authority_until INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS supabase_sessions (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  provider_session_id TEXT NOT NULL, sealed_tokens TEXT NOT NULL,
+  checked_at INTEGER NOT NULL DEFAULT 0
+);

@@ -1,0 +1,8 @@
+{
+  "projectUrl": "https://uvzhrrqzzdjqtmydpvwo.supabase.co",
+  "status": "PASS",
+  "emailEnabled": true,
+  "emailAutoconfirm": false,
+  "publicAccessRpcDenied": 401,
+  "publicStrategiesDenied": 401
+}

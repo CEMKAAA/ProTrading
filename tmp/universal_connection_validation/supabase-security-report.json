@@ -1,0 +1,11 @@
+Verified project URL exactly: `https://uvzhrrqzzdjqtmydpvwo.supabase.co`.
+
+Executed `web-mvp/control-service/supabase-verify.sql` unchanged through `execute_sql`. Result: **PASS — 12 checks**, transaction rolled back.
+
+Independent follow-up confirmed:
+
+- `example.invalid` users: **0**
+- `stratum_private.trial_claims` rows: **0**
+- `public.stratum_strategies` rows: **0**
+
+No schema, source, or auth configuration changes.

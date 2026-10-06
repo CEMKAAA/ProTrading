@@ -1,0 +1,97 @@
+﻿[
+    {
+        "sha256":  "9E6881A8236541F1CD95E1B712D09AA0CDF4E0451CAA4DCE13953C9DF497C755",
+        "file":  "UniversalAuthority.mqh",
+        "bytes":  4268
+    },
+    {
+        "sha256":  "0AC92CEC4A5EDE225FCFBE4A990948A50B5BDC35BA7392C77E3D68AD2FE0A52D",
+        "file":  "UniversalAuthorityKey.mqh",
+        "bytes":  623
+    },
+    {
+        "sha256":  "E05E66DEBE3376BACD1DA1B4FAEBF707525FBD6821BCB8AFBBEF28A6BC8DC2DE",
+        "file":  "UniversalChart.mqh",
+        "bytes":  10433
+    },
+    {
+        "sha256":  "656C9F791734CFF44A1178D5E04F9FAF39FFDDDA3C74C81833773025FCEC4D73",
+        "file":  "UniversalConnectionEA.ex5",
+        "bytes":  5610124
+    },
+    {
+        "sha256":  "455825E8CCA2D01EB8A65D0C998A067DF7187E9084853AA6574E64161975943C",
+        "file":  "UniversalConnectionEA.mq5",
+        "bytes":  3465
+    },
+    {
+        "sha256":  "436FCF91A8CB971F3818013A396BDB92243672B48001EF7CD62B122488B2E7D8",
+        "file":  "UniversalRuntime.mqh",
+        "bytes":  28742
+    },
+    {
+        "sha256":  "E5EB9F998A1F80C36EE21ACA7AC64076133A7ABEEFF5CC02BF67B3C4735BAEED",
+        "file":  "generated\\entrylab.mqh",
+        "bytes":  1374458
+    },
+    {
+        "sha256":  "DFBA272813B7D4161CE464E8CDC9474F8CA60A382EAAB60BFA74DEB181FEF134",
+        "file":  "generated\\entrylab_settings.mqh",
+        "bytes":  56764
+    },
+    {
+        "sha256":  "327575E5C4E6EF36E2C14D63639FACF9B2EF3A499B23AA0B281CFB393159A537",
+        "file":  "generated\\live_entrylab.mqh",
+        "bytes":  1466838
+    },
+    {
+        "sha256":  "A8BF05ECD95E5357660DAC5708718B7CFD92B1E3F113C4019CE24CEF353D2A19",
+        "file":  "generated\\live_macross.mqh",
+        "bytes":  1383009
+    },
+    {
+        "sha256":  "3E5935180E61AC74BA5919797B7EC2D7CE10FC47A35347CC7D50FD3AF0BBFDF9",
+        "file":  "generated\\live_orb.mqh",
+        "bytes":  1285964
+    },
+    {
+        "sha256":  "4B4D97410D179EBD30D79C461E99D8689ED453E15BE3DF165928E629630DE44A",
+        "file":  "generated\\live_sol.mqh",
+        "bytes":  675968
+    },
+    {
+        "sha256":  "DB49F1D1C0B35534C00FB4F042613802441DCC094D3E79D96D75F115B7E8ACDA",
+        "file":  "generated\\macross.mqh",
+        "bytes":  1294031
+    },
+    {
+        "sha256":  "CDBE18268DB73F231262B0CF645F2DF861185E805185A266F64C5A759EEA4069",
+        "file":  "generated\\macross_settings.mqh",
+        "bytes":  55789
+    },
+    {
+        "sha256":  "FB1C602F1D3F60487EFA726AD9187C21C6943F57BD4CB0F58B9ED6464527C908",
+        "file":  "generated\\orb.mqh",
+        "bytes":  1202273
+    },
+    {
+        "sha256":  "B22A45F87C57B97172D26B0B33AEA2C93F8FD9042E70483D1AF53C41973482B0",
+        "file":  "generated\\orb_settings.mqh",
+        "bytes":  50221
+    },
+    {
+        "sha256":  "B8E980840B614D976DDC95ABC472E41FE89058B9EF86121091A86D6E5DDF573C",
+        "file":  "generated\\sdk.mqh",
+        "bytes":  26
+    },
+    {
+        "sha256":  "0716EEC2A41826F8236A96AA7E46C09604C687D8F1E94A3B12D17E1AAAD8BB29",
+        "file":  "generated\\sol.mqh",
+        "bytes":  628708
+    },
+    {
+        "sha256":  "F45CFD027E8FD35FF771A807724200F5F0433F302002F995B3D20EAF12F6FB58",
+        "file":  "generated\\sol_settings.mqh",
+        "bytes":  31121
+    }
+]

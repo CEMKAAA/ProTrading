@@ -5,6 +5,7 @@ import { z } from "zod";
 import { universalConfigurationSchema, UNIVERSAL_RUNTIME } from "../lib/universal-contract.ts";
 import { backtestRequestSchema, deviceProofSchema, pairingRequestSchema, progressSchema, resultSchema, summarizeResult, ENGINE_RUNTIME } from "../lib/control-contract.ts";
 import { checkedPublicKey, hash, id, keyPair, signed, token, verifySigned } from "./crypto.mjs";
+import { eaKeyPair, commandBody, signEaCommand } from "./ea-authority.mjs";
 
 export class ControlError extends Error {
   constructor(code, status = 409) { super(code); this.code = code; this.status = status; }
@@ -14,10 +15,11 @@ const parse = (schema, value) => { const result = schema.safeParse(value); requi
 const phases = ["preparing", "downloading", "replaying", "uploading"];
 
 export class ControlPlane {
-  constructor({ database = ":memory:", signingKey = keyPair(), now = () => Date.now() } = {}) {
+  constructor({ database = ":memory:", signingKey = keyPair(), eaSigningKey = eaKeyPair(), now = () => Date.now() } = {}) {
     this.db = new DatabaseSync(database);
     this.db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
     this.signingKey = signingKey;
+    this.eaSigningKey = eaSigningKey;
     this.now = now;
   }
   get(sql, ...args) { return this.db.prepare(sql).get(...args); }
@@ -31,11 +33,15 @@ export class ControlPlane {
   event(accountId, event, details = {}) { this.run("INSERT INTO audit_events(at,account_id,event,details_json) VALUES(?,?,?,?)", this.now(), accountId, event, JSON.stringify(details)); }
   close() { this.db.close(); }
   register(input) {
-    const v=parse(z.object({email:z.string().email().max(254),password:z.string().min(12).max(128)}).strict(),input);
+    const v=parse(z.object({email:z.string().email().max(254),password:z.string().min(12).max(128),
+      displayName:z.string().trim().min(1).max(60).regex(/^[^\r\n\x00-\x1f\x7f]+$/).optional()}).strict(),input);
     const email=v.email.toLowerCase(),salt=randomBytes(16).toString("hex"),accountId=id();
     return this.atomic(()=>{
       requireThat(!this.get("SELECT account_id FROM identities WHERE email=?",email),"EMAIL_UNAVAILABLE",409);
       this.provisionAccount(accountId,0);
+      this.run("INSERT INTO account_trials VALUES(?,?,?)",accountId,this.now(),this.now()+30*86400000);
+      this.event(accountId,"demo_started",{expiresAt:this.now()+30*86400000});
+      if(v.displayName)this.setDisplayName(accountId,v.displayName);
       this.run("INSERT INTO identities VALUES(?,?,?,?)",accountId,email,salt,scryptSync(v.password,salt,64).toString("hex"));
       return this.issueBrowserSession(accountId);
     });
@@ -52,6 +58,7 @@ export class ControlPlane {
     this.run("DELETE FROM leases WHERE session_id=?",actor.sessionId);
     this.run("UPDATE jobs SET state='cancelled',failure_code='SESSION_ENDED',updated_at=? WHERE account_id=? AND state IN ('queued','running')",this.now(),actor.accountId);
     this.run("DELETE FROM sessions WHERE id=?",actor.sessionId);
+    this.run("DELETE FROM enrollment_tickets WHERE account_id=? AND used=0",actor.accountId);
     this.run("UPDATE trading SET enabled=0,revision=revision+1 WHERE account_id=?",actor.accountId);
     return {loggedOut:true};
   }
@@ -72,6 +79,14 @@ export class ControlPlane {
     const v=parse(z.object({symbol:z.string().min(1).max(64),brokerServer:z.string().min(1).max(100),accountLogin:z.string().max(32),
       runtime:z.literal(UNIVERSAL_RUNTIME),build:z.string().max(100),openPositions:z.number().int().min(0),
       trading:z.boolean(),configurationHash:z.string().max(64),error:z.string().max(200)}).strict(),input);
+    const previous=this.get("SELECT status_json FROM terminal_status WHERE installation_id=?",installation.id);
+    if(previous){const old=JSON.parse(previous.status_json);
+      if(old.accountLogin!==v.accountLogin||old.brokerServer!==v.brokerServer||old.symbol!==v.symbol){
+        this.run("UPDATE trading SET enabled=0,revision=revision+1,updated_at=? WHERE account_id=?",this.now(),installation.account_id);
+        this.run("UPDATE jobs SET state='cancelled',failure_code='TERMINAL_CHANGED',updated_at=? WHERE installation_id=? AND state IN ('queued','running')",this.now(),installation.id);
+        this.event(installation.account_id,'terminal_context_changed',{installationId:installation.id});
+      }
+    }
     this.run("INSERT INTO terminal_status VALUES(?,?,?) ON CONFLICT(installation_id) DO UPDATE SET status_json=excluded.status_json,at=excluded.at",installation.id,JSON.stringify(v),this.now());
     return {accepted:true};
   }
@@ -110,11 +125,111 @@ export class ControlPlane {
       generation:lease.generation,expiresAt:Math.min(lease.expires_at,this.now()+15000),liveTradingAllowed:!!job,
       configurationHash:job?.configuration_hash??null,request:job?JSON.parse(job.request_json):null});
   }
+  eaCommand(installation, input) {
+    const v = parse(z.object({ jobId: z.string().uuid().nullable(), attemptId: z.string().uuid().nullable() }).strict(), input);
+    return this.atomic(() => {
+      const lease = this.currentLease(installation);
+      const status = this.get("SELECT * FROM terminal_status WHERE installation_id=?", installation.id);
+      requireThat(status && status.at > this.now() - 15000, "TERMINAL_OFFLINE", 409);
+      const terminal = JSON.parse(status.status_json);
+      requireThat(/^[1-9][0-9]{0,19}$/.test(terminal.accountLogin), "TERMINAL_ACCOUNT_INVALID", 409);
+      const remote=this.get('SELECT authority_until FROM supabase_accounts WHERE account_id=?',installation.account_id);
+      let kind, ticket, expiry = Math.min(lease.expires_at, this.now() + 15000, remote?.authority_until??Infinity);
+      if (v.jobId || v.attemptId) {
+        requireThat(v.jobId && v.attemptId, "INVALID_REQUEST", 400);
+        const job = this.runningJob(installation, v.jobId, v.attemptId);
+        requireThat(JSON.parse(job.request_json).version === 2, "UNSUPPORTED_V1_CONFIG", 409);
+        kind = "audit"; ticket = this.jobTicket(job).payload; expiry = Math.min(expiry, job.claim_until);
+      } else {
+        const operation = this.operation(installation).payload;
+        if (!operation.liveTradingAllowed) return this.ticket({ version: 1, kind: "ea_command", audience: "stratum-mt5",
+          installationId: installation.id, expiresAt: expiry, liveTradingAllowed: false, command: null });
+        kind = "live"; ticket = operation;
+      }
+      requireThat(terminal.symbol === ticket.request.symbol && terminal.brokerServer === ticket.request.brokerServer, "TERMINAL_MARKET_MISMATCH", 409);
+      const sequence = this.get("INSERT INTO ea_sequences VALUES(?,1) ON CONFLICT(installation_id) DO UPDATE SET sequence=sequence+1 RETURNING sequence", installation.id).sequence;
+      const body = commandBody(kind, ticket, expiry, this.now(), { installationId: installation.id,
+        accountId: installation.account_id, generation: lease.generation, accountLogin: terminal.accountLogin, sequence });
+      return this.ticket({ version: 1, kind: "ea_command", audience: "stratum-mt5", installationId: installation.id,
+        expiresAt: expiry, liveTradingAllowed: false, command: signEaCommand(body, this.eaSigningKey.privateKey) });
+    });
+  }
 
   // Internal identity-provider/operator boundary, deliberately not an HTTP signup endpoint.
+  setDisplayName(accountId, name) {
+    const value=parse(z.string().trim().min(1).max(60).regex(/^[^\r\n\x00-\x1f\x7f]+$/),name);
+    this.run("INSERT INTO account_profiles VALUES(?,?) ON CONFLICT(account_id) DO UPDATE SET display_name=excluded.display_name",accountId,value);
+  }
+  displayName(accountId) {
+    return this.get("SELECT display_name FROM account_profiles WHERE account_id=?",accountId)?.display_name
+      ??this.get("SELECT email FROM identities WHERE account_id=?",accountId)?.email.split('@')[0].slice(0,60)??"Abone";
+  }
+  eaIdentity(installation, input) {
+    // Read-only display certificate. It never grants research or trading authority,
+    // and remains readable when a subscription/controller lease has expired.
+    const v=parse(z.object({symbol:z.string().regex(/^[A-Za-z0-9._#-]{1,64}$/),
+      brokerServer:z.string().min(1).max(100).regex(/^[^\r\n\x00-\x1f\x7f]+$/),accountLogin:z.string().regex(/^[1-9][0-9]{0,19}$/)}).strict(),input);
+    return this.atomic(()=>{
+      const account=this.get("SELECT * FROM accounts WHERE id=?",installation.account_id);
+      requireThat(account,"ACCOUNT_UNKNOWN",403);
+      const lease=this.get("SELECT l.*,s.expires_at AS session_expiry FROM leases l JOIN sessions s ON s.id=l.session_id WHERE l.account_id=? AND l.installation_id=?",installation.account_id,installation.id);
+      const agent=this.get("SELECT * FROM agent_sessions WHERE installation_id=?",installation.id);
+      const access=this.accessState(installation.account_id),active=access.accessActive;
+      const controller=active&&lease&&lease.expires_at>this.now()&&lease.session_expiry>this.now()
+        &&agent?.agent_id===installation.agentId&&agent.expires_at>this.now()&&agent.generation===lease.generation;
+      const sequence=this.get("INSERT INTO ea_sequences VALUES(?,1) ON CONFLICT(installation_id) DO UPDATE SET sequence=sequence+1 RETURNING sequence",installation.id).sequence;
+      const expiry=this.now()+15000;
+      const body=["command=identity",`issued=${Math.floor(this.now()/1000)}`,`expires=${Math.floor(expiry/1000)}`,
+        `installationId=${installation.id}`,`accountId=${installation.account_id}`,`sequence=${sequence}`,
+        `accountLogin=${v.accountLogin}`,`symbol=${v.symbol}`,`brokerServer=${v.brokerServer}`,
+        `subscriberName=${this.displayName(installation.account_id)}`,`subscriptionActive=${!!active}`,
+        `subscriptionUntil=${Math.floor(access.entitlementUntil/1000)}`,`controllerActive=${!!controller}`,
+        `accessMode=${access.accessMode}`,`trialUntil=${Math.floor((access.trial?.expiresAt??0)/1000)}`].join('\n');
+      return this.ticket({version:1,kind:"ea_identity",audience:"stratum-mt5",installationId:installation.id,
+        expiresAt:expiry,liveTradingAllowed:false,certificate:signEaCommand(body,this.eaSigningKey.privateKey)});
+    });
+  }
   provisionAccount(accountId = id(), entitlementUntil = this.now() + 86400000) {
     this.run("INSERT INTO accounts(id,entitlement_until) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET entitlement_until=excluded.entitlement_until", accountId, entitlementUntil);
     return accountId;
+  }
+  accessState(accountId) {
+    const account=this.get("SELECT * FROM accounts WHERE id=?",accountId);
+    requireThat(account,"ACCOUNT_UNKNOWN",403);
+    const trial=this.get("SELECT starts_at AS startsAt,expires_at AS expiresAt FROM account_trials WHERE account_id=?",accountId);
+    const remote=this.get("SELECT authority_until FROM supabase_accounts WHERE account_id=?",accountId);
+    const fresh=!remote||remote.authority_until>this.now();
+    const paid=fresh&&!account.disabled&&account.entitlement_until>this.now();
+    const demo=fresh&&!account.disabled&&!!trial&&trial.expiresAt>this.now();
+    return {accessActive:paid||demo,accessMode:paid?"paid":demo?"demo":"inactive",
+      entitlementUntil:Math.max(account.entitlement_until,trial?.expiresAt??0),
+      trial:trial?{...trial,daysRemaining:Math.max(0,Math.ceil((trial.expiresAt-this.now())/86400000))}:null};
+  }
+  issueEnrollment(accessToken) {
+    const actor=this.browser(accessToken);this.entitlement(actor.accountId);
+    return this.atomic(()=>{
+      const raw=token(),expiresAt=this.now()+30*60000;
+      this.run("DELETE FROM enrollment_tickets WHERE expires_at<=? OR (account_id=? AND used=0)",this.now(),actor.accountId);
+      this.run("INSERT INTO enrollment_tickets(token_hash,account_id,expires_at) VALUES(?,?,?)",hash(raw),actor.accountId,expiresAt);
+      this.event(actor.accountId,"ea_package_issued");
+      return {enrollmentToken:raw,expiresAt,accountId:actor.accountId};
+    });
+  }
+  enrollInstallation(input) {
+    const v=parse(z.object({enrollmentToken:z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+      publicKey:z.string().min(1).max(512),label:z.string().min(1).max(80),signature:z.string().min(1).max(128)}).strict(),input);
+    let publicKey;
+    try{publicKey=checkedPublicKey(v.publicKey);}catch{throw new ControlError("INVALID_PUBLIC_KEY",400);}
+    requireThat(verifySigned({payload:{enrollmentToken:v.enrollmentToken,publicKey:v.publicKey,label:v.label},signature:v.signature},publicKey),"INVALID_SIGNATURE",401);
+    return this.atomic(()=>{
+      const ticket=this.get("SELECT * FROM enrollment_tickets WHERE token_hash=?",hash(v.enrollmentToken));
+      requireThat(ticket&&!ticket.used&&ticket.expires_at>this.now(),"ENROLLMENT_EXPIRED_OR_USED",403);
+      this.entitlement(ticket.account_id);
+      const pair=this.beginPairingRecord({publicKey,label:v.label},ticket.account_id);
+      this.run("UPDATE enrollment_tickets SET used=1 WHERE token_hash=?",hash(v.enrollmentToken));
+      this.event(ticket.account_id,"personal_installation_pending",{installationId:pair.installationId});
+      return {...pair,accountId:ticket.account_id};
+    });
   }
   issueBrowserSession(accountId, lifetimeMs = 3600000) {
     requireThat(this.get("SELECT id FROM accounts WHERE id=? AND disabled=0", accountId), "ACCOUNT_DISABLED", 403);
@@ -126,18 +241,20 @@ export class ControlPlane {
     requireThat(typeof accessToken === "string" && accessToken.length >= 32 && accessToken.length <= 256, "UNAUTHORIZED", 401);
     const actor = this.get("SELECT s.id AS sessionId,s.account_id AS accountId,s.expires_at AS sessionExpiry,a.entitlement_until AS entitlementUntil,a.disabled FROM sessions s JOIN accounts a ON a.id=s.account_id WHERE token_hash=?", hash(accessToken));
     requireThat(actor && actor.sessionExpiry > this.now() && !actor.disabled, "UNAUTHORIZED", 401);
-    return actor;
+    return {...actor,entitlementUntil:this.accessState(actor.accountId).entitlementUntil};
   }
   entitlement(accountId) {
     const account = this.get("SELECT * FROM accounts WHERE id=?", accountId);
-    requireThat(account && !account.disabled && account.entitlement_until > this.now(), "ENTITLEMENT_EXPIRED", 403);
-    return account;
+    requireThat(account && !account.disabled && this.accessState(accountId).accessActive, "ENTITLEMENT_EXPIRED", 403);
+    return {...account,entitlement_until:this.accessState(accountId).entitlementUntil};
   }
   sessionInfo(accessToken) {
     const actor = this.browser(accessToken);
     const lease = this.get("SELECT installation_id AS installationId,expires_at AS expiresAt,session_id AS sessionId FROM leases WHERE account_id=?", actor.accountId);
-    return { accountId: actor.accountId, entitlementUntil: actor.entitlementUntil, subscriptionActive: actor.entitlementUntil > this.now(),
-      email:this.get("SELECT email FROM identities WHERE account_id=?",actor.accountId)?.email??null,
+    const access=this.accessState(actor.accountId);
+    return { accountId: actor.accountId, displayName:this.displayName(actor.accountId), ...access,subscriptionActive:access.accessActive,
+      email:this.get("SELECT email FROM supabase_accounts WHERE account_id=?",actor.accountId)?.email
+        ??this.get("SELECT email FROM identities WHERE account_id=?",actor.accountId)?.email??null,
       trading:this.tradingInfo(actor.accountId),terminalStatuses:this.all("SELECT installation_id AS installationId,status_json,at FROM terminal_status WHERE installation_id IN (SELECT id FROM installations WHERE account_id=?)",actor.accountId).map(r=>({...JSON.parse(r.status_json),installationId:r.installationId,reportedAt:r.at})),
       installations: this.all("SELECT id,label,state,created_at AS createdAt FROM installations WHERE account_id=? ORDER BY created_at DESC", actor.accountId),
       lease: lease ? { installationId: lease.installationId, expiresAt: lease.expiresAt, active: lease.expiresAt > this.now(), controlledHere: lease.sessionId === actor.sessionId } : null };
@@ -146,28 +263,31 @@ export class ControlPlane {
     const request = parse(pairingRequestSchema, input);
     let publicKey;
     try { publicKey = checkedPublicKey(request.publicKey); } catch { throw new ControlError("INVALID_PUBLIC_KEY", 400); }
-    return this.atomic(() => {
+    return this.atomic(() => this.beginPairingRecord({...request,publicKey},null));
+  }
+  beginPairingRecord(request,owner) {
       const installationId = id(), raw = randomBytes(4).toString("hex").toUpperCase(), code = `${raw.slice(0, 4)}-${raw.slice(4)}`;
-      this.run("INSERT INTO installations(id,public_key,label,state,created_at) VALUES(?,?,?,'pending',?)", installationId, publicKey, request.label, this.now());
+      this.run("INSERT INTO installations(id,account_id,public_key,label,state,created_at) VALUES(?,?,?,?,'pending',?)", installationId,owner,request.publicKey, request.label, this.now());
       this.run("INSERT INTO pairings(code_hash,installation_id,expires_at) VALUES(?,?,?)", hash(code), installationId, this.now() + 300000);
-      return { installationId, code, expiresAt: this.now() + 300000, fingerprint: hash(publicKey) };
-    });
+      return { installationId, code, expiresAt: this.now() + 300000, fingerprint: hash(request.publicKey) };
   }
   pairing(code) {
     requireThat(typeof code === "string" && /^[A-F0-9]{4}-[A-F0-9]{4}$/.test(code), "INVALID_PAIRING", 400);
-    const row = this.get("SELECT p.*,i.label,i.public_key FROM pairings p JOIN installations i ON i.id=p.installation_id WHERE p.code_hash=?", hash(code));
+    const row = this.get("SELECT p.*,i.label,i.public_key,i.account_id FROM pairings p JOIN installations i ON i.id=p.installation_id WHERE p.code_hash=?", hash(code));
     requireThat(row && !row.used && row.expires_at > this.now(), "PAIRING_EXPIRED_OR_UNKNOWN", 404);
     return row;
   }
   reviewPairing(accessToken, code) {
     const actor = this.browser(accessToken); this.entitlement(actor.accountId);
     const row = this.pairing(code);
+    requireThat(!row.account_id||row.account_id===actor.accountId,"PAIRING_OWNER_MISMATCH",403);
     return { installationId: row.installation_id, label: row.label, fingerprint: hash(row.public_key), expiresAt: row.expires_at };
   }
   approvePairing(accessToken, code, fingerprint) {
     const actor = this.browser(accessToken); this.entitlement(actor.accountId);
     return this.atomic(() => {
       const row = this.pairing(code);
+      requireThat(!row.account_id||row.account_id===actor.accountId,"PAIRING_OWNER_MISMATCH",403);
       requireThat(hash(row.public_key) === fingerprint, "PAIRING_FINGERPRINT_CHANGED", 409);
       this.run("UPDATE pairings SET used=1 WHERE code_hash=?", hash(code));
       this.run("UPDATE installations SET account_id=?,state='approved' WHERE id=? AND state='pending'", actor.accountId, row.installation_id);
@@ -211,12 +331,28 @@ export class ControlPlane {
     requireThat(installation && installation.state !== "revoked", "INSTALLATION_REVOKED_OR_UNKNOWN", 401);
     requireThat(installation.state === "approved" || path === "/v1/device/pairing", "PAIRING_REQUIRED", 403);
     requireThat(verifySigned({ payload, signature }, installation.public_key), "INVALID_SIGNATURE", 401);
+    if (["/v1/device/command", "/v1/device/status", "/v1/device/connect", "/v1/device/identity"].includes(path)) requireThat(proof.agentId, "AGENT_SESSION_REQUIRED", 403);
+    if (proof.agentId && !["/v1/device/connect", "/v1/device/pairing", "/v1/device/identity"].includes(path)) {
+      const agent = this.get("SELECT * FROM agent_sessions WHERE installation_id=?", installation.id);
+      requireThat(agent && agent.agent_id === proof.agentId && agent.expires_at > this.now(), "AGENT_SESSION_EXPIRED", 403);
+      requireThat(agent.generation === this.currentLease(installation).generation, "AGENT_CONTROLLER_CHANGED", 403);
+    }
     this.atomic(() => {
       this.run("DELETE FROM device_nonces WHERE expires_at<?", this.now());
       requireThat(!this.get("SELECT nonce FROM device_nonces WHERE installation_id=? AND nonce=?", installation.id, proof.nonce), "PROOF_REPLAY", 401);
       this.run("INSERT INTO device_nonces(installation_id,nonce,expires_at) VALUES(?,?,?)", installation.id, proof.nonce, this.now() + 60000);
     });
-    return installation;
+    return {...installation, agentId: proof.agentId};
+  }
+  connectAgent(installation) {
+    requireThat(installation.agentId, "AGENT_SESSION_REQUIRED", 403);
+    return this.atomic(() => {
+      const lease = this.currentLease(installation), prior = this.get("SELECT * FROM agent_sessions WHERE installation_id=?", installation.id);
+      requireThat(!prior || prior.expires_at <= this.now() || prior.agent_id === installation.agentId || prior.generation !== lease.generation, "AGENT_ALREADY_CONNECTED", 409);
+      const expiresAt = Math.min(lease.expires_at, this.now() + 15000);
+      this.run("INSERT INTO agent_sessions VALUES(?,?,?,?) ON CONFLICT(installation_id) DO UPDATE SET agent_id=excluded.agent_id,generation=excluded.generation,expires_at=excluded.expires_at", installation.id, installation.agentId, lease.generation, expiresAt);
+      return {connected:true,expiresAt};
+    });
   }
   currentLease(installation) {
     requireThat(installation.account_id && installation.state === "approved", "PAIRING_REQUIRED", 403);
@@ -229,6 +365,7 @@ export class ControlPlane {
     const lease = this.currentLease(installation), account = this.entitlement(installation.account_id);
     const expiresAt = Math.min(this.now() + 90000, lease.session_expiry, account.entitlement_until);
     this.run("UPDATE leases SET expires_at=? WHERE account_id=? AND generation=?", expiresAt, installation.account_id, lease.generation);
+    if(installation.agentId)this.run("UPDATE agent_sessions SET expires_at=? WHERE installation_id=? AND agent_id=? AND generation=?", Math.min(expiresAt,this.now()+15000),installation.id,installation.agentId,lease.generation);
     return this.ticket({ version: 1, kind: "research_lease", audience: "stratum-mt5", accountId: installation.account_id, installationId: installation.id, generation: lease.generation, expiresAt, capabilities: ["backtest"], liveTradingAllowed: false });
   }
   ticket(payload) { return signed({ ...payload, issuedAt: this.now() }, this.signingKey.privateKey); }
