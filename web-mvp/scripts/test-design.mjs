@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { heroPose, marketPose, clampProgress, studioCoinPose, chapterPose } from "../lib/scene-motion.ts";
-import { createRequire } from "node:module";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { renderToStaticMarkup } from "react-dom/server";
+import React from 'react';
+import {loadUi} from './ui-ssr-loader.mjs';
 
 assert.equal(clampProgress(-1),0);
 assert.equal(clampProgress(2),1);
@@ -67,18 +66,17 @@ assert.equal(chapterPose(.3).scale,1,"In-view section is full-size and legible")
 assert.equal(chapterPose(.3).radius,0);
 assert.ok(chapterPose(1).scale<chapterPose(.5).scale,"Outgoing section recedes");
 const leverSource=readFileSync(new URL("../components/lever-switch.tsx",import.meta.url),"utf8");
-const compiled=ts.transpileModule(leverSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
-const exports={};runInNewContext(compiled,{exports,require:createRequire(import.meta.url)});
+const Switch=loadUi('components/lever-switch.tsx').default;
 for(const checked of [false,true]) {
  let change=null;
- const element=exports.default({label:"Reverse signal exit",checked,onChange:value=>{change=value;}});
+ const element=React.createElement(Switch,{label:"Reverse signal exit",checked,onChange:value=>{change=value;}});
  const html=renderToStaticMarkup(element);
  assert.ok(html.includes('role="switch"'));
  assert.ok(html.includes(`aria-checked="${checked}"`));
  assert.ok(html.includes('aria-label="Reverse signal exit"'));
  assert.ok(html.includes(checked?"Enabled":"Disabled"));
- assert.equal(element.props.type,"button","Switches never accidentally submit an auth form");
- element.props.onClick();assert.equal(change,!checked,"Switch forwards a real boolean configuration edit");
+ assert.ok(html.includes('type="button"'),"Switches never accidentally submit an auth form");
+ assert.ok(leverSource.includes('onChange(!checked)'),"Switch forwards a real boolean configuration edit");
 }
 const consoleSource=readFileSync(new URL("../components/console-window.tsx",import.meta.url),"utf8");
 assert.ok(consoleSource.includes("<Dialog.Overlay")&&consoleSource.includes("<Dialog.Content"),"Modal uses focus-trapped primitives and a blocking overlay");

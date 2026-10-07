@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { ControlError } from './control-plane.mjs';
 import { universalConfigurationSchema } from '../lib/universal-contract.ts';
+import {saveConversationSchema,conversationSummarySchema,savedConversationSchema,conversationListRequestSchema} from '../lib/studio-conversations.ts';
 
 const credentials=z.object({email:z.string().email().max(254),password:z.string().min(1).max(128)}).strict();
 const signup=credentials.extend({password:z.string().min(12).max(128),
@@ -14,10 +15,16 @@ const authority=z.object({accountId:z.string().uuid(),sessionId:z.string().uuid(
 
 // BFF boundary: Supabase access/refresh tokens never leave this server.
 export class SupabaseAuth {
-  constructor(plane,{url,publishableKey,encryptionKey,fetcher=fetch}={}) {
+  constructor(plane,{url,publishableKey,encryptionKey,studioOrigin='http://127.0.0.1:4310',fetcher=fetch}={}) {
     if(!/^https:\/\/[a-z0-9]+\.supabase\.co$/.test(url??'')||!publishableKey?.startsWith('sb_publishable_')
       ||!Buffer.isBuffer(encryptionKey)||encryptionKey.length!==32)throw new Error('SUPABASE_CONFIG_INVALID');
     this.plane=plane;this.url=url;this.key=publishableKey;this.encryptionKey=encryptionKey;this.fetcher=fetcher;
+    const studio=new URL(studioOrigin);
+    if(studio.username||studio.password||studio.search||studio.hash||studio.pathname!=='/'
+      ||!(studio.protocol==='https:'||(studio.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(studio.hostname))))
+      throw new Error('STUDIO_ORIGIN_INVALID');
+    // An operator-defined destination, never a redirect supplied in a signup body.
+    this.confirmationUrl=studio.origin+'/studio';
     this.pending=new Map();this.mode='supabase';
   }
   seal(value,sessionId) {
@@ -43,7 +50,7 @@ export class SupabaseAuth {
       if(message.includes('STRATUM_SESSION_INVALID'))throw new ControlError('SESSION_REVOKED',401);
       if(message.includes('STRATUM_ACCOUNT_UNKNOWN'))throw new ControlError('ACCOUNT_NOT_PROVISIONED',403);
       if(data?.error_code==='email_not_confirmed'||data?.code==='email_not_confirmed')throw new ControlError('EMAIL_CONFIRMATION_REQUIRED',403);
-      if(/sending.*email|email.*(send|address)|smtp/i.test(message)&&path==='/auth/v1/signup')throw new ControlError('AUTH_EMAIL_DELIVERY_FAILED',503);
+      if(/sending.*email|email.*(send|address)|smtp/i.test(message)&&path.startsWith('/auth/v1/signup'))throw new ControlError('AUTH_EMAIL_DELIVERY_FAILED',503);
       if(response.status>=500)throw new ControlError('AUTH_PROVIDER_UNAVAILABLE',503);
       if(path.startsWith('/auth/v1/token'))throw new ControlError('INVALID_CREDENTIALS',401);
       if(response.status===401||response.status===403)throw new ControlError('SESSION_REVOKED',401);
@@ -53,7 +60,7 @@ export class SupabaseAuth {
   }
   async register(input) {
     const v=check(signup,input);
-    const result=await this.request('/auth/v1/signup',{body:{email:v.email.toLowerCase(),password:v.password,
+    const result=await this.request('/auth/v1/signup?redirect_to='+encodeURIComponent(this.confirmationUrl),{body:{email:v.email.toLowerCase(),password:v.password,
       data:{display_name:v.displayName??v.email.split('@')[0]}}});
     if(!result?.access_token)return {confirmationRequired:true,message:'Check your email, confirm your account, then sign in. Your demo starts at registration.'};
     return this.openSession(result);
@@ -161,5 +168,39 @@ export class SupabaseAuth {
     await this.request('/rest/v1/stratum_strategies?on_conflict=account_id,name',{jwt,body:{account_id:actor.accountId,name:c.name,configuration:c,updated_at:new Date().toISOString()},
       headers:{Prefer:'resolution=merge-duplicates,return=minimal'}});
     return {saved:true,name:c.name};
+  }
+  conversationRow(row,full=false) {
+    const summary={id:row.id,title:row.title,provider:row.provider,locale:row.locale,messageCount:row.message_count,createdAt:row.created_at,updatedAt:row.updated_at};
+    return check(full?savedConversationSchema:conversationSummarySchema,full?{...summary,messages:row.messages}:summary);
+  }
+  async saveConversation(token,input) {
+    const v=check(saveConversationSchema,input),{actor,jwt}=this.tokens(token);
+    const rows=await this.request('/rest/v1/stratum_conversations?on_conflict=account_id,id',{jwt,
+      body:{account_id:actor.accountId,...v},headers:{Prefer:'resolution=merge-duplicates,return=representation'}});
+    if(!Array.isArray(rows)||rows.length!==1)throw new ControlError('CONVERSATION_SAVE_FAILED',502);
+    return this.conversationRow(rows[0],true);
+  }
+  async listConversations(token,input) {
+    const {offset}=check(conversationListRequestSchema,input),{actor,jwt}=this.tokens(token);
+    const query=new URLSearchParams({account_id:'eq.'+actor.accountId,select:'id,title,provider,locale,message_count,created_at,updated_at',order:'updated_at.desc,id.asc',limit:'26',offset:String(offset)});
+    const rows=await this.request('/rest/v1/stratum_conversations?'+query,{jwt});
+    if(!Array.isArray(rows))throw new ControlError('CONVERSATION_READ_FAILED',502);
+    return {items:rows.slice(0,25).map(row=>this.conversationRow(row)),hasMore:rows.length>25};
+  }
+  async readConversation(token,id) {
+    check(z.string().uuid(),id);const {actor,jwt}=this.tokens(token);
+    const query=new URLSearchParams({account_id:'eq.'+actor.accountId,id:'eq.'+id,select:'id,title,provider,locale,message_count,created_at,updated_at,messages',limit:'1'});
+    const rows=await this.request('/rest/v1/stratum_conversations?'+query,{jwt});
+    if(!Array.isArray(rows))throw new ControlError('CONVERSATION_READ_FAILED',502);
+    if(!rows.length)throw new ControlError('CONVERSATION_NOT_FOUND',404);
+    return this.conversationRow(rows[0],true);
+  }
+  async deleteConversation(token,id) {
+    check(z.string().uuid(),id);const {actor,jwt}=this.tokens(token);
+    const query=new URLSearchParams({account_id:'eq.'+actor.accountId,id:'eq.'+id,select:'id'});
+    const rows=await this.request('/rest/v1/stratum_conversations?'+query,{jwt,method:'DELETE',headers:{Prefer:'return=representation'}});
+    if(!Array.isArray(rows))throw new ControlError('CONVERSATION_DELETE_FAILED',502);
+    if(!rows.length)throw new ControlError('CONVERSATION_NOT_FOUND',404);
+    return {deleted:true};
   }
 }

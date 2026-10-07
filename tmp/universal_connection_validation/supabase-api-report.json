@@ -4,5 +4,7 @@
   "emailEnabled": true,
   "emailAutoconfirm": false,
   "publicAccessRpcDenied": 401,
-  "publicStrategiesDenied": 401
+  "publicStrategiesDenied": 401,
+  "defaultSiteRedirect": "http://127.0.0.1:4310/studio",
+  "explicitConfirmationRedirect": "http://127.0.0.1:4310/studio"
 }

@@ -35,6 +35,6 @@ export function chapterPose(progress: number) {
   const entrance = clampProgress(p / .22);
   const departure = clampProgress((p - .75) / .25);
   const ease = 1 - (1 - entrance) ** 3;
-  return { y: (1 - ease) * 80 - departure * 24, scale: .965 + ease * .035 - departure * .012,
-    radius: (1 - ease) * 56 + departure * 24 };
+  return { y: (1 - ease) * 145 - departure * 36, scale: .92 + ease * .08 - departure * .035,
+    radius: (1 - ease) * 86 + departure * 32, tilt: (1 - ease) * 7 - departure * 2 };
 }

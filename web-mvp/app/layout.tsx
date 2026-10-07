@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "@fontsource-variable/manrope";
 import "@fontsource/ibm-plex-mono/400.css";
+import { LanguageProvider } from '@/components/language-provider';
 
 export const metadata: Metadata = {
   title: "Stratum | Your ideas. Your rules. Your edge.",
@@ -22,7 +23,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased"><LanguageProvider>{children}</LanguageProvider></body>
     </html>
   );
 }

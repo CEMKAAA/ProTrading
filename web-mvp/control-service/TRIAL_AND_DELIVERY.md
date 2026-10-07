@@ -50,20 +50,39 @@ Do not move its private `.state` folder to another computer.
 
 ## Public Release Gates
 
-The service refuses production startup and listens only on loopback. Supabase
-has **not** been configured: no project credentials were available. Existing
-local auth uses salted scrypt hashes and random, server-revocable, hashed
-session tokens, never a fake frontend login.
+The service refuses production startup and listens only on loopback. The local
+launcher now uses Supabase Auth and the database at
+`https://uvzhrrqzzdjqtmydpvwo.supabase.co`. Email confirmation is required.
+Account/demo authority and private strategies are enforced in that database,
+not through browser-editable metadata or the local development identity.
+Provider tokens are AES-GCM sealed server-side; the browser receives a separate
+HttpOnly/SameSite cookie. Access is checked against the live Supabase session.
+Private trial claims survive account deletion and re-registration of the same
+normalized email; the original 30-day expiry is not reset.
 
-Before public release: verified-email identity (e.g. Supabase), password reset,
-MFA where required, hardened HttpOnly/SameSite cookie sessions, HTTPS deployment,
-database authorization/RLS, persistent/distributed abuse limits, backed-up trial
+Supabase **Authentication > URL Configuration** must match the Studio:
+
+- Site URL: `http://127.0.0.1:4310/studio`
+- Redirect URLs: `http://127.0.0.1:4310/studio`
+- Optional local alias: `http://localhost:4310/studio`
+
+Signup also explicitly passes the configured Studio return URL. The operator
+may change its origin using `PUBLIC_STUDIO_ORIGIN` (default
+`http://127.0.0.1:4310`). Do not supply a path/query or broad wildcard allowlist.
+Already issued email links may still carry the old return URL. Confirmation
+does not replace password sign-in; Studio removes redirect tokens from the URL.
+The default `http://localhost:3000` must not be used for this application.
+
+Before public release: password reset, MFA where required, Secure cookies and
+HTTPS deployment, persistent/distributed abuse limits, backed-up trial
 ledger, trusted billing reconciliation, signing-key protection/rotation and
 independent security review are required. One account/email cannot receive a
 second demo; one **person** opening several accounts is not solved by this pilot.
 Windows key-file mode alone is not TPM/non-exportable device binding. A modified
 privileged client cannot be described as tamper-proof. Installer/companion code
 signing and a supported Node-independent installer remain deployment work.
+The payment adapter is not configured: do not accept paid subscriptions until
+trusted billing reconciliation also updates the private Supabase authority.
 
 Do not publish the local development session/key files or compiled installer
 packages as public static assets. User-facing downloads are authenticated and

@@ -80,3 +80,11 @@ CREATE TABLE IF NOT EXISTS supabase_sessions (
   provider_session_id TEXT NOT NULL, sealed_tokens TEXT NOT NULL,
   checked_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS conversations (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  id TEXT NOT NULL, title TEXT NOT NULL, provider TEXT NOT NULL, locale TEXT NOT NULL,
+  messages_json TEXT NOT NULL, message_count INTEGER NOT NULL,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY(account_id,id)
+);
+CREATE INDEX IF NOT EXISTS conversations_history ON conversations(account_id,updated_at DESC,id);

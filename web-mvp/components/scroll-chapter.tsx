@@ -12,12 +12,13 @@ export default function ScrollChapter({ children, tone = "paper" }: { children: 
   const { scrollYProgress } = useScroll({ target: track, offset: ["start end", "end start"] });
   const y = useTransform(scrollYProgress, p => chapterPose(p).y);
   const scale = useTransform(scrollYProgress, p => chapterPose(p).scale);
+  const rotateX = useTransform(scrollYProgress, p => chapterPose(p).tilt);
   const borderRadius = useTransform(scrollYProgress, p => {
     const radius = chapterPose(p).radius;
     return `${radius}px ${radius}px 0 0`;
   });
   return <div ref={track} className="scroll-chapter-track" data-tone={tone}>
-    <motion.div className="scroll-chapter-sheet" style={reduced ? undefined : { y, scale, borderRadius }}>
+    <motion.div className="scroll-chapter-sheet" style={reduced ? undefined : { y, scale, rotateX, borderRadius }}>
       {children}
     </motion.div>
   </div>;

@@ -9,6 +9,8 @@ import { eaKeyPair } from "./ea-authority.mjs";
 import { SupabaseAuth } from './supabase-auth.mjs';
 import { supabaseConfig } from './supabase-config.mjs';
 import { supabaseTransport } from './supabase-transport.mjs';
+import { createStudioAgent } from './studio-agent.mjs';
+import { studioAgentEnvironment } from './studio-agent-config.mjs';
 
 // Never silently turn a local test identity into production authorization.
 if (!["--local-dev","--supabase"].includes(process.argv[2]) || process.env.NODE_ENV === "production") {
@@ -42,10 +44,13 @@ try { session = JSON.parse(readFileSync(accessFile, "utf8")); plane.browser(sess
 writeFileSync(accessFile, JSON.stringify({ ...session, accountId, developmentOnly: true }, null, 2), { mode: 0o600 });
 console.log(`Local QA session file: ${resolve(accessFile)} (never ship it)`);
 }
-const server = controlHttp(plane,{auth});
+const agent = createStudioAgent({env:studioAgentEnvironment(),report:event=>console.warn('[studio-agent]',JSON.stringify(event))});
+const server = controlHttp(plane,{auth,agent});
 server.listen(4321, "127.0.0.1", () => {
   console.log(`${useSupabase?'Supabase DB/Auth':'Local QA'}: http://127.0.0.1:4321. Apply is audit-only; Trading starts OFF.`);
   if(useSupabase)console.log(`Identity and demo authority: ${supabaseConfig.url}`);
+  const ai=agent.status().providers.openrouter;
+  console.log(`Assistant OpenRouter: ${ai.configured?'configured':'not configured'}${ai.model?` (${ai.model})`:''}.`);
 });
 function stop() { server.close(() => { plane.close(); process.exit(0); }); }
 process.on("SIGINT", stop); process.on("SIGTERM", stop);

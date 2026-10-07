@@ -7,6 +7,7 @@ import { SupabaseAuth } from '../control-service/supabase-auth.mjs';
 import { controlHttp } from '../control-service/http.mjs';
 import { id,keyPair,signed,hash } from '../control-service/crypto.mjs';
 import { defaultConfiguration } from '../lib/universal-contract.ts';
+import { authReturn } from '../lib/auth-return.ts';
 
 const DAY=86400000;
 function fixture(){
@@ -14,10 +15,10 @@ function fixture(){
  const account=id(),sid=id(),jwt='verified-provider-jwt-not-a-browser-secret',refresh='private-refresh-token-never-in-ea';
  const state={accountId:account,sessionId:sid,email:'demo@example.com',displayName:'Cem Quant',disabled:false,
   accessActive:true,accessMode:'demo',paidUntil:0,serverNow:at,trial:{startsAt:at,expiresAt:at+30*DAY}};
- const rows=[];
+ const rows=[],requests=[];
  const p=new ControlPlane({now:()=>at});
  const fetcher=async(url,options)=>{
-  calls++;if(offline)throw new Error('offline');const path=new URL(url).pathname,body=options.body?JSON.parse(options.body):{};
+  calls++;requests.push({url,options});if(offline)throw new Error('offline');const path=new URL(url).pathname,body=options.body?JSON.parse(options.body):{};
   const reply=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
   if(path==='/auth/v1/signup')return reply(confirmation?{user:{id:account}}:{access_token:jwt,refresh_token:refresh,expires_at:Math.floor(at/1000)+3600});
   if(path==='/auth/v1/token'){
@@ -36,7 +37,7 @@ function fixture(){
  };
  const auth=new SupabaseAuth(p,{url:'https://testproject.supabase.co',publishableKey:'sb_publishable_test',encryptionKey:randomBytes(32),fetcher});
  const login=()=>auth.login({email:state.email,password:'a-long-private-password'});
- return {p,auth,state,account,jwt,refresh,login,advance:ms=>at+=ms,calls:()=>calls,refreshes:()=>refreshes,
+ return {p,auth,state,account,jwt,refresh,login,requests,advance:ms=>at+=ms,calls:()=>calls,refreshes:()=>refreshes,
   offline:v=>offline=v,revoke:()=>revoked=true,confirmation:v=>confirmation=v};
 }
 const rejects=(fn,code)=>assert.rejects(fn,e=>e.code===code);
@@ -55,6 +56,30 @@ test('email confirmation cannot create a local browser session or local demo',as
  const f=fixture();f.confirmation(true);const result=await f.auth.register({email:f.state.email,password:'a-long-private-password',displayName:'Cem'});
  assert.equal(result.confirmationRequired,true);assert.equal(f.p.get('SELECT count(*) n FROM sessions').n,0);
  assert.equal(f.p.get('SELECT count(*) n FROM account_trials').n,0);f.p.close();
+});
+test('signup pins the email return to Studio, not Supabase localhost:3000 fallback',async()=>{
+ const f=fixture();f.confirmation(true);
+ await f.auth.register({email:f.state.email,password:'a-long-private-password'});
+ const request=f.requests.find(r=>new URL(r.url).pathname==='/auth/v1/signup');
+ assert.equal(new URL(request.url).searchParams.get('redirect_to'),'http://127.0.0.1:4310/studio');
+ await rejects(()=>f.auth.register({email:f.state.email,password:'a-long-private-password',redirectTo:'https://evil.example'}),'INVALID_REQUEST');
+ assert.equal(f.requests.length,1);f.p.close();
+});
+test('operator Studio origin accepts HTTPS or loopback only, without embedded credentials or redirects',()=>{
+ const p=new ControlPlane(),config={url:'https://testproject.supabase.co',publishableKey:'sb_publishable_test',encryptionKey:randomBytes(32)};
+ try{
+  const auth=new SupabaseAuth(p,{...config,studioOrigin:'https://studio.example.com'});
+  assert.equal(auth.confirmationUrl,'https://studio.example.com/studio');
+  for(const studioOrigin of ['http://evil.example','https://user:secret@studio.example.com','https://studio.example.com/?next=https://evil.example','https://studio.example.com/other','javascript:alert(1)'])
+   assert.throws(()=>new SupabaseAuth(p,{...config,studioOrigin}));
+ }finally{p.close();}
+});
+test('email-return tokens are not adopted as a browser session and unsafe error descriptions are not displayed',()=>{
+ assert.equal(authReturn(''),null);
+ assert.equal(authReturn('#builder'),null);
+ assert.equal(authReturn('#access_token=private&refresh_token=also-private&type=signup'),'confirmed');
+ assert.equal(authReturn('#error=access_denied&error_description=%3Cscript%3Eevil%3C/script%3E'),'failed');
+ assert.equal(authReturn('#access_token=private&error_code=otp_expired'),'failed');
 });
 test('expiry, renewed login and paid entitlement follow the immutable database timestamps',async()=>{
  const f=fixture();let s=await f.login();const until=f.state.trial.expiresAt;f.advance(10*DAY);s=await f.login();
@@ -106,7 +131,8 @@ test('HTTP login returns only an HttpOnly cookie handle; cookie CSRF and develop
   assert.equal((await post('/v1/ea/package',{}, {...headers,Origin:'https://evil.example'})).status,403);
   const local=f.p.issueBrowserSession(f.p.provisionAccount());
   assert.equal((await fetch(base+'/v1/session',{headers:{Authorization:'Bearer '+local.accessToken}})).status,401);
-  assert.equal((await post('/v1/auth/logout',{},headers)).status,200);
+  const logout=await post('/v1/auth/logout',{},headers);assert.equal(logout.status,200);
+  assert.ok(logout.headers.get('set-cookie').includes('Max-Age=0'));
   assert.equal((await fetch(base+'/v1/session',{headers})).status,401);
  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));f.p.close();}
 });

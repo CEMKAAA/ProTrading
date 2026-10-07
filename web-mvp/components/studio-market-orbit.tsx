@@ -1,4 +1,5 @@
 "use client";
+import { UiText, useLanguage } from './language-provider';
 import { useEffect, useRef, useState } from "react";
 import { Pause, Play } from "lucide-react";
 import { studioCoinPose } from "@/lib/scene-motion";
@@ -11,6 +12,7 @@ const markets = [
 ];
 
 export default function StudioMarketOrbit() {
+ const {t}=useLanguage();
   const host = useRef<HTMLDivElement>(null), [fallback, setFallback] = useState(false);
   const [paused, setPaused] = useState(false), pausedRef = useRef(false);
   const reduced = useMotionPreference();
@@ -101,8 +103,8 @@ export default function StudioMarketOrbit() {
     }).catch(()=>{if(!disposed)setFallback(true);});
     return()=>{disposed=true;cleanup?.();};
   },[]);
-  return <div className="studio-orbit" ref={host} data-paused={paused || reduced} aria-label="Interactive three-dimensional market coins: BTCUSD, EURUSD, XAUUSD, USDJPY and JP225">
-    {fallback&&<div className="studio-orbit-fallback">{markets.map(([pair,mark],i)=><div className="studio-fallback-coin" style={{animationDelay:`${-i*8}s`}} key={pair}><strong>{mark}</strong><span>{pair}</span></div>)}</div>}
-    <button type="button" className="studio-orbit-pause" disabled={reduced} aria-label={reduced?"Coin motion disabled by device preference":paused?"Resume coin animation":"Pause coin animation"} onClick={()=>{pausedRef.current=!paused;setPaused(!paused);}}>{paused || reduced?<Play size={13}/>:<Pause size={13}/>}<span>{reduced?"Motion off":paused?"Resume":"Pause"}</span></button>
+  return <div className="studio-orbit" ref={host} data-paused={paused || reduced} aria-label={t("Interactive three-dimensional market coins: BTCUSD, EURUSD, XAUUSD, USDJPY and JP225")}>
+    {fallback&&<div className="studio-orbit-fallback">{markets.map(([pair,mark],i)=><div className="studio-fallback-coin" style={{animationDelay:`${-i*8}s`}} key={pair}><strong><UiText>{mark}</UiText></strong><span><UiText>{pair}</UiText></span></div>)}</div>}
+    <button type="button" className="studio-orbit-pause" disabled={reduced} aria-label={reduced?"Coin motion disabled by device preference":paused?"Resume coin animation":"Pause coin animation"} onClick={()=>{pausedRef.current=!paused;setPaused(!paused);}}>{paused || reduced?<Play size={13}/>:<Pause size={13}/>}<span><UiText>{reduced?"Motion off":paused?"Resume":"Pause"}</UiText></span></button>
   </div>;
 }

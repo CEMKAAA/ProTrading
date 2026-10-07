@@ -3,8 +3,9 @@ import { ControlError } from "./control-plane.mjs";
 import { eaCatalog } from "../lib/universal-contract.ts";
 import { billingCheckout, billingWebhook, billingConfigured } from "./subscription-provider.mjs";
 import { personalPackage,verifiedArtifacts } from "./delivery.mjs";
+import { createStudioAgent } from './studio-agent.mjs';
 
-export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http://localhost:4310"], auth = null } = {}) {
+export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http://localhost:4310"], auth = null, agent = createStudioAgent() } = {}) {
   const rates = new Map();
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -36,7 +37,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
         const chunks = [];
         for await (const chunk of req) {
           size += chunk.length;
-          if (size > 4 * 1024 * 1024) throw new ControlError("BODY_TOO_LARGE", 413);
+          if (size > (path.startsWith('/v1/assistant/')&&!path.startsWith('/v1/assistant/conversations') ? 128 * 1024 : 4 * 1024 * 1024)) throw new ControlError("BODY_TOO_LARGE", 413);
           chunks.push(chunk);
         }
         rawBody=Buffer.concat(chunks);
@@ -81,6 +82,23 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
         }else if(!['/v1/pairings','/v1/subscription/webhook'].includes(path))await auth.forBrowser(browserToken());
       }
       if(method==='GET'&&path==='/v1/auth/session'){plane.browser(browserToken());return reply(200,{accessToken:auth?'cookie-session':browserToken()});}
+      if(path==='/v1/assistant/status'&&method==='GET'){
+        const actor=plane.browser(browserToken());plane.entitlement(actor.accountId);return reply(200,agent.status());
+      }
+      if(path==='/v1/assistant/conversations'&&method==='POST')return reply(200,await (auth??plane).saveConversation(browserToken(),body));
+      if(path==='/v1/assistant/conversations/list'&&method==='POST')return reply(200,await (auth??plane).listConversations(browserToken(),body));
+      const conversationRoute=/^\/v1\/assistant\/conversations\/([a-f0-9-]{36})(\/delete)?$/.exec(path);
+      if(conversationRoute&&method==='GET'&&!conversationRoute[2])return reply(200,await (auth??plane).readConversation(browserToken(),conversationRoute[1]));
+      if(conversationRoute&&method==='POST'&&conversationRoute[2]){exact([]);return reply(200,await (auth??plane).deleteConversation(browserToken(),conversationRoute[1]));}
+      if(path==='/v1/assistant/chat'&&method==='POST'){
+        const token=browserToken(),actor=plane.browser(token);plane.entitlement(actor.accountId);
+        const job=body.context?.jobId?plane.readJob(token,body.context.jobId):null;
+        const strategies=await (auth??plane).strategies(token);
+        const abort=new AbortController(),disconnect=()=>{if(!res.writableEnded)abort.abort();};
+        res.once?.('close',disconnect);
+        try{return reply(200,await agent.chat(body,{actor,strategies,job,jobs:plane.listJobs(token),signal:abort.signal}));}
+        finally{res.off?.('close',disconnect);}
+      }
       if(method==="GET"&&path==="/v1/catalog"){plane.browser(browserToken());return reply(200,eaCatalog);}
       if(method==="POST"&&path==="/v1/subscription/checkout"){exact([]);return reply(200,await billingCheckout(plane,browserToken()));}
       if(method==="POST"&&path==="/v1/subscription/webhook")return reply(200,await billingWebhook(plane,rawBody,req.headers["stripe-signature"]));

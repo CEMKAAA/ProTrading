@@ -6,6 +6,7 @@ import { universalConfigurationSchema, UNIVERSAL_RUNTIME } from "../lib/universa
 import { backtestRequestSchema, deviceProofSchema, pairingRequestSchema, progressSchema, resultSchema, summarizeResult, ENGINE_RUNTIME } from "../lib/control-contract.ts";
 import { checkedPublicKey, hash, id, keyPair, signed, token, verifySigned } from "./crypto.mjs";
 import { eaKeyPair, commandBody, signEaCommand } from "./ea-authority.mjs";
+import {saveConversationSchema,conversationListRequestSchema} from '../lib/studio-conversations.ts';
 
 export class ControlError extends Error {
   constructor(code, status = 409) { super(code); this.code = code; this.status = status; }
@@ -73,6 +74,32 @@ export class ControlPlane {
   strategies(accessToken) {
     const actor=this.browser(accessToken);this.entitlement(actor.accountId);
     return this.all("SELECT configuration_json FROM strategies WHERE account_id=? ORDER BY name",actor.accountId).map(r=>JSON.parse(r.configuration_json));
+  }
+  conversationSummary(row) {
+    return {id:row.id,title:row.title,provider:row.provider,locale:row.locale,messageCount:row.message_count,
+      createdAt:new Date(row.created_at).toISOString(),updatedAt:new Date(row.updated_at).toISOString()};
+  }
+  saveConversation(accessToken,input) {
+    const actor=this.browser(accessToken),v=parse(saveConversationSchema,input),at=this.now();
+    this.run('INSERT INTO conversations VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,id) DO UPDATE SET title=excluded.title,provider=excluded.provider,locale=excluded.locale,messages_json=excluded.messages_json,message_count=excluded.message_count,updated_at=excluded.updated_at',
+      actor.accountId,v.id,v.title,v.provider,v.locale,JSON.stringify(v.messages),v.messages.length,at,at);
+    return this.readConversation(accessToken,v.id);
+  }
+  listConversations(accessToken,input) {
+    const actor=this.browser(accessToken),v=parse(conversationListRequestSchema,input);
+    const rows=this.all('SELECT id,title,provider,locale,message_count,created_at,updated_at FROM conversations WHERE account_id=? ORDER BY updated_at DESC,id LIMIT 26 OFFSET ?',actor.accountId,v.offset);
+    return {items:rows.slice(0,25).map(r=>this.conversationSummary(r)),hasMore:rows.length>25};
+  }
+  readConversation(accessToken,conversationId) {
+    const actor=this.browser(accessToken),uuid=parse(z.string().uuid(),conversationId);
+    const row=this.get('SELECT * FROM conversations WHERE account_id=? AND id=?',actor.accountId,uuid);
+    requireThat(row,'CONVERSATION_NOT_FOUND',404);
+    return {...this.conversationSummary(row),messages:JSON.parse(row.messages_json)};
+  }
+  deleteConversation(accessToken,conversationId) {
+    const actor=this.browser(accessToken),uuid=parse(z.string().uuid(),conversationId);
+    const result=this.run('DELETE FROM conversations WHERE account_id=? AND id=?',actor.accountId,uuid);
+    requireThat(result.changes>0,'CONVERSATION_NOT_FOUND',404);return {deleted:true};
   }
   terminalStatus(installation,input) {
     this.currentLease(installation);
