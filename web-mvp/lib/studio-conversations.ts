@@ -6,7 +6,8 @@ const fields={id:z.string().uuid(),title:z.string().trim().min(1).max(80).regex(
 export const saveConversationSchema=z.object({...fields,messages:z.array(conversationMessageSchema).min(1).max(512)}).strict()
  .refine(value=>new TextEncoder().encode(JSON.stringify(value)).byteLength<=1024*1024,'Conversation is too large');
 export const conversationSummarySchema=z.object({...fields,messageCount:z.number().int().min(1).max(512),createdAt:z.string().datetime({offset:true}),updatedAt:z.string().datetime({offset:true})}).strict();
-export const savedConversationSchema=conversationSummarySchema.extend({messages:z.array(conversationMessageSchema).min(1).max(512)});
+export const savedConversationSchema=conversationSummarySchema.extend({messages:z.array(conversationMessageSchema).min(1).max(512)})
+ .refine(value=>value.messageCount===value.messages.length,'Message count does not match');
 export const conversationListRequestSchema=z.object({offset:z.number().int().min(0).max(100000)}).strict();
 export const conversationListSchema=z.object({items:z.array(conversationSummarySchema).max(25),hasMore:z.boolean()}).strict();
 export type ConversationSummary=z.infer<typeof conversationSummarySchema>;

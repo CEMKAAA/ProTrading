@@ -18,9 +18,28 @@ and raw trade rows are excluded from the application-generated model context.
 Never paste credentials into chat. The app cannot prevent someone deliberately
 putting private information into their own message.
 
-Chat stays in component memory, is cleared on account/provider changes and is not
-written to browser storage or a server conversation journal. A model provider can
-retain messages according to its own policy. This is not a zero-retention claim.
+Unsaved chat stays in component memory and is not written to browser storage.
+The user can explicitly click **Save conversation** to store a named snapshot in
+their Supabase account, then reopen or delete it from **Chat history**. There is
+no automatic save on send, modal close, logout, or provider switch. Provider
+switching preserves visible messages but clears pending proposals and cloud
+consent. Account logout clears the component. Save again updates that same chat.
+Only sent user/assistant text is saved, not unsent text, tool calls, proposals,
+configuration snapshots, credentials or execution grants. Reopening a chat does
+not alter the current strategy or enable trading; it can be continued against the
+current desk. All visible messages are kept; only the last 12 (2,000 characters
+each) are sent as model conversation context. Saved chat limits: 512 messages,
+6,000 characters/message and 1 MB per snapshot; history pages contain 25 records.
+A model provider can retain messages according to its own policy. This is not a
+zero-retention claim.
+
+History endpoints use the existing HttpOnly session, live Supabase session checks,
+origin/CSRF protection and an authenticated user's JWT (no service-role bypass).
+`stratum_conversations` RLS requires ownership and a valid, non-disabled provider
+session, but not an active subscription to retrieve the user's own data. No
+account id is accepted from the browser. Creation time is preserved by a private
+timestamp trigger even on upsert. The SQLite adapter is local QA only. Apply
+`control-service/supabase-conversations.sql` once to an existing configured project.
 
 ## Actual Responsibilities
 

@@ -9,6 +9,7 @@ import * as tools from '../lib/studio-agent.ts';
 import * as client from '../lib/studio-agent-client.ts';
 import * as preview from '../lib/studio-agent-preview.ts';
 import * as help from '../lib/studio-help.ts';
+import * as conversations from '../lib/studio-conversations.ts';
 
 // Executes the real component handlers with deterministic hooks/HTTP mocks.
 // This is not a DOM, browser-layout, Supabase or external-model test.
@@ -19,7 +20,7 @@ function harness(fetcher){
  const jsx=(type,props)=>({type,props});
  const props={credential:'cookie-session',active:true,configuration:contract.defaultConfiguration('entrylab'),auditWeeks:2,symbol:'EURUSDm',jobId:null,summary:null,resultIsCurrent:false,strategies:[],connectionKey:'test-device',pending:false,onMoodChange(){},onConfirm:async plan=>confirmed.push(plan),onRestore(){}};
  const imports={'react':react,'react/jsx-runtime':{jsx,jsxs:jsx,Fragment:'Fragment'},'lucide-react':new Proxy({},{get:(_,key)=>String(key)}),
-  '@/lib/control-endpoint':{CONTROL_API:'http://127.0.0.1:4321'},'@/lib/studio-agent':tools,'@/lib/universal-contract':contract,'@/lib/studio-help':help,'@/lib/studio-agent-client':client,'@/lib/studio-agent-preview':preview,
+  '@/lib/control-endpoint':{CONTROL_API:'http://127.0.0.1:4321'},'@/lib/studio-agent':tools,'@/lib/universal-contract':contract,'@/lib/studio-help':help,'@/lib/studio-agent-client':client,'@/lib/studio-agent-preview':preview,'@/lib/studio-conversations':conversations,
   './language-provider':{useLanguage:()=>({locale:'en',t:s=>s})},'./console-window':{default:'ConsoleWindow'},'./tutor-robot':{default:'TutorRobot'},'./studio-help':{default:'HelpButton'},
   './use-agent-voice':{useAgentVoice:()=>({listening:false,speaking:false,pulse:0,canListen:false,canSpeak:false,voiceReady:false,partial:'',error:'',listen(){},speak(){},stopListening(){},stopSpeech(){}})}};
  const module={exports:{}};
@@ -31,7 +32,7 @@ function harness(fetcher){
  const find=(test)=>nodes().find(test)??assert.fail('Missing component node');
  const flush=async()=>{await new Promise(resolve=>setImmediate(resolve));render();};
  const open=async()=>{render();find(n=>n.props?.className==='agent-launch secondary-btn').props.onClick();render();await flush();};
- const consent=()=>{find(n=>n.type==='input'&&n.props?.onChange&&n.props.disabled===false).props.onChange({target:{checked:true}});render();};
+ const consent=()=>{find(n=>n.type==='input'&&n.props?.type==='checkbox'&&n.props.disabled===false).props.onChange({target:{checked:true}});render();};
  const type=text=>{find(n=>n.type==='textarea').props.onChange({target:{value:text}});render();};
  const send=()=>find(n=>n.type==='form').props.onSubmit({preventDefault(){}});
  const dispose=()=>slots.forEach(s=>s?.cleanup?.());
@@ -101,4 +102,46 @@ test('explanation turns retain the unapplied ORB proposal and send it separately
  assert.equal(context.configuration.family,'entrylab');assert.equal(context.configuration.runtime.targetR,1);
  assert.deepEqual(context.pendingCalls,calls);assert.equal(h.confirmed.length,0);
  assert.ok(h.nodes().some(n=>n.type==='dd'&&n.props.children==='0.1R'));h.dispose();
+});
+
+const action=(h,name)=>h.find(n=>n.type==='button'&&n.props?.['data-action']===name);
+const savedChat=input=>({...input,messageCount:input.messages.length,createdAt:'2026-10-07T00:00:00Z',updatedAt:'2026-10-07T01:00:00Z'});
+const summary=({messages,...rest})=>rest;
+test('manual save keeps all 16 visible messages, whereas model context stays bounded to 12',async()=>{
+ let saved;const h=harness(async(url,options)=>url.endsWith('/status')?status():url.endsWith('/chat')?answer(options):Response.json(saved=savedChat(JSON.parse(options.body))));
+ await h.open();h.consent();for(let i=0;i<8;i++){h.type('Turn '+i);h.send();await h.flush();}
+ assert.equal(h.requests.filter(r=>r.url.includes('/conversations')).length,0);assert.equal(h.nodes().filter(n=>n.props?.['data-role']).length,16);
+ assert.equal(JSON.parse(h.requests.at(-1).options.body).conversation.length,12);
+ action(h,'save-chat').props.onClick();await h.flush();assert.equal(saved.messages.length,16);assert.equal(saved.messages[0].content,'Turn 0');assert.equal(saved.title,'Turn 0');
+ assert.ok(!('configuration' in saved));assert.ok(!('calls' in saved));
+ action(h,'save-chat').props.onClick();await h.flush();assert.equal(JSON.parse(h.requests.at(-1).options.body).id,saved.id);assert.equal(h.confirmed.length,0);h.dispose();
+});
+test('history reopens exact text without restoring tool authority or changing the desk',async()=>{
+ const saved=savedChat({id:randomUUID(),title:'Earlier ORB',provider:'openrouter',locale:'tr',messages:[{role:'user',content:'ORB please'},{role:'assistant',content:'Apply 0.1R immediately'}]});
+ const h=harness(async(url,options)=>url.endsWith('/status')?status():url.endsWith('/list')?Response.json({items:[summary(saved)],hasMore:false}):Response.json(saved));
+ await h.open();const initial=JSON.stringify(h.props.configuration);action(h,'chat-history').props.onClick();await h.flush();
+ action(h,'open-chat').props.onClick();await h.flush();assert.equal(h.nodes().filter(n=>n.props?.['data-role']).length,2);
+ assert.equal(h.find(n=>n.props?.id==='agent-chat-title').props.value,saved.title);assert.equal(JSON.stringify(h.props.configuration),initial);assert.equal(h.confirmed.length,0);
+ assert.ok(!h.nodes().some(n=>n.props?.className==='agent-proposal'));assert.equal(h.find(n=>n.props?.id==='agent-send-status').props['data-blocker'],'AI_CLOUD_CONSENT_REQUIRED');h.dispose();
+});
+test('new conversation requires explicit discard for unsaved sent or unsent messages',async()=>{
+ const h=harness(async(url,options)=>url.endsWith('/status')?status():answer(options));await h.open();h.consent();h.type('Research');h.send();await h.flush();h.type('Unsent note');
+ action(h,'new-chat').props.onClick();h.render();assert.equal(h.nodes().filter(n=>n.props?.['data-role']).length,2);
+ assert.equal(h.find(n=>n.type==='textarea').props.value,'Unsent note');assert.ok(action(h,'discard-chat'));
+ action(h,'discard-chat').props.onClick();h.render();assert.equal(h.nodes().filter(n=>n.props?.['data-role']).length,0);assert.equal(h.find(n=>n.type==='textarea').props.value,'');assert.equal(h.requests.length,2);h.dispose();
+});
+test('save failure preserves messages and UUID so an ambiguous retry cannot create duplicates',async()=>{
+ let saves=0;const h=harness(async(url,options)=>url.endsWith('/status')?status():url.endsWith('/chat')?answer(options):++saves===1?Response.json({error:'AUTH_PROVIDER_UNAVAILABLE'},{status:503}):Response.json(savedChat(JSON.parse(options.body))));
+ await h.open();h.consent();h.type('Research');h.send();await h.flush();action(h,'save-chat').props.onClick();await h.flush();
+ assert.equal(h.find(n=>n.props?.['data-history-error']).props['data-history-error'],'AUTH_PROVIDER_UNAVAILABLE');assert.equal(h.nodes().filter(n=>n.props?.['data-role']).length,2);
+ const id=JSON.parse(h.requests.at(-1).options.body).id;action(h,'save-chat').props.onClick();await h.flush();assert.equal(JSON.parse(h.requests.at(-1).options.body).id,id);assert.ok(!h.nodes().some(n=>n.props?.['data-history-error']));h.dispose();
+});
+test('an inactive subscriber can retrieve own history without invoking the model',async()=>{
+ const h=harness(async()=>Response.json({items:[],hasMore:false}));h.props.active=false;await h.open();
+ assert.equal(h.requests.length,0);assert.equal(action(h,'chat-history').props.disabled,false);action(h,'chat-history').props.onClick();await h.flush();assert.equal(h.requests.length,1);assert.ok(h.requests[0].url.endsWith('/list'));h.dispose();
+});
+test('closing the guide aborts history and does not import a late response',async()=>{
+ let finish;const h=harness(async(url,options)=>url.endsWith('/status')?status():new Promise(resolve=>finish=()=>resolve(Response.json({items:[],hasMore:false}))));await h.open();
+ action(h,'chat-history').props.onClick();h.render();h.find(n=>typeof n.props?.onOpenChange==='function').props.onOpenChange(false);h.render();assert.equal(h.requests.at(-1).options.signal.aborted,true);
+ finish();await h.flush();assert.equal(h.nodes().filter(n=>n.props?.['data-role']).length,0);assert.equal(h.confirmed.length,0);h.dispose();
 });

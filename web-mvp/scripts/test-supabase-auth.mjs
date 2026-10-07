@@ -15,7 +15,7 @@ function fixture(){
  const account=id(),sid=id(),jwt='verified-provider-jwt-not-a-browser-secret',refresh='private-refresh-token-never-in-ea';
  const state={accountId:account,sessionId:sid,email:'demo@example.com',displayName:'Cem Quant',disabled:false,
   accessActive:true,accessMode:'demo',paidUntil:0,serverNow:at,trial:{startsAt:at,expiresAt:at+30*DAY}};
- const rows=[],requests=[];
+ const rows=[],requests=[],chats=new Map();
  const p=new ControlPlane({now:()=>at});
  const fetcher=async(url,options)=>{
   calls++;requests.push({url,options});if(offline)throw new Error('offline');const path=new URL(url).pathname,body=options.body?JSON.parse(options.body):{};
@@ -33,6 +33,19 @@ function fixture(){
    if(options.method==='POST'){assert.equal(body.account_id,account);rows.splice(0,rows.length,{configuration:body.configuration});return new Response(null,{status:204});}
    return reply(rows);
   }
+  if(path==='/rest/v1/stratum_conversations'){
+   const query=new URL(url).searchParams;
+   if(options.method==='POST'){
+    assert.equal(body.account_id,account);const old=chats.get(body.id),row={...body,message_count:body.messages.length,created_at:old?.created_at??new Date(at).toISOString(),updated_at:new Date(at).toISOString()};
+    assert.equal(options.headers.Prefer,'resolution=merge-duplicates,return=representation');chats.set(body.id,row);return reply([row]);
+   }
+   assert.equal(query.get('account_id'),'eq.'+account);
+   const rowId=query.get('id')?.slice(3);
+   if(options.method==='DELETE'){const row=chats.get(rowId);chats.delete(rowId);return reply(row?[{id:row.id}]:[]);}
+   if(rowId)return reply(chats.has(rowId)?[chats.get(rowId)]:[]);
+   assert.equal(query.get('limit'),'26');assert.ok(!query.get('select').includes('messages'));
+   return reply([...chats.values()].sort((a,b)=>b.updated_at.localeCompare(a.updated_at)).slice(Number(query.get('offset')),Number(query.get('offset'))+26));
+  }
   throw new Error('unexpected request '+path);
  };
  const auth=new SupabaseAuth(p,{url:'https://testproject.supabase.co',publishableKey:'sb_publishable_test',encryptionKey:randomBytes(32),fetcher});
@@ -41,6 +54,23 @@ function fixture(){
   offline:v=>offline=v,revoke:()=>revoked=true,confirmation:v=>confirmation=v};
 }
 const rejects=(fn,code)=>assert.rejects(fn,e=>e.code===code);
+
+test('Supabase chat uses the owner JWT and server-bound ownership; updates persist and expiry does not hide own data',async()=>{
+ const f=fixture(),s=await f.login(),v={id:id(),title:'ORB research',provider:'openrouter',locale:'tr',messages:[{role:'user',content:'0.10R'}]};
+ try{
+  await rejects(()=>f.auth.saveConversation(s.accessToken,{...v,account_id:id()}),'INVALID_REQUEST');
+  const saved=await f.auth.saveConversation(s.accessToken,v);f.advance(1000);
+  const updated=await f.auth.saveConversation(s.accessToken,{...v,title:'Edited',messages:[...v.messages,{role:'assistant',content:'Hypothesis only'}]});
+  assert.equal(updated.createdAt,saved.createdAt);assert.notEqual(updated.updatedAt,saved.updatedAt);assert.equal(updated.messageCount,2);
+  f.state.accessMode='inactive';f.state.accessActive=false;await f.auth.forBrowser(s.accessToken);
+  const list=await f.auth.listConversations(s.accessToken,{offset:0});assert.equal(list.items.length,1);assert.equal(list.hasMore,false);assert.ok(!('messages' in list.items[0]));
+  assert.equal((await f.auth.readConversation(s.accessToken,v.id)).title,'Edited');await rejects(()=>f.auth.readConversation(s.accessToken,id()),'CONVERSATION_NOT_FOUND');
+  const calls=f.requests.filter(r=>new URL(r.url).pathname==='/rest/v1/stratum_conversations');
+  assert.ok(calls.every(r=>r.options.headers.Authorization==='Bearer '+f.jwt));assert.ok(!JSON.stringify(list).includes(f.jwt));
+  assert.deepEqual(await f.auth.deleteConversation(s.accessToken,v.id),{deleted:true});await rejects(()=>f.auth.readConversation(s.accessToken,v.id),'CONVERSATION_NOT_FOUND');
+  f.revoke();await rejects(()=>f.auth.forBrowser(s.accessToken),'SESSION_REVOKED');await rejects(()=>f.auth.listConversations(s.accessToken,{offset:0}),'UNAUTHORIZED');
+ }finally{f.p.close();}
+});
 
 test('Supabase authority, not local trial or editable metadata, grants the demo',async()=>{
  const f=fixture(),s=await f.login(),actor=f.p.browser(s.accessToken);
