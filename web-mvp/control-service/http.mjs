@@ -58,7 +58,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
         let proof;
         try { const header = req.headers["x-stratum-proof"]; if (typeof header !== "string" || header.length > 2048) throw new Error(); proof = JSON.parse(Buffer.from(header, "base64url").toString("utf8")); }
         catch { throw new ControlError("INVALID_DEVICE_PROOF", 401); }
-        return authenticatedDevice=plane.authenticateDevice(proof, method, path, body);
+        return authenticatedDevice=plane.authenticateDevice(proof, method, path, body,{deferAuthority:!!auth});
       };
       const keys = Object.keys(body);
       const exact = expectedKeys => { if (keys.length !== expectedKeys.length || keys.some(key => !expectedKeys.includes(key))) throw new ControlError("INVALID_REQUEST", 400); };
@@ -82,6 +82,17 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
         }else if(!['/v1/pairings','/v1/subscription/webhook'].includes(path))await auth.forBrowser(browserToken());
       }
       if(method==='GET'&&path==='/v1/auth/session'){plane.browser(browserToken());return reply(200,{accessToken:auth?'cookie-session':browserToken()});}
+      if(path.startsWith('/v1/admin/')||path.startsWith('/v1/library/')){
+        if(!auth)throw new ControlError('SUPABASE_REQUIRED',503);
+        const token=browserToken();
+        if(method==='GET'&&path==='/v1/admin/status')return reply(200,await auth.adminStatus(token));
+        if(method==='POST'&&path==='/v1/admin/users')return reply(200,await auth.adminUsers(token,body));
+        if(method==='POST'&&path==='/v1/admin/catalog')return reply(200,await auth.adminCatalog(token,body));
+        if(method==='POST'&&path==='/v1/admin/grant')return reply(200,await auth.adminGrant(token,body));
+        if(method==='GET'&&path==='/v1/library/strategies')return reply(200,await auth.sharedStrategies(token));
+        if(method==='POST'&&path==='/v1/library/load')return reply(200,await auth.loadSharedStrategy(token,body));
+        throw new ControlError('NOT_FOUND',404);
+      }
       if(path==='/v1/assistant/status'&&method==='GET'){
         const actor=plane.browser(browserToken());plane.entitlement(actor.accountId);return reply(200,agent.status());
       }

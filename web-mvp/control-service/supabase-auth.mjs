@@ -46,6 +46,10 @@ export class SupabaseAuth {
     let data;try{data=await response.json();}catch{data=null;}
     if(!response.ok){
       const message=data?.message??data?.msg??data?.error_description??'';
+      for(const [marker,code,status] of [['STRATUM_ADMIN_REQUIRED','ADMIN_REQUIRED',403],['STRATUM_ACCESS_REQUIRED','ENTITLEMENT_EXPIRED',403],
+        ['STRATUM_GRANT_CONFLICT','GRANT_CONFLICT',409],['STRATUM_STRATEGY_NOT_AVAILABLE','STRATEGY_NOT_AVAILABLE',403],
+        ['STRATUM_STRATEGY_NOT_READY','STRATEGY_NOT_READY',409],['STRATUM_USER_UNKNOWN','USER_NOT_FOUND',404],['STRATUM_INVALID_REQUEST','INVALID_REQUEST',400]])
+        if(message.includes(marker))throw new ControlError(code,status);
       if(response.status===429)throw new ControlError('AUTH_RATE_LIMITED',429);
       if(message.includes('STRATUM_SESSION_INVALID'))throw new ControlError('SESSION_REVOKED',401);
       if(message.includes('STRATUM_ACCOUNT_UNKNOWN'))throw new ControlError('ACCOUNT_NOT_PROVISIONED',403);
@@ -168,6 +172,31 @@ export class SupabaseAuth {
     await this.request('/rest/v1/stratum_strategies?on_conflict=account_id,name',{jwt,body:{account_id:actor.accountId,name:c.name,configuration:c,updated_at:new Date().toISOString()},
       headers:{Prefer:'resolution=merge-duplicates,return=minimal'}});
     return {saved:true,name:c.name};
+  }
+  async adminStatus(token) {
+    const {jwt}=this.tokens(token);
+    return check(z.object({isAdmin:z.boolean()}).strict(),await this.request('/rest/v1/rpc/stratum_admin_status',{jwt,body:{}}));
+  }
+  async adminUsers(token,input) {
+    const v=check(z.object({query:z.string().max(200),offset:z.number().int().min(0).max(1000000)}).strict(),input),{jwt}=this.tokens(token);
+    return this.request('/rest/v1/rpc/stratum_admin_users',{jwt,body:{p_query:v.query,p_offset:v.offset}});
+  }
+  async adminCatalog(token,input) {
+    const v=check(z.object({userId:z.string().uuid(),family:z.enum(['orb','macross','sol','entrylab']),query:z.string().max(200),offset:z.number().int().min(0).max(1000000)}).strict(),input),{jwt}=this.tokens(token);
+    return this.request('/rest/v1/rpc/stratum_admin_catalog',{jwt,body:{p_user_id:v.userId,p_family:v.family,p_query:v.query,p_offset:v.offset}});
+  }
+  async adminGrant(token,input) {
+    const v=check(z.object({userId:z.string().uuid(),strategyId:z.string().regex(/^[a-z0-9_-]{1,100}$/),enabled:z.boolean(),revision:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).strict(),input),{jwt}=this.tokens(token);
+    return this.request('/rest/v1/rpc/stratum_admin_grant',{jwt,body:{p_user_id:v.userId,p_strategy_id:v.strategyId,p_enabled:v.enabled,p_revision:v.revision}});
+  }
+  async sharedStrategies(token) {
+    const {jwt}=this.tokens(token);
+    return this.request('/rest/v1/rpc/stratum_available_strategies',{jwt,body:{}});
+  }
+  async loadSharedStrategy(token,input) {
+    const v=check(z.object({strategyId:z.string().regex(/^[a-z0-9_-]{1,100}$/)}).strict(),input),{jwt}=this.tokens(token);
+    const result=await this.request('/rest/v1/rpc/stratum_load_strategy',{jwt,body:{p_strategy_id:v.strategyId}});
+    return {...result,configuration:check(universalConfigurationSchema,result.configuration)};
   }
   conversationRow(row,full=false) {
     const summary={id:row.id,title:row.title,provider:row.provider,locale:row.locale,messageCount:row.message_count,createdAt:row.created_at,updatedAt:row.updated_at};

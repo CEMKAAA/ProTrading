@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'rolldown';
 import { signed } from './crypto.mjs';
 import { ControlError } from './control-plane.mjs';
+import { controlLocation,studioLocation } from './api-location.mjs';
 
 const sha = data => createHash('sha256').update(data).digest('hex');
 // Windows PowerShell writes UTF-8 JSON with a BOM. This does not weaken hash checks.
@@ -55,7 +56,8 @@ export function zipFiles(files) {
   const directory=Buffer.concat(central),end=Buffer.alloc(22);end.writeUInt32LE(0x06054b50);end.writeUInt16LE(files.length,8);end.writeUInt16LE(files.length,10);end.writeUInt32LE(directory.length,12);end.writeUInt32LE(offset,16);
   return Buffer.concat([...records,directory,end]);
 }
-export async function personalPackage(plane,accessToken,apiUrl,artifacts=verifiedArtifacts,helperFactory=companion) {
+export async function personalPackage(plane,accessToken,apiUrl,artifacts=verifiedArtifacts,helperFactory=companion,studioUrl='http://127.0.0.1:4310') {
+  apiUrl=controlLocation(apiUrl);studioUrl=studioLocation(studioUrl);
   const actor=plane.browser(accessToken);plane.entitlement(actor.accountId);
   const {binary,worker}=artifacts(plane),code=await helperFactory();
   // Revalidate after the asynchronous build; a session can be revoked meanwhile.
@@ -64,10 +66,10 @@ export async function personalPackage(plane,accessToken,apiUrl,artifacts=verifie
     ['MQL5/Indicators/MaCrossOrderFlowWorker.ex5',worker],['connection.mjs',code],
     ['start_connection.bat','@echo off\r\nsetlocal\r\npushd "%~dp0"\r\nwhere node >nul 2>&1\r\nif errorlevel 1 (\r\n echo Install Node.js 22.13 or newer: https://nodejs.org/en/download\r\n pause\r\n exit /b 1\r\n)\r\nnode connection.mjs\r\nif errorlevel 1 pause\r\npopd\r\n']];
   const payload={version:1,kind:'personal_setup',accountId:actor.accountId,subscriberName:plane.displayName(actor.accountId),
-    apiUrl,enrollmentToken:ticket.enrollmentToken,expiresAt:ticket.expiresAt,issuedAt:plane.now(),
+    apiUrl,studioUrl,enrollmentToken:ticket.enrollmentToken,expiresAt:ticket.expiresAt,issuedAt:plane.now(),
     accessMode:access.accessMode,trialExpiresAt:access.trial?.expiresAt??null,
     artifacts:files.map(([name,data])=>({name,sha256:sha(data)}))};
   files.push(['personal-setup.json',JSON.stringify({envelope:signed(payload,plane.signingKey.privateKey),serverPublicKey:plane.signingKey.publicKey},null,2)],
-    ['READ_ME.txt',`STRATUM / PERSONAL CONNECTION\r\n\r\n1. Install MetaTrader 5 from your broker or https://www.metatrader5.com/en/download\r\n2. Extract this ZIP into a private folder. Do not share it: its setup ticket is single-use and expires in 30 minutes. Download again if it expires; this never resets your demo.\r\n3. Install Node.js 22.13+ from https://nodejs.org/en/download if needed.\r\n4. Run start_connection.bat. It generates this computer's device key and shows a pairing code and fingerprint.\r\n5. In YOUR Studio account, open Pair / Manage MT5. Review the code and compare the fingerprint, then approve. Only this package's account can approve.\r\n6. In MT5 use File > Open Data Folder. Copy this package's MQL5 folder contents into that folder (not necessarily the MT5 program directory). Refresh Navigator.\r\n7. Attach StratumUniversal/UniversalConnectionEA to the desired chart. Load .state/connection.set under Inputs; or enter the displayed InpInstallationId.\r\n8. Keep the helper running. In Studio choose your installation and Authorize Controller, then Apply & Run MT5 Audit. Trading starts OFF; only explicitly turn ON after inspecting a complete audit.\r\n\r\nDEMO is 30 days from registration, not installation. Expiry stops new research/entries; existing protective position management remains.\r\nThe EX5 is generic and closed-source. User isolation is enforced by server-owned entitlement, owner-bound pairing, local device keys and short-lived signed commands, NOT a name embedded in an EX5.\r\nNo compiler, terminal binaries, broker credentials or server private keys are included.\r\nThis build uses the LOOPBACK LOCAL PILOT service, not a publicly deployed cloud authorization service.\r\n`]);
+    ['READ_ME.txt',`STRATUM / PERSONAL CONNECTION\r\n\r\n1. Install MetaTrader 5 from your broker or https://www.metatrader5.com/en/download\r\n2. Extract this ZIP into a private folder. Do not share it: its setup ticket is single-use and expires in 30 minutes. Download again if it expires; this never resets your demo.\r\n3. Install Node.js 22.13+ from https://nodejs.org/en/download if needed.\r\n4. Run start_connection.bat. It generates this computer's device key and shows a pairing code and fingerprint.\r\n5. In YOUR Studio account, open Pair / Manage MT5. Review the code and compare the fingerprint, then approve. Only this package's account can approve.\r\n6. In MT5 use File > Open Data Folder. Copy this package's MQL5 folder contents into that folder (not necessarily the MT5 program directory). Refresh Navigator.\r\n7. Attach StratumUniversal/UniversalConnectionEA to the desired chart. Load .state/connection.set under Inputs; or enter the displayed InpInstallationId.\r\n8. Keep the helper running. In Studio choose your installation and Authorize Controller, then Apply & Run MT5 Audit. Trading starts OFF; only explicitly turn ON after inspecting a complete audit.\r\n\r\nDEMO is 30 days from registration, not installation. Expiry stops new research/entries; existing protective position management remains.\r\nThe EX5 is generic and closed-source. User isolation is enforced by server-owned entitlement, owner-bound pairing, local device keys and short-lived signed commands, NOT a name embedded in an EX5.\r\nNo compiler, terminal binaries, broker credentials or server private keys are included.\r\n${apiUrl.startsWith('https://')?'This package uses the HTTPS cloud authorization service shown in setup.json. Studio and the helper must be able to reach it.':'This package uses a loopback local service. Keep the local service running.'}\r\n`]);
   return {bytes:zipFiles(files),filename:`Stratum-${actor.accountId.slice(0,8)}.zip`};
 }

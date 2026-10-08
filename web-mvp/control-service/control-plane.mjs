@@ -374,7 +374,7 @@ export class ControlPlane {
       return { revoked: true };
     });
   }
-  authenticateDevice(proofInput, method, path, body = {}) {
+  authenticateDevice(proofInput, method, path, body = {}, {deferAuthority=false} = {}) {
     const proof = parse(deviceProofSchema, proofInput), { signature, ...payload } = proof;
     requireThat(proof.method === method && proof.path === path && proof.bodyHash === hash(body), "PROOF_SCOPE_MISMATCH", 401);
     requireThat(Math.abs(proof.issuedAt - this.now()) <= 30000, "PROOF_EXPIRED", 401);
@@ -386,7 +386,7 @@ export class ControlPlane {
     if (proof.agentId && !["/v1/device/connect", "/v1/device/pairing", "/v1/device/pairing/refresh", "/v1/device/identity"].includes(path)) {
       const agent = this.get("SELECT * FROM agent_sessions WHERE installation_id=?", installation.id);
       requireThat(agent && agent.agent_id === proof.agentId && agent.expires_at > this.now(), "AGENT_SESSION_EXPIRED", 403);
-      requireThat(agent.generation === this.currentLease(installation).generation, "AGENT_CONTROLLER_CHANGED", 403);
+      requireThat(agent.generation === this.currentLease(installation,!deferAuthority).generation, "AGENT_CONTROLLER_CHANGED", 403);
     }
     this.atomic(() => {
       this.run("DELETE FROM device_nonces WHERE expires_at<?", this.now());
@@ -405,9 +405,9 @@ export class ControlPlane {
       return {connected:true,expiresAt};
     });
   }
-  currentLease(installation) {
+  currentLease(installation, checkEntitlement=true) {
     requireThat(installation.account_id && installation.state === "approved", "PAIRING_REQUIRED", 403);
-    this.entitlement(installation.account_id);
+    if(checkEntitlement)this.entitlement(installation.account_id);
     const lease = this.get("SELECT l.*,s.expires_at AS session_expiry FROM leases l JOIN sessions s ON s.id=l.session_id WHERE l.account_id=? AND l.installation_id=?", installation.account_id, installation.id);
     requireThat(lease && lease.expires_at > this.now() && lease.session_expiry > this.now(), "CONTROLLER_LEASE_EXPIRED", 403);
     return lease;

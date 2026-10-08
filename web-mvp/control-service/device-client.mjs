@@ -1,11 +1,9 @@
 import { makeProof, verifySigned, hash, id } from "./crypto.mjs";
+import { controlLocation } from './api-location.mjs';
 
 export class DeviceClient {
   constructor({ apiUrl, installationId, privateKey, pinnedServerPublicKey }) {
-    const url = new URL(apiUrl);
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("HTTPS required");
-    if (url.pathname !== "/" || url.search || url.hash || url.username || url.password) throw new Error("API origin required");
-    this.apiUrl = url.origin; this.installationId = installationId; this.privateKey = privateKey; this.serverKey = pinnedServerPublicKey;
+    this.apiUrl = controlLocation(apiUrl); this.installationId = installationId; this.privateKey = privateKey; this.serverKey = pinnedServerPublicKey;
     this.agentId = id();this.connected = false;
   }
   async request(path, body = {}, method = "POST") {

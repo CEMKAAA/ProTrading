@@ -170,6 +170,9 @@ def main():
                 except ValueError:
                     if exposed(item["key"]): raise ValueError(f"Unknown default {family}: {item}")
                     value=None
+            if family == "sol" and item["key"] == "InpDefaultHtf":
+                # Sol already builds H1.5 from closed M30 bars; it is not an MT5 enum.
+                item["options"] = [*item["options"], {"label": "H1.5", "value": 90}]
             if exposed(item["key"]):
                 public.append({**item,"default":value,"group":group_for(item["key"])})
         rt=runtime_targets(family)

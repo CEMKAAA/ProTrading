@@ -155,7 +155,12 @@ bool LiqLibraryCanApply(bool requireFlat=true)
 }
 bool LiqLibraryApply(string path)
 {
+#ifdef LN_SOL_ADV_NAS_READY
+   // Existing ticket plans retain their policy; loading changes future entries only.
+   if(!LiqLibraryCanApply(false))return false;
+#else
    if(!LiqLibraryCanApply())return false;
+#endif
    string name="";double values[];
    if(!LiqLibraryUnpack(path,name,values))
    {g_liqLibraryStatus="Not applied: incompatible Inputs or damaged preset";return false;}
@@ -196,6 +201,7 @@ bool LiqLibraryApply(string path)
       &&(policy.gate!=0||policy.exitMode!=0||policy.independent||policy.reverseExit!=InpCloseOnReverse||policy.reverseWaitMinutes>0))
    {g_liqLibraryStatus="NAS policy requires fixed target";return false;}
    if(!LnNasCompatible(policy)){g_liqLibraryStatus="Account does not support these position settings";return false;}
+   if(!LnNasPreserveOwnedPolicies())return false;
    string previousTime=TCalStrategyText();
    if(!TCalStrategyApplyText(timeMatrix))
    {g_liqLibraryStatus="Time matrix settings could not be saved";return false;}
@@ -222,9 +228,10 @@ bool LiqLibraryApply(string path)
    g_customTargetR=customR;
 #endif
    SanitizeHalfMode();
-   g_liqLibraryName=name;g_liqLibraryStatus="Applied: "+name;
+   g_liqLibraryName=name;g_liqLibrarySelected=path;g_liqWindowAppliedFingerprint=LiqWindowRuntimeFingerprint();g_liqLibraryStatus="Applied: "+name;
    RefreshAfterConfigChange(true);g_tcalChanged=false;return true;
 }
+#include "LiqStrategyWindowMetrics.mqh"
 void LiqLibraryScan()
 {
    ArrayResize(g_liqLibraryFiles,0);ArrayResize(g_liqLibraryNames,0);
@@ -257,6 +264,7 @@ void LiqLibraryScan()
    for(int i=1;i<ArraySize(g_liqLibraryNames);i++)for(int j=i;j>0&&StringCompare(g_liqLibraryNames[j],g_liqLibraryNames[j-1],false)<0;j--)
    {string t=g_liqLibraryNames[j];g_liqLibraryNames[j]=g_liqLibraryNames[j-1];g_liqLibraryNames[j-1]=t;
     t=g_liqLibraryFiles[j];g_liqLibraryFiles[j]=g_liqLibraryFiles[j-1];g_liqLibraryFiles[j-1]=t;}
+   LiqWindowSort();
    g_liqLibraryPage=MathMax(0,MathMin(g_liqLibraryPage,(ArraySize(g_liqLibraryFiles)-1)/6));
 }
 void LiqLibraryWidget(string id,ENUM_OBJECT type,int x,int y,int w,int h,string text,color bg)
@@ -383,8 +391,9 @@ void LiqLibraryDraw()
    LiqLibraryWidget("SEARCH",OBJ_BUTTON,x+w-240,y+38,76,24,"SEARCH",button);
    LiqLibraryWidget("APPLY",OBJ_BUTTON,x+w-158,y+38,146,24,"APPLY STRATEGY",C'184,103,22');
    LiqLibraryWidget("FAV",OBJ_BUTTON,x+12,y+70,130,24,g_liqLibraryFavorites?"FAVORITES ON":"FAVORITES OFF",button);
-   LiqLibraryWidget("SELECTED",OBJ_LABEL,x+12,y+106,w-24,20,"Selected: "+StringSubstr(g_liqLibraryName,0,50),bg);
-   if(!g_liqLibraryOpen)TCalCsvLauncher(PFX,x+12,y+138,1.0,DASH_Z+60,true);
+   LiqWindowControls(x,y,w,button);
+   LiqLibraryWidget("SELECTED",OBJ_LABEL,x+12,y+152,w-24,20,"Selected: "+StringSubstr(g_liqLibraryName,0,50),bg);
+   if(!g_liqLibraryOpen)TCalCsvLauncher(PFX,x+12,y+181,1.0,DASH_Z+60,true);
    if(!g_liqLibraryOpen)
    {
       LiqLibraryWidget("BAL_LABEL",OBJ_LABEL,x+12,y+226,180,20,"BALANCE (0=ACCOUNT)",bg);
@@ -404,7 +413,7 @@ void LiqLibraryDraw()
    LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+368+marginSpace,w-24,20,StringSubstr(g_liqLibraryStatus,0,75),bg);
    if(g_liqLibraryOpen)
    {
-      int py=y+132;
+      int py=y+180;
       LiqLibraryWidget("POP_BG",OBJ_RECTANGLE_LABEL,x+12,py,w-24,164,"",C'20,27,39');
       LiqLibraryWidget("PREV",OBJ_BUTTON,x+18,py+3,30,22,"<",button);
       LiqLibraryWidget("NEXT",OBJ_BUTTON,x+52,py+3,30,22,">",button);
@@ -417,7 +426,7 @@ void LiqLibraryDraw()
          {ObjectDelete(0,LiqLibraryObject("PICK"+(string)i));ObjectDelete(0,LiqLibraryObject("STAR"+(string)i));continue;}
          LiqLibraryWidget("STAR"+(string)i,OBJ_BUTTON,x+18,py+28+i*22,30,20,
             FileIsExist(g_liqLibraryFiles[n]+".fav",FILE_COMMON)?"*":"+",C'58,66,82');
-         LiqLibraryWidget("PICK"+(string)i,OBJ_BUTTON,x+52,py+28+i*22,w-70,20,g_liqLibraryNames[n],C'38,46,60');
+         LiqLibraryWidget("PICK"+(string)i,OBJ_BUTTON,x+52,py+28+i*22,w-70,20,LiqWindowCaption(g_liqLibraryFiles[n],g_liqLibraryNames[n]),C'38,46,60');
       }
    }
 }
@@ -509,6 +518,10 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
       if(close){g_liqLibraryRPicker=false;DeleteByPrefix(LiqLibraryObject(""));LiqLibraryRedrawPreserve();}
       else {LiqLibraryDraw();ChartRedraw(0);}return true;
    }
+   if(StringFind(action,"SW_WINDOW_")==0||StringFind(action,"SW_SORT_")==0)
+   {bool window=StringFind(action,"SW_WINDOW_")==0;int key=(int)StringToInteger(StringSubstr(action,window?10:8));
+    if(window&&key>=0&&key<9)g_swWeeks=SwWeeks(key);else if(!window)SwSortCycle(key);
+    g_liqLibraryPage=0;LiqLibraryScan();LiqLibraryDraw();ChartRedraw(0);return true;}
    if(StringFind(action,"NAV_")==0)
    {
       if(action=="NAV_LIBRARY")g_liqLibraryPanel=!g_liqLibraryPanel;
@@ -535,7 +548,7 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
    else if(action=="APPLY"){if(g_liqLibrarySelected!="")LiqLibraryApply(g_liqLibrarySelected);else g_liqLibraryStatus="Select a strategy from SEARCH";}
    else if(action=="SAVE")
    {bool ok=LiqLibrarySave(g_liqLibraryName);g_liqLibraryStatus=ok?"SAVED: "+g_liqLibraryName:"Save failed: name or file lock";
-    if(ok){g_liqLibrarySelected=LiqLibraryPath(g_liqLibraryName);g_liqLibraryQuery="";g_liqLibraryFavorites=false;g_liqLibraryPage=0;g_liqLibraryOpen=true;ObjectSetString(0,LiqLibraryObject("QUERY"),OBJPROP_TEXT,"");}
+    if(ok){g_liqLibrarySelected=LiqLibraryPath(g_liqLibraryName);g_liqWindowAppliedFingerprint=LiqWindowRuntimeFingerprint();g_liqLibraryQuery="";g_liqLibraryFavorites=false;g_liqLibraryPage=0;g_liqLibraryOpen=true;ObjectSetString(0,LiqLibraryObject("QUERY"),OBJPROP_TEXT,"");}
     LiqLibraryScan();}
    else if(StringFind(action,"PICK")==0||StringFind(action,"STAR")==0)
    {
@@ -545,7 +558,6 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
          string path=g_liqLibraryFiles[n];
          if(StringFind(action,"PICK")==0)
          {
-            g_liqLibrarySelected=path;
             if(LiqLibraryApply(path))
             {g_liqLibraryOpen=false;LiqLibraryClearResults();ObjectSetString(0,LiqLibraryObject("NAME"),OBJPROP_TEXT,g_liqLibraryName);}
          }

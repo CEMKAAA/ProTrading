@@ -1,5 +1,7 @@
 #ifndef ORB_STRATEGY_USER_METRICS_MQH
 #define ORB_STRATEGY_USER_METRICS_MQH
+#include "StrategyWindowMetrics.mqh"
+int g_userCompletedWeeks=52,g_userCompletedOpen=0,g_userCompletedFlat=0;
 string g_userAuditSettings="",g_userCompletedSettings="";
 bool g_userCompletedReady=false;
 int g_userCompletedTotal=0,g_userCompletedW=0,g_userCompletedL=0;
@@ -29,9 +31,15 @@ string OrbUserRuntimeMetricKey()
 void OrbUserLoadMetrics(int slot)
 {
    if(slot<0||slot>=ArraySize(g_userStrategies))return;
-   OrbUserRecord r=g_userStrategies[slot];string v[];
-   if(!OrbMlReadLines("MaCrossOrbStrategyLibrary\\"+r.preset.id+".metrics",v,12,true))return;
+   OrbUserRecord r=g_userStrategies[slot];string v[];g_userStrategies[slot].preset.metric1yReady=false;
    string ofKey=r.orderFlow.mode==0?"":"|ORDERFLOW_QUOTE_V1="+McOfConfigText(r.orderFlow);
+   SwMetric m;string key=SwHash(OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+MaEntryMetricMeta(r.independent,r.maxSeries)+"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait+ofKey,r.runtime,r.preset,r.advancedReverse,r.advancedReverseMaxCostPct)+"|TCAL="+r.timeMatrix+"|GAP="+DoubleToString(r.advancedReverseMaxCostPct,8));
+   if(SwRead("MaCrossOrbStrategyLibrary\\WindowMetrics",r.preset.id,key,g_swWeeks,m))
+   {g_userStrategies[slot].preset.metric1yReady=true;g_userStrategies[slot].preset.metric1yAsOf=TimeToString(m.asOf,TIME_DATE|TIME_MINUTES);
+    g_userStrategies[slot].preset.metric1yTotal=m.total;g_userStrategies[slot].preset.metric1yWins=m.wins;g_userStrategies[slot].preset.metric1yLosses=m.losses;
+    g_userStrategies[slot].preset.metric1yNetR=m.netR;g_userStrategies[slot].preset.metric1yMinCumR=m.minCum;g_userStrategies[slot].preset.metric1yWr=SwWr(m);return;}
+   if(g_swWeeks!=52||r.timeMatrix!=TCalStrategyOffText())return;
+   if(!OrbMlReadLines("MaCrossOrbStrategyLibrary\\"+r.preset.id+".metrics",v,12,true))return;
    if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+MaEntryMetricMeta(r.independent,r.maxSeries)+"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait+ofKey,r.runtime,r.preset,r.advancedReverse,r.advancedReverseMaxCostPct)||v[4]!="52")return;
    double n[8];for(int i=3;i<=10;i++)if(!OrbMlNumber(v[i],n[i-3]))return;
    if(n[0]<=0||n[2]<0||n[3]<0||n[4]<0||n[3]+n[4]>n[2]||n[7]<0||n[7]>100)return;
@@ -51,6 +59,11 @@ bool OrbUserPersistCompletedMetrics()
    OrbStrategyPreset p;
    if(!g_userCompletedReady||!OrbStrategyPresetLoad(g_strategyPresetIndex,p)||!OrbUserPreset(p)||!OrbUserMatches(p)
       ||g_userCompletedSettings!=OrbUserRuntimeMetricKey())return false;
+   int savedSlot=OrbUserSlot(p.id);if(savedSlot<0)return false;
+   string windowKey=SwHash(g_userCompletedSettings+"|TCAL="+g_userStrategies[savedSlot].timeMatrix+"|GAP="+DoubleToString(g_userStrategies[savedSlot].advancedReverseMaxCostPct,8));
+   if(!SwWrite("MaCrossOrbStrategyLibrary\\WindowMetrics",p.id,windowKey,g_userCompletedWeeks,g_userCompletedTotal,g_userCompletedW,g_userCompletedL,
+      g_userCompletedOpen,g_userCompletedFlat,g_userCompletedR,g_userCompletedMc,g_userCompletedAt))return false;
+   if(g_userCompletedWeeks!=52){OrbUserReload(true);OrbStrategyPresetBuildMatches(g_strategySearch);g_userStrategyNote="SAVED "+SwWindow(g_userCompletedWeeks)+": "+p.name;return true;}
    double wr=g_userCompletedW+g_userCompletedL>0?100.0*g_userCompletedW/(g_userCompletedW+g_userCompletedL):0;
    string payload="ORB_USER_METRICS1\n"+p.id+"\n"+g_userCompletedSettings+"\n"+(string)(long)g_userCompletedAt+"\n52\n"
       +(string)g_userCompletedTotal+"\n"+(string)g_userCompletedW+"\n"+(string)g_userCompletedL+"\n"
@@ -68,14 +81,15 @@ bool OrbUserPersistCompletedMetrics()
 void OrbUserEnsureMetrics()
 {
    if(!g_histAuditRunning&&!g_histRedrawQueued&&OrbUserPersistCompletedMetrics())return;
-   SetHistoricalWeeks(52);QueueHistoricalRedraw(0);
+   SetHistoricalWeeks(g_swWeeks);QueueHistoricalRedraw(0);
 }
 void OrbUserAuditStarted(){g_userAuditSettings=OrbUserRuntimeMetricKey();}
 void OrbUserAuditCompleted()
 {
    if(g_mlHistoryFiltered)return; // Never overwrite base metrics with model-filtered results.
-   if(g_rtHistoricalWeeks!=52||g_histInvalid>0||g_histCoveragePending||g_userAuditSettings!=OrbUserRuntimeMetricKey())return;
+   if(!SwValidWindow(g_rtHistoricalWeeks)||g_histInvalid>0||g_histCoveragePending||g_userAuditSettings!=OrbUserRuntimeMetricKey())return;
    g_userCompletedSettings=g_userAuditSettings;g_userCompletedReady=true;g_userCompletedAt=g_histRunNow;
+   g_userCompletedWeeks=g_rtHistoricalWeeks;g_userCompletedOpen=g_histOpen;g_userCompletedFlat=g_histFlat;
    g_userCompletedTotal=g_histTotal;g_userCompletedW=g_histWins;g_userCompletedL=g_histLosses;
    g_userCompletedR=g_histNetR;g_userCompletedMc=g_histMinCumulativeR;
    OrbUserPersistCompletedMetrics();

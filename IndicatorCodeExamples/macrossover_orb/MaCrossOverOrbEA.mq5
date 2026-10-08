@@ -5,6 +5,7 @@
 //| Session clock: NY → broker server via GMT offset.                 |
 //+------------------------------------------------------------------+
 #property strict
+#include "StrategyWindowMetrics.mqh"
 #property version "1.00"
 #include <Trade/Trade.mqh>
 #include "NativeRiskBalance.mqh"
@@ -2582,7 +2583,7 @@ void OrbStrategyCyclePairFilter()
    string pairs[];int count=0;
    for(int i=0;i<OrbStrategyPresetCount();i++)
    {
-      OrbStrategyPreset p;if(!OrbStrategyPresetLoad(i,p))continue;
+      OrbStrategyPreset p;if(!OrbStrategyPresetLoad(i,p))continue;OrbStrategyWindowView(p);
       string pair=OrbStrategyPresetPair(p);
       if(pair=="ANY"||pair=="")continue;
       bool exists=false;
@@ -2835,10 +2836,33 @@ string OrbStrategyMetricSigned(const double value,const int digits=2)
    return (value>0.00000001?"+":"")+DoubleToString(value,digits);
 }
 
+
+void OrbStrategyWindowView(OrbStrategyPreset &p)
+{
+   if(!OrbUserPreset(p)){if(g_swWeeks!=52)p.metric1yReady=false;return;}
+   int slot=OrbUserSlot(p.id);if(slot<0)return;
+   OrbUserLoadMetrics(slot);p=g_userStrategies[slot].preset;
+}
+SwMetric OrbStrategyWindowMetric(int index)
+{
+   SwMetric m;ZeroMemory(m);OrbStrategyPreset p;if(!OrbStrategyPresetLoad(index,p))return m;OrbStrategyWindowView(p);
+   m.ready=p.metric1yReady;m.total=p.metric1yTotal;m.wins=p.metric1yWins;m.losses=p.metric1yLosses;
+   m.netR=p.metric1yNetR;m.minCum=p.metric1yMinCumR;return m;
+}
+string OrbStrategyWindowMode(const OrbStrategyPreset &p)
+{
+   int slot=OrbUserSlot(p.id);return slot>=0&&g_userStrategies[slot].independent?"IND":"LEG";
+}
+void OrbStrategyWindowControls(int x,int y)
+{
+   for(int i=0;i<9;i++)CreateButton("BTN_SW_WINDOW_"+(string)i,x+12+i*65,y+102,61,20,SwWindow(SwWeeks(i)),g_swWeeks==SwWeeks(i)?C'184,103,22':C'38,101,176');
+   for(int i=0;i<5;i++)CreateButton("BTN_SW_SORT_"+(string)i,x+12+i*118,y+126,114,20,SwSortCaption(i),g_swDirection[i]==0?C'80,80,80':C'30,150,95');
+}
+
 string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
 {
-   if(!p.metric1yReady)return p.name+" | 1Y N/A";
-   string suffix=" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
+   if(!p.metric1yReady)return p.name+" | "+SwWindow(g_swWeeks)+" N/A | "+OrbStrategyWindowMode(p);
+   string suffix=" | "+SwWindow(g_swWeeks)+" N "+(string)p.metric1yTotal+" "+OrbStrategyWindowMode(p)+" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
       +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
       +" | WR "+DoubleToString(p.metric1yWr,1)+"%";
    int maxChars=66;
@@ -2933,6 +2957,9 @@ void OrbStrategyPresetBuildMatches(const string query)
       if(!OrbStrategyPresetPassesMetricFilters(p))continue;
       int n=ArraySize(g_strategyMatches);ArrayResize(g_strategyMatches,n+1);g_strategyMatches[n]=i;
    }
+   for(int i=1;i<ArraySize(g_strategyMatches);i++)for(int j=i;j>0;j--)
+   {SwMetric a=OrbStrategyWindowMetric(g_strategyMatches[j]),b=OrbStrategyWindowMetric(g_strategyMatches[j-1]);
+    if(SwCompare(a,b)>=0)break;int t=g_strategyMatches[j];g_strategyMatches[j]=g_strategyMatches[j-1];g_strategyMatches[j-1]=t;}
    int maxPage=MathMax(0,(ArraySize(g_strategyMatches)-1)/5);
    g_strategySearchPage=MathMax(0,MathMin(maxPage,g_strategySearchPage));
 }
@@ -4162,7 +4189,7 @@ int OrbLibrarySize(int value){return MathMax(1,(int)MathRound(value*g_libraryDas
 bool OrbStrategyPopupContains(const long px,const double py)
 {
    if(!g_strategyPopupOpen)return false;
-   int left=OrbLibraryX(InpDashboardX+644),top=OrbLibraryY(InpDashboardY+142);
+   int left=OrbLibraryX(InpDashboardX+644),top=OrbLibraryY(InpDashboardY+190);
    return px>=left&&px<left+OrbLibrarySize(594)
       &&py>=top&&py<top+OrbLibrarySize(28+g_strategyVisibleCount*22);
 }
@@ -7928,7 +7955,7 @@ void UpdateDashboard()
    bool presetApplied=(g_strategyApplyFlashUntil>TimeLocal());
    CreateButton("BTN_PRESET_APPLY",x+468,y+30,138,20,presetApplied?"APPLIED":"APPLY STRATEGY",
       presetApplied?C'30,150,95':C'184,103,22');
-   CreateLabel("DASH_PRESET_FILTER",x+12,y+59,"1Y FILTER",C'134,158,182',7);
+   CreateLabel("DASH_PRESET_FILTER",x+12,y+59,SwWindow(g_swWeeks)+" FILTER",C'134,158,182',7);
    CreateLabel("DASH_PRESET_NET_L",x+74,y+59,"R >=",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_NET",x+104,y+54,52,18,g_strategyFilterNetText);
    CreateLabel("DASH_PRESET_WR_L",x+164,y+59,"WR >=",C'134,158,182',7);
@@ -7950,8 +7977,9 @@ void UpdateDashboard()
    ObjectSetString(0,PREFIX+"BTN_PRESET_SYMBOL",OBJPROP_TOOLTIP,"Cycle ALL and every pair present in saved and built-in strategies. Library filter only.");
    CreateButton("BTN_FY_RESEARCH",x+454,y+78,152,20,"5Y LEADERBOARD",C'38,101,176');
    ObjectDelete(0,PREFIX+"DASH_PRESET_FAV_HINT");
-   CreateLabel("DASH_PRESET_CURRENT",x+12,y+106,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
-   CreateLabel("DASH_PRESET_PICK",x+12,y+122,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
+   OrbStrategyWindowControls(x,y);
+   CreateLabel("DASH_PRESET_CURRENT",x+12,y+154,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
+   CreateLabel("DASH_PRESET_PICK",x+12,y+170,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
 
    x=InpDashboardX;
    int rootY=InpDashboardY;
@@ -8294,14 +8322,14 @@ void UpdateDashboard()
          ObjectDelete(0,PREFIX+"BTN_PRESET_RESULT_"+IntegerToString(stale));
          ObjectDelete(0,PREFIX+"BTN_PRESET_STAR_"+IntegerToString(stale));
       }
-      int popupY=InpDashboardY+142,popupH=28+g_strategyVisibleCount*22;
+      int popupY=InpDashboardY+190,popupH=28+g_strategyVisibleCount*22;
       CreateRect("DASH_PRESET_POPUP",x+12,popupY,594,popupH,C'20,27,39',C'90,178,255');
       ObjectSetInteger(0,PREFIX+"DASH_PRESET_POPUP",OBJPROP_ZORDER,DASH_Z+15);
       for(int slot=0;slot<g_strategyVisibleCount;slot++)
       {
          OrbStrategyPreset p;int presetIndex=g_strategyVisible[slot];
          if(!OrbStrategyPresetLoad(presetIndex,p))continue;
-         string caption=OrbStrategyPresetMetricCaption(p);
+         OrbStrategyWindowView(p);string caption=OrbStrategyPresetMetricCaption(p);
          bool favorite=OrbStrategyIsFavorite(presetIndex);
          CreateButton("BTN_PRESET_STAR_"+IntegerToString(slot),x+18,popupY+24+slot*22,32,20,favorite?"*":"+",
             favorite?C'184,103,22':C'58,66,82');
@@ -10137,6 +10165,14 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
 
+   if(StringFind(sparam,PREFIX+"BTN_SW_WINDOW_")==0||StringFind(sparam,PREFIX+"BTN_SW_SORT_")==0)
+   {
+      bool window=StringFind(sparam,PREFIX+"BTN_SW_WINDOW_")==0;
+      string prefix=PREFIX+(window?"BTN_SW_WINDOW_":"BTN_SW_SORT_");int key=(int)StringToInteger(StringSubstr(sparam,StringLen(prefix)));
+      if(window&&key>=0&&key<9){g_swWeeks=SwWeeks(key);OrbUserReload(true);}else if(!window)SwSortCycle(key);
+      g_strategySearchPage=0;OrbStrategyPresetBuildMatches(g_strategySearch);g_strategyPopupOpen=true;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
+   }
    if(sparam==PREFIX+"BTN_PRESET_SYMBOL")
    {
       OrbStrategyCyclePairFilter();

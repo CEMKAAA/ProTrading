@@ -1,0 +1,11 @@
+﻿{
+    "jobIds":  [
+                   "sol_845016e38abd3c5ad1b10aca129f",
+                   "sol_075493b65422ee9909236ea048f1"
+               ],
+    "auditSymbol":  "JP225m",
+    "sourceSymbol":  "JP225s",
+    "compile":  "0 errors, 0 warnings",
+    "state":  "finished",
+    "finished":  "2026-10-09T01:22:57.1341966+03:00"
+}

@@ -5,13 +5,13 @@ import { once } from 'node:events';
 import { ControlPlane } from '../control-service/control-plane.mjs';
 import { SupabaseAuth } from '../control-service/supabase-auth.mjs';
 import { controlHttp } from '../control-service/http.mjs';
-import { id,keyPair,signed,hash } from '../control-service/crypto.mjs';
+import { id,keyPair,signed,hash,makeProof } from '../control-service/crypto.mjs';
 import { defaultConfiguration } from '../lib/universal-contract.ts';
 import { authReturn } from '../lib/auth-return.ts';
 
 const DAY=86400000;
 function fixture(){
- let at=Date.now(),calls=0,refreshes=0,offline=false,revoked=false,confirmation=false;
+ let at=Date.now(),calls=0,refreshes=0,offline=false,revoked=false,confirmation=false,admin=false,shared=defaultConfiguration('orb');
  const account=id(),sid=id(),jwt='verified-provider-jwt-not-a-browser-secret',refresh='private-refresh-token-never-in-ea';
  const state={accountId:account,sessionId:sid,email:'demo@example.com',displayName:'Cem Quant',disabled:false,
   accessActive:true,accessMode:'demo',paidUntil:0,serverNow:at,trial:{startsAt:at,expiresAt:at+30*DAY}};
@@ -29,6 +29,10 @@ function fixture(){
   if(path==='/auth/v1/logout'){revoked=true;return new Response(null,{status:204});}
   if(options.headers.Authorization!=='Bearer '+jwt)return reply({error:'bad JWT'},401);
   if(path==='/rest/v1/rpc/stratum_access_state')return revoked?reply({message:'STRATUM_SESSION_INVALID'},401):reply({...state,serverNow:at});
+  if(path==='/rest/v1/rpc/stratum_admin_status')return reply({isAdmin:admin});
+  if(path.startsWith('/rest/v1/rpc/stratum_admin_'))return admin?reply({items:[],total:0,hasMore:false,enabled:body.p_enabled,revision:(body.p_revision??0)+1}):reply({message:'STRATUM_ADMIN_REQUIRED'},403);
+  if(path==='/rest/v1/rpc/stratum_available_strategies')return reply({items:[]});
+  if(path==='/rest/v1/rpc/stratum_load_strategy')return reply({id:body.p_strategy_id,symbol:'USDJPYm',sourceHash:'a'.repeat(64),configuration:shared});
   if(path==='/rest/v1/stratum_strategies'){
    if(options.method==='POST'){assert.equal(body.account_id,account);rows.splice(0,rows.length,{configuration:body.configuration});return new Response(null,{status:204});}
    return reply(rows);
@@ -50,10 +54,42 @@ function fixture(){
  };
  const auth=new SupabaseAuth(p,{url:'https://testproject.supabase.co',publishableKey:'sb_publishable_test',encryptionKey:randomBytes(32),fetcher});
  const login=()=>auth.login({email:state.email,password:'a-long-private-password'});
- return {p,auth,state,account,jwt,refresh,login,requests,advance:ms=>at+=ms,calls:()=>calls,refreshes:()=>refreshes,
+ return {p,auth,state,account,jwt,refresh,login,requests,advance:ms=>at+=ms,calls:()=>calls,refreshes:()=>refreshes,now:()=>at,admin:v=>admin=v,shared:v=>shared=v,
   offline:v=>offline=v,revoke:()=>revoked=true,confirmation:v=>confirmation=v};
 }
 const rejects=(fn,code)=>assert.rejects(fn,e=>e.code===code);
+
+test('admin/library RPCs use the verified owner JWT, reject forged arguments, and validate loaded settings',async()=>{
+ const f=fixture(),s=await f.login();
+ try{
+  assert.deepEqual(await f.auth.adminStatus(s.accessToken),{isAdmin:false});
+  await rejects(()=>f.auth.adminUsers(s.accessToken,{query:'',offset:0}),'ADMIN_REQUIRED');
+  const input={userId:id(),strategyId:'orb_test',enabled:true,revision:0};
+  await rejects(()=>f.auth.adminGrant(s.accessToken,{...input,isAdmin:true}),'INVALID_REQUEST');
+  await rejects(()=>f.auth.adminCatalog(s.accessToken,{userId:input.userId,family:'orb',query:'',offset:-1}),'INVALID_REQUEST');
+  f.admin(true);assert.equal((await f.auth.adminStatus(s.accessToken)).isAdmin,true);
+  assert.equal((await f.auth.adminGrant(s.accessToken,input)).revision,1);
+  assert.deepEqual(await f.auth.sharedStrategies(s.accessToken),{items:[]});
+  const loaded=await f.auth.loadSharedStrategy(s.accessToken,{strategyId:'orb_test'});assert.equal(loaded.configuration.family,'orb');
+  f.shared({version:2,family:'orb'});await assert.rejects(()=>f.auth.loadSharedStrategy(s.accessToken,{strategyId:'orb_test'}));
+  const calls=f.requests.filter(r=>new URL(r.url).pathname.includes('/rpc/stratum_admin_')||new URL(r.url).pathname.includes('/rpc/stratum_load_strategy'));
+  assert.ok(calls.every(r=>r.options.headers.Authorization==='Bearer '+f.jwt));
+  assert.ok(!JSON.stringify(loaded).includes(f.jwt));
+ }finally{f.p.close();}
+});
+
+test('signed device can renew stale Supabase authority, but provider revocation still denies it',async()=>{
+ const f=fixture(),s=await f.login(),keys=keyPair(),ticket=f.p.issueEnrollment(s.accessToken);
+ const payload={enrollmentToken:ticket.enrollmentToken,publicKey:keys.publicKey,label:'Authority refresh QA'};
+ const pair=f.p.enrollInstallation({...payload,signature:signed(payload,keys.privateKey).signature});f.p.approvePairing(s.accessToken,pair.code,pair.fingerprint);f.p.activate(s.accessToken,pair.installationId);
+ const server=controlHttp(f.p,{auth:f.auth});server.listen(0,'127.0.0.1');await once(server,'listening');const agent=id();
+ async function device(path){const proof=makeProof(pair.installationId,'POST',path,{},keys.privateKey,f.now(),agent);return fetch(`http://127.0.0.1:${server.address().port}`+path,{method:'POST',headers:{'Content-Type':'application/json','X-Stratum-Proof':Buffer.from(JSON.stringify(proof)).toString('base64url')},body:'{}'});}
+ try{assert.equal((await device('/v1/device/connect')).status,200);f.advance(11000);
+  assert.equal(f.p.accessState(f.account).accessActive,false);
+  const heartbeat=await device('/v1/device/heartbeat');assert.equal(heartbeat.status,200,JSON.stringify(await heartbeat.json()));
+  f.revoke();f.advance(4000);assert.equal((await device('/v1/device/heartbeat')).status,401);
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));f.p.close();}
+});
 
 test('Supabase chat uses the owner JWT and server-bound ownership; updates persist and expiry does not hide own data',async()=>{
  const f=fixture(),s=await f.login(),v={id:id(),title:'ORB research',provider:'openrouter',locale:'tr',messages:[{role:'user',content:'0.10R'}]};

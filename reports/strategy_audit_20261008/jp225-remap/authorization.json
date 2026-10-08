@@ -1,0 +1,131 @@
+{
+  "authorizedAt": "2026-10-08T22:16:22.617Z",
+  "originalEngineHash": "0946a7af38d3f484eb047911921ecdb126fefa09f96f8758afafdb706a28a63d",
+  "sourceSymbol": "JP225s",
+  "auditSymbol": "JP225m",
+  "script": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\strategy_audit_20261008\\jp225-remap\\source\\SolAdvanced\\StrategyWindows_sol_jp225_remap.mq5",
+  "sourceSnapshots": [
+    {
+      "name": "SolAdvanced\\StrategyWindows_sol.mq5",
+      "sha256": "4bb39c9535bf0e762ca90d730d23704e9b13fc30416d0f4edb1c42a9147897cd"
+    },
+    {
+      "name": "SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+      "sha256": "72663f09214b2d8401abe6d01515999314e9b16a629ff298bbb4c6beefa3fd73"
+    },
+    {
+      "name": "SolAdvanced\\StrategyWindowMetrics.mqh",
+      "sha256": "11caf8c1b3a601b5b166b6b388c6956591bbe2d39a8cfef483e8c0de18045af3"
+    },
+    {
+      "name": "SolAdvanced\\NativeRiskBalance.mqh",
+      "sha256": "08789b2fd3d6d553a254be517c0db18146f7c3f2f8b1bb42d2dab16f13ba9092"
+    },
+    {
+      "name": "SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh",
+      "sha256": "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af"
+    },
+    {
+      "name": "SolAdvanced\\LiqNarrativeMacroRegime.mqh",
+      "sha256": "8139f4896a0c37dc0467bb69b78d2b8b588decac82ff953bf25f3c415019d44e"
+    },
+    {
+      "name": "SolAdvanced\\TradeDayCalendarPublisher.mqh",
+      "sha256": "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+    },
+    {
+      "name": "SolAdvanced\\TradeCalendarMatrix.mqh",
+      "sha256": "0edc87694a385bc4ca657e5d62699cdbd0867fd64b9be14f80c2a4d5a686ce8a"
+    },
+    {
+      "name": "SolAdvanced\\DailyTradeQuota.mqh",
+      "sha256": "b8987f09d6f626aca60864a3d21f7274907b434a8f8c69cc7602c692f9679870"
+    },
+    {
+      "name": "SolAdvanced\\AuditTradeCsv.mqh",
+      "sha256": "7cfd04cd4b7a29f6600200e2434cd74a3f818f10563eca9fe4c8832e628c182d"
+    },
+    {
+      "name": "SolAdvanced\\AuditQuantFeatures.mqh",
+      "sha256": "327a11b91a0e9713d76d4eccb1bf2b1b354fe0e795d61d5cbf771c0ea2873756"
+    },
+    {
+      "name": "SolAdvanced\\AuditKivancExport.mqh",
+      "sha256": "b57e52ce039ffdc104e45360da4cb0fbd68a1660ccd4a27a0f3c113f14bd39f1"
+    },
+    {
+      "name": "SolAdvanced\\AuditKivancFeatures.mqh",
+      "sha256": "ae805512278a4897f5a50a2537fcda0c447aa5b4228c8d1be616fcf05c47dddc"
+    },
+    {
+      "name": "SolAdvanced\\LiqROptions.mqh",
+      "sha256": "8ad32908d817778510f89e69ec023261aae45fbb1651356ff71755245a070bdf"
+    },
+    {
+      "name": "SolAdvanced\\LiqAuditQuoteCache.mqh",
+      "sha256": "0f4305ffef0e43bcceef29956e9f48d6e36b9b8c29f6422f31548568424784f7"
+    },
+    {
+      "name": "SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh",
+      "sha256": "fc4656c522b991a367add4f401bc90e47f845ece0c70ab47f37951449b81386b"
+    },
+    {
+      "name": "SolAdvanced\\LiqDashboardFit.mqh",
+      "sha256": "26bf8c6a375b56b65ef6297ed7451543f6df0eb89c97d962cf2f3b7dce99301f"
+    },
+    {
+      "name": "SolAdvanced\\LiqSolAdvancedNas.mqh",
+      "sha256": "979c93008a13deee1701668877325006164c188f25c9c07ceb834adc23239974"
+    },
+    {
+      "name": "SolAdvanced\\NasUltimate_Core.mqh",
+      "sha256": "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36"
+    },
+    {
+      "name": "NativeMarginQuote.mqh",
+      "sha256": "98a299f13d6ce30b494f9b288e5efe3bc930a2a930ca1416f3b84c35c2e01be2"
+    },
+    {
+      "name": "SolAdvanced\\LiqStrategyLibrary.mqh",
+      "sha256": "ff5a5262682febb898219d042bbbbed011d2f314845d5bd22766771ad4bd9032"
+    },
+    {
+      "name": "SolAdvanced\\LiqImagePresets.mqh",
+      "sha256": "8afc1d468129f6f67b00b4be3c44abcb5f92ec3cb34a66c2beee504923e3b4a7"
+    },
+    {
+      "name": "SolAdvanced\\LiqStrategyWindowMetrics.mqh",
+      "sha256": "59971d710a0fd031b94dd8c688d263abaa026fa60282598cd00c49979a691afa"
+    },
+    {
+      "name": "SolAdvanced\\ResearchFiveYearData.mqh",
+      "sha256": "64d3cded9d3d73a0568da8dba97c76b10868f328d3cd43e83ca66fab20fe1827"
+    },
+    {
+      "name": "ResearchFiveYearLeaderboard.mqh",
+      "sha256": "7415b9940e3f0b84bc379a5da6a2003de6faaafeb27b95415abf61c7dc0ca40a"
+    },
+    {
+      "name": "SolAdvanced\\AuditTradeCsvAdapter.mqh",
+      "sha256": "9df4a7b3ece00a3da0f5c49ce1512a429dee90f26854295bdf07a8921a5b8240"
+    },
+    {
+      "name": "SolAdvanced\\AuditSignalFeatures.mqh",
+      "sha256": "f6423ed0b7eaeefd6dc0f6415ad6deee7bd1a37c4df2c8a773dc58a6d52a8d2a"
+    }
+  ],
+  "jobs": [
+    {
+      "id": "sol_845016e38abd3c5ad1b10aca129f",
+      "name": "Legacy_JP225_H2M30_2R",
+      "origin": "image:Legacy_JP225_H2M30_2R",
+      "inputsHash": "1bee729f71d1df949f7753aa282c7f8fde68816d5007d931d7d6dc8e0a3a46a4"
+    },
+    {
+      "id": "sol_075493b65422ee9909236ea048f1",
+      "name": "Legacy_JP225_H2H1_2R",
+      "origin": "image:Legacy_JP225_H2H1_2R",
+      "inputsHash": "1bee729f71d1df949f7753aa282c7f8fde68816d5007d931d7d6dc8e0a3a46a4"
+    }
+  ]
+}

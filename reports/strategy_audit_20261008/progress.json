@@ -1,0 +1,13 @@
+﻿{
+    "strategies":  188,
+    "sourceHash":  "0946a7af38d3f484eb047911921ecdb126fefa09f96f8758afafdb706a28a63d",
+    "finished":  "2026-10-09T01:20:05.0063178+03:00",
+    "state":  "finished",
+    "resultRows":  1692,
+    "errorsThisRun":  19,
+    "validWindows":  1590,
+    "completedThisRun":  186,
+    "validFiveYear":  172,
+    "completedTotal":  188,
+    "jp225RemapFinished":  "2026-10-09T01:22:57.1183198+03:00"
+}

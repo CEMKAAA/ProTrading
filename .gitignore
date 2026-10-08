@@ -36,3 +36,8 @@ build/
 # Local LLM model weights
 *.gguf
 GeminiExamples/models/
+reports/admin_catalog/catalog.private.json
+reports/admin_catalog/upload-*.sql
+reports/admin_catalog/audit-input-profiles.private.json
+reports/strategy_audit_20261008/source/
+reports/strategy_audit_20261008/manifest.private.json

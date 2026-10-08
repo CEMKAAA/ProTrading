@@ -32,7 +32,11 @@ blocked. All other new presets use Advanced's inactive RF master, allowed macro
 buckets, and blocked RF rules as a safe default.
 
 The preset lookup requires an exact EA family and photographed MT5 symbol
-(`JP225m` is distinct from `JP225s`). It changes only the visible dashboard
+(`JP225m` is distinct from `JP225s`). Explicit user approval on 2026-10-09 also
+allows the two archived `Legacy_JP225_*` presets on `JP225m`; their photographed
+`JP225s` source labels remain intact. Their new campaign results use the actual
+`JP225m` feed, with unchanged preset settings, not the original screenshot PnL.
+It changes only the visible dashboard
 settings represented in `LiqImagePresets.mqh`; it does not import hidden Inputs,
 risk percentage, channel, bridge path, or listener state. Re-audit a migrated
 preset on the actual broker feed before considering live use.

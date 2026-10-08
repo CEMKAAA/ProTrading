@@ -1,0 +1,114 @@
+﻿{
+    "behavior":  "checks=26 failed=0 order_attempts=0",
+    "files":  [
+                  {
+                      "sha256":  "64D3CDED9D3D73A0568DA8DBA97C76B10868F328D3CD43E83CA66FAB20FE1827",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\ResearchFiveYearData.mqh"
+                  },
+                  {
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh"
+                  },
+                  {
+                      "sha256":  "8AFC1D468129F6F67B00B4BE3C44ABCB5F92EC3CB34A66C2BEEE504923E3B4A7",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqImagePresets.mqh"
+                  },
+                  {
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditSignalFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqDashboardFit.mqh"
+                  },
+                  {
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\TradeDayCalendarPublisher.mqh"
+                  },
+                  {
+                      "sha256":  "0F4305FFEF0E43BCCEEF29956E9F48D6E36B9B8C29F6422F31548568424784F7",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqAuditQuoteCache.mqh"
+                  },
+                  {
+                      "sha256":  "9FB3055ED7AB8FA09399E898C6D3314B055AAF425F8768DCFCB1106E46AB6D73",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5"
+                  },
+                  {
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\NativeRiskBalance.mqh"
+                  },
+                  {
+                      "sha256":  "59971D710A0FD031B94DD8C688D263ABAA026FA60282598CD00C49979A691AFA",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqStrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\DailyTradeQuota.mqh"
+                  },
+                  {
+                      "sha256":  "7415B9940E3F0B84BC379A5DA6A2003DE6FAAAFEB27B95415ABF61C7DC0CA40A",
+                      "relative":  "IndicatorCodeExamples\\ResearchFiveYearLeaderboard.mqh"
+                  },
+                  {
+                      "sha256":  "FC4656C522B991A367ADD4F401BC90E47F845ECE0C70AB47F37951449B81386B",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh"
+                  },
+                  {
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditTradeCsv.mqh"
+                  },
+                  {
+                      "sha256":  "8AD32908D817778510F89E69EC023261AAE45FBB1651356FF71755245A070BDF",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqROptions.mqh"
+                  },
+                  {
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\TradeCalendarMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditKivancFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "5257FB821A4A3D0CB3CCBA7A87CE1246B2693582CE020EAF3DAF2DBA42DCD65A",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqStrategyLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "98A299F13D6CE30B494F9B288E5EFE3BC930A2A930CA1416F3B84C35C2E01BE2",
+                      "relative":  "IndicatorCodeExamples\\NativeMarginQuote.mqh"
+                  },
+                  {
+                      "sha256":  "11CAF8C1B3A601B5B166B6B388C6956591BBE2D39A8CFEF483E8C0DE18045AF3",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\StrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\NasUltimate_Core.mqh"
+                  },
+                  {
+                      "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeMacroRegime.mqh"
+                  },
+                  {
+                      "sha256":  "979C93008A13DEEE1701668877325006164C188F25C9C07CEB834ADC23239974",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqSolAdvancedNas.mqh"
+                  },
+                  {
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditKivancExport.mqh"
+                  },
+                  {
+                      "sha256":  "9DF4A7B3ECE00A3DA0F5C49CE1512A429DEE90F26854295BDF07A8921A5B8240",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditTradeCsvAdapter.mqh"
+                  },
+                  {
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditQuantFeatures.mqh"
+                  }
+              ],
+    "source":  "9FB3055ED7AB8FA09399E898C6D3314B055AAF425F8768DCFCB1106E46AB6D73",
+    "binary":  "B877E81856B83AD66D7076898DDC4169BA550D2E0F52ADB2F8DB9808E38A59FF",
+    "compile":  "0 errors, 0 warnings",
+    "library":  "5257FB821A4A3D0CB3CCBA7A87CE1246B2693582CE020EAF3DAF2DBA42DCD65A",
+    "checkedAt":  "2026-10-09T00:07:33.8577538+03:00"
+}

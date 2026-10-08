@@ -1,0 +1,10 @@
+catalog_id,native_id,name,symbol,chart_tf,weeks,total,wins,losses,open,flat,data,net_r,min_cum_r,as_of,status,metrics_saved,independent,elapsed_ms,detail,order_attempts
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,260,888,452,436,0,0,0,38.036500000000,-8.736250000000,1791496521,AUDITED,1,0,6094,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,208,735,383,352,0,0,0,42.373250000000,-4.399500000000,1791496527,AUDITED,1,0,656,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,156,577,301,276,0,0,0,30.227500000000,-7.324250000000,1791496528,AUDITED,1,0,484,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,104,386,202,184,0,0,0,21.389000000000,-9.845750000000,1791496528,AUDITED,1,0,344,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,52,211,113,98,0,0,0,14.729500000000,-9.195000000000,1791496529,AUDITED,1,0,219,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,20,88,51,37,0,0,0,13.932500000000,0.000000000000,1791496529,AUDITED,1,0,141,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,10,40,23,17,0,0,0,5.991500000000,-1.000000000000,1791496529,AUDITED,1,0,125,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,5,21,10,11,0,0,0,-1.000000000000,-7.000000000000,1791496529,AUDITED,1,0,62,,0
+orb_9177b889acda0020b6cfdcde2d8d,jp_1r_challenge,4Kaybetmeden4KazanmaChallengeModeli,JP225m,15,2,7,6,1,0,0,0,5.000000000000,0.000000000000,1791496529,AUDITED,1,0,63,,0

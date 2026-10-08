@@ -1,0 +1,758 @@
+﻿{
+    "behavior":  "checks=29 failed=0 order_attempts=0",
+    "binaries":  [
+                     {
+                         "sha256":  "8E5AEEC50BAAB4E8184FDE1F86A498BD1DAC965FD6ADCCC0F8675C4BD0ACC954",
+                         "relative":  "IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.ex5"
+                     },
+                     {
+                         "sha256":  "0C6B8BB62589599D47C46CEC90E7189BB6118937B62A21E50532D4CE1BC4119E",
+                         "relative":  "IndicatorCodeExamples/macrossover_orb/MaCrossOverOrbEA.ex5"
+                     },
+                     {
+                         "sha256":  "E7FD2A3ED3F29A8592604F3855D61054F1AEAB9E067C9B5B478128CED5A2A622",
+                         "relative":  "IndicatorCodeExamples/entry_engine_lab/EntryEngineLabEA.ex5"
+                     },
+                     {
+                         "sha256":  "63182CF4476FD9476469F9AF59039573ED289A5A0B98E854BBB86A0AF8F57D29",
+                         "relative":  "IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.ex5"
+                     },
+                     {
+                         "sha256":  "F5245FC62C4541F5492BACC7D637E6EE916922818AD91ABC083F7B74343D9C80",
+                         "relative":  "tests/mql5/StrategyWindowSortProbe.ex5"
+                     }
+                 ],
+    "files":  [
+                  {
+                      "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbReplayMemoEpoch.mqh"
+                  },
+                  {
+                      "sha256":  "8D0EF15251BE1478F6CE8B945171F3B044AFCD7672ADA694B340F49463F015A5",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.mq5"
+                  },
+                  {
+                      "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyMLCore.mqh"
+                  },
+                  {
+                      "sha256":  "11CAF8C1B3A601B5B166B6B388C6956591BBE2D39A8CFEF483E8C0DE18045AF3",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\StrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "72A43B364FC328AD7CF30C48EFC9653B7B43FABF41291F16393F316E5A6303A8",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyLeaderboardFiveYear.mqh"
+                  },
+                  {
+                      "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditTickReadGuard.mqh"
+                  },
+                  {
+                      "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLHistory.mqh"
+                  },
+                  {
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditKivancExport.mqh"
+                  },
+                  {
+                      "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyModelSlot.mqh"
+                  },
+                  {
+                      "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLCore.mqh"
+                  },
+                  {
+                      "sha256":  "C20C93DFC63838388EA38B3418EBBC70C5B9E8DA3F5F21A696CA1400BFD61BBD",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbUltimate_ProfessionalPipeline.mqh"
+                  },
+                  {
+                      "sha256":  "4A2150E3D695FDF61C7B15B848DCCDA18BA9CA8875D78BB2F4C95915B4DB41A9",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyLeaderboard.mqh"
+                  },
+                  {
+                      "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbCustomRPicker.mqh"
+                  },
+                  {
+                      "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditMemoIndex.mqh"
+                  },
+                  {
+                      "sha256":  "11CAF8C1B3A601B5B166B6B388C6956591BBE2D39A8CFEF483E8C0DE18045AF3",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\StrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "F9A11D687C5121D1F3257848DA32460A2B07654F1A188947A88367D4C17C5038",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbPositionRuntime.mqh"
+                  },
+                  {
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditSignalFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "2A8A0445F6BFB461ECF19796DA98F207DE13A7C3D8D073DB041FA9857E19B2ED",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyMLConfig.mqh"
+                  },
+                  {
+                      "sha256":  "3B9EDB4FAF42305CFD98F27E6469BD3F81DEBFF2FE6301069F26642AD29E7FC4",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditTradeCsvAdapter.mqh"
+                  },
+                  {
+                      "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbAuditRamCache.mqh"
+                  },
+                  {
+                      "sha256":  "BFB68DB44C8C98411FF94599BF16C4B6CC6F04855C188657D83C02BE7793E8FF",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyUserContract.mqh"
+                  },
+                  {
+                      "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyCampaignRegistry.mqh"
+                  },
+                  {
+                      "sha256":  "1FA7A7D46CCC5321848AD94DA24F451E67B9E85537152895DAF0BD0D0ED62493",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossEventAudit.mqh"
+                  },
+                  {
+                      "sha256":  "BC6B3B2C3696EF252CE409BB64CEE64680767A478EC21FA8FC31A63C2F89A0C0",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LabPolicyRuntime.mqh"
+                  },
+                  {
+                      "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLPipeline.mqh"
+                  },
+                  {
+                      "sha256":  "41ECE53A16DB6BA97D458D1621CE0E93652C1B5E42A1B796D56767CF553B2F96",
+                      "relative":  "IndicatorCodeExamples\\NativeMarginPreview.mqh"
+                  },
+                  {
+                      "sha256":  "4261ADFC356D9794BCA3498343ABA38B94E62196139BBE82D220DC4ED8A9B575",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\ResearchFiveYearData.mqh"
+                  },
+                  {
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditSignalFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "59C69653AED47A53F757E0146B8F5F72417FF6B661302B5475906E00CE0F0B59",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaOrderFlowLeaderboardData.mqh"
+                  },
+                  {
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\TradeDayCalendarPublisher.mqh"
+                  },
+                  {
+                      "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditTickReadGuard.mqh"
+                  },
+                  {
+                      "sha256":  "ACF1F11D649E79AB838A9D886B96E4FEE78D7C7847BAD0F0082348B44E440140",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyCampaignModels.mqh"
+                  },
+                  {
+                      "sha256":  "0083FAC0A5183AFB60B1F55733E6668B08B41B983F144226DCAAEB609A38DDAC",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LabEntryBuilder.mqh"
+                  },
+                  {
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditKivancFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "99564D81FA5BD632717F26FFF89370436F92D7FA6765CC0B57D209008A5788E9",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaOrderFlowLeaderboardData.mqh"
+                  },
+                  {
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditQuantFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditKivancFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "1D57AE08F5AC76F621DF7F7E77ACC17009B7880D2C468A557E2592B144D297E6",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "64D3CDED9D3D73A0568DA8DBA97C76B10868F328D3CD43E83CA66FAB20FE1827",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\ResearchFiveYearData.mqh"
+                  },
+                  {
+                      "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyPresetLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditTickReadGuard.mqh"
+                  },
+                  {
+                      "sha256":  "9734C7847AF331F049452B8C7A3B2E14BE594D1795DAD58936EB1C77AB92654C",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\NativeRiskBalance.mqh"
+                  },
+                  {
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh"
+                  },
+                  {
+                      "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyCampaignRegistry.mqh"
+                  },
+                  {
+                      "sha256":  "979C93008A13DEEE1701668877325006164C188F25C9C07CEB834ADC23239974",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqSolAdvancedNas.mqh"
+                  },
+                  {
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\NasUltimate_Core.mqh"
+                  },
+                  {
+                      "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyR7Runtime.mqh"
+                  },
+                  {
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditKivancExport.mqh"
+                  },
+                  {
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LiqNarrativeSol_RegimeV3.mqh"
+                  },
+                  {
+                      "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyModelSlot.mqh"
+                  },
+                  {
+                      "sha256":  "9BE54AC72E5E877CB94C91FBC43B52E7757FDCF11B94E52B8D32E282679B29AA",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.mq5"
+                  },
+                  {
+                      "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyPresetLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\TradeCalendarMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "11CAF8C1B3A601B5B166B6B388C6956591BBE2D39A8CFEF483E8C0DE18045AF3",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\StrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "DED19E9A34D630CB516B3524DC4173C04AC11D0E0A5BFBBB45CFED6FD7421AC3",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaOrderFlowSettings.mqh"
+                  },
+                  {
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\LiqNarrativeSol_RegimeV3.mqh"
+                  },
+                  {
+                      "sha256":  "10476A951E7549A267A64215A445BA784228AA456A4BF4BECE83939684465F4B",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossSignalCore.mqh"
+                  },
+                  {
+                      "sha256":  "1D2CA06B6E1222C8E5060B48CD9C1B7806F72D19F4DC24ADB6B009BB67171EE5",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditTradeCsvAdapter.mqh"
+                  },
+                  {
+                      "sha256":  "28311DDB3E22E64BD5A0EE309CD3C6303FCC528EFA3785C07667566D74E3DF48",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LabEntryLogic.mqh"
+                  },
+                  {
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+                      "relative":  "IndicatorCodeExamples\\orb\\NativeRiskBalance.mqh"
+                  },
+                  {
+                      "sha256":  "ACF1F11D649E79AB838A9D886B96E4FEE78D7C7847BAD0F0082348B44E440140",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyCampaignModels.mqh"
+                  },
+                  {
+                      "sha256":  "F0F1ECC590FC624DB9D840EB260FA0F8A7D04B623259C37F09A87DCF78E91019",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.mq5"
+                  },
+                  {
+                      "sha256":  "8AD32908D817778510F89E69EC023261AAE45FBB1651356FF71755245A070BDF",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqROptions.mqh"
+                  },
+                  {
+                      "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyMLJobs.mqh"
+                  },
+                  {
+                      "sha256":  "AD394E385098D8A3981C3A8FDDB6F218CDE621C428C06354859AE6A9B67B7B06",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossPineStream.mqh"
+                  },
+                  {
+                      "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyPresetLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+                      "relative":  "IndicatorCodeExamples\\orb\\DailyTradeQuota.mqh"
+                  },
+                  {
+                      "sha256":  "C7821EC77E64D6496B802D8CFBF3A3EB23ADD4F2F5ED43786E086FF3265A5EB6",
+                      "relative":  "IndicatorCodeExamples\\orb\\ResearchFiveYearData.mqh"
+                  },
+                  {
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditTradeCsv.mqh"
+                  },
+                  {
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\DailyTradeQuota.mqh"
+                  },
+                  {
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+                      "relative":  "IndicatorCodeExamples\\orb\\TradeCalendarMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "CB7782DF62E25DEA1C31218A0794B7F85E577CD9FD0C953CA13CB89E9015A075",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyCampaignModels.mqh"
+                  },
+                  {
+                      "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+                      "relative":  "IndicatorCodeExamples\\orb\\LiqNarrativeSol_RegimeV3.mqh"
+                  },
+                  {
+                      "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyCampaignRegistry.mqh"
+                  },
+                  {
+                      "sha256":  "073012440783509CA7774C9D94ABD08D7389DB7B00D2D5DA3DD08E397D3DA041",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditTradeCsv.mqh"
+                  },
+                  {
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\NativeRiskBalance.mqh"
+                  },
+                  {
+                      "sha256":  "311CA73BA3169C00FB6A95EC91F4FD4DF035F4B7023414A40EBAE7C940804CC9",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbPositionPolicy.mqh"
+                  },
+                  {
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\NasUltimate_Core.mqh"
+                  },
+                  {
+                      "sha256":  "29C3C5011C71C0F2ACBCA688685FBAB6E9C1DD6BE0B0D3359167CD7A374C7F51",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbUltimate_ProfessionalPipeline.mqh"
+                  },
+                  {
+                      "sha256":  "A11CEFEA8526710E5DF10839DE8C6CBFC89D5C23E00793E9DD51652F711DCCEB",
+                      "relative":  "tests\\mql5\\StrategyWindowSortProbe.mq5"
+                  },
+                  {
+                      "sha256":  "4A1A769BFCCF5BF9DF707FBBF1964C117434AC75D39792F37DEE75234309D74D",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLJobs.mqh"
+                  },
+                  {
+                      "sha256":  "36EFCC535A2B5CE58E83F4C809E8F08D1373C66A6DA684D172C68732870CFBF7",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyRegimeLeaderboard.mqh"
+                  },
+                  {
+                      "sha256":  "944DC0AAFC521113537A5424E4852911F1898F9222EF089A212FF6DDD24207CB",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbAdvancedAuditEngine.mqh"
+                  },
+                  {
+                      "sha256":  "1D035BBA91FFE8304AAFB305C3BD93B154BAC5A853661F8E58334D301960768B",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyMLPipeline.mqh"
+                  },
+                  {
+                      "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyMLHistory.mqh"
+                  },
+                  {
+                      "sha256":  "9A357A5FBE9AC8D605B7E05621E2C2C1EC3E7C9C404C18B6BB3485FA5C6DB2CB",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaTrendFollowCore.mqh"
+                  },
+                  {
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditKivancFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditQuantFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbCustomRPicker.mqh"
+                  },
+                  {
+                      "sha256":  "B51A2A3BFB95DA7BB5684AAFB059A3A4CEF9BA7C2F18C967CC5517DD2246E694",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\NativeMarginPreview.mqh"
+                  },
+                  {
+                      "sha256":  "125051DAE8E4FFAA4CF9864D6441E1E96CDF892F6B417A8C98D22C66DA3D979C",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserContract.mqh"
+                  },
+                  {
+                      "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbUltimate_RegimeMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "9DF4A7B3ECE00A3DA0F5C49CE1512A429DEE90F26854295BDF07A8921A5B8240",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditTradeCsvAdapter.mqh"
+                  },
+                  {
+                      "sha256":  "714B24965B31B50F24402A22922754F57E39C5195B7409C529464536B1987E45",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaIndependentEntries.mqh"
+                  },
+                  {
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditSignalFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "8B7A69001ADD4E72D4D55D3C501746D0640D655315939EB2AE15E24CBB72B29C",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbAdvancedAuditEngine.mqh"
+                  },
+                  {
+                      "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyR7Runtime.mqh"
+                  },
+                  {
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\TradeCalendarMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "09BFC9627EDFA85FC89BFC1ECA5ED992909D3C14AB2925685F77343DC3F5A06A",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaIndependentEntries.mqh"
+                  },
+                  {
+                      "sha256":  "617CF3B50D555E6F703F14BA8A34416774A67B7C039D3C1FF4CB6DD7F5F058CE",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbBrokerClockProfiles.mqh"
+                  },
+                  {
+                      "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyR7Runtime.mqh"
+                  },
+                  {
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditQuantFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "98A299F13D6CE30B494F9B288E5EFE3BC930A2A930CA1416F3B84C35C2E01BE2",
+                      "relative":  "IndicatorCodeExamples\\NativeMarginQuote.mqh"
+                  },
+                  {
+                      "sha256":  "957A226AC54A2F8A92699C08CE2ED5C46887FC5A5282C1EC41AE589008C63D5D",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbBrokerTimezone.mqh"
+                  },
+                  {
+                      "sha256":  "26BF8C6A375B56B65EF6297ED7451543F6DF0EB89C97D962CF2F3B7DCE99301F",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqDashboardFit.mqh"
+                  },
+                  {
+                      "sha256":  "ED736D13AC6D0E82161D11A237EFC625AAECE2C22DF81EA00D8A05AD9D2E8F4F",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbMoneyRisk.mqh"
+                  },
+                  {
+                      "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbAuditRamCache.mqh"
+                  },
+                  {
+                      "sha256":  "4928221BB66C5CB55DB661FDE8635E1EEBC711B1FA767CFFE0B228CC224C4BF0",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LabParameterizedFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "11CAF8C1B3A601B5B166B6B388C6956591BBE2D39A8CFEF483E8C0DE18045AF3",
+                      "relative":  "IndicatorCodeExamples\\orb\\StrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditKivancFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "F39B8A6FE69972F278AD14BEB6E68C38C7B133A6BC56D6F9F4C0C4973272B5C4",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaCrossEventAudit.mqh"
+                  },
+                  {
+                      "sha256":  "AEE5555F43B7220A13E33FB1FCE3D7EB04F547414C0C13562DE7948C8CA78997",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLConfig.mqh"
+                  },
+                  {
+                      "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\TradeCalendarMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbCustomRPicker.mqh"
+                  },
+                  {
+                      "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditSignalFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "9FB3055ED7AB8FA09399E898C6D3314B055AAF425F8768DCFCB1106E46AB6D73",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5"
+                  },
+                  {
+                      "sha256":  "0F4305FFEF0E43BCCEEF29956E9F48D6E36B9B8C29F6422F31548568424784F7",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqAuditQuoteCache.mqh"
+                  },
+                  {
+                      "sha256":  "8226A77F2D9B4ADCF778B4CB306F903B23CFB2EA5D072D1970C50F349C84465B",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossOrderFlowCore.mqh"
+                  },
+                  {
+                      "sha256":  "7415B9940E3F0B84BC379A5DA6A2003DE6FAAAFEB27B95415ABF61C7DC0CA40A",
+                      "relative":  "IndicatorCodeExamples\\ResearchFiveYearLeaderboard.mqh"
+                  },
+                  {
+                      "sha256":  "7C2633C9712845542D9199C82134E7FF7B8C7225D4249E11C70A205E48740433",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyUserMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "9A357A5FBE9AC8D605B7E05621E2C2C1EC3E7C9C404C18B6BB3485FA5C6DB2CB",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaTrendFollowCore.mqh"
+                  },
+                  {
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+                      "relative":  "IndicatorCodeExamples\\orb\\NasUltimate_Core.mqh"
+                  },
+                  {
+                      "sha256":  "9D7CCFAE80DFE0BBC054C3A52A91C98186F2A195D8E1D80365F6758BC9DFCD85",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LabNativeTradeVisuals.mqh"
+                  },
+                  {
+                      "sha256":  "FC4656C522B991A367ADD4F401BC90E47F845ECE0C70AB47F37951449B81386B",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh"
+                  },
+                  {
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+                      "relative":  "IndicatorCodeExamples\\orb\\TradeDayCalendarPublisher.mqh"
+                  },
+                  {
+                      "sha256":  "F3072DA1E168B8A9B8DA03B686263B2EA0B2B1D11EBD9D444E261A5B685439D2",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaHistoricalVisualCache.mqh"
+                  },
+                  {
+                      "sha256":  "5257FB821A4A3D0CB3CCBA7A87CE1246B2693582CE020EAF3DAF2DBA42DCD65A",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqStrategyLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "8EB983C18508E97CEC540FA996B06D911175F8A4BF9F6B3E85AEFE3FFEFA2CAE",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "CEDB29779D4582676D412902890C36AEC3C8E5564F709FB467887D864391642A",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\ResearchFiveYearData.mqh"
+                  },
+                  {
+                      "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLHistory.mqh"
+                  },
+                  {
+                      "sha256":  "59971D710A0FD031B94DD8C688D263ABAA026FA60282598CD00C49979A691AFA",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqStrategyWindowMetrics.mqh"
+                  },
+                  {
+                      "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbAuditRamCache.mqh"
+                  },
+                  {
+                      "sha256":  "A89ED95C90E7028EDABB199DEBDC3BD11C687EE78EC1D701C5B0CBA20C7880DE",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaExitPolicy.mqh"
+                  },
+                  {
+                      "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyModelSlot.mqh"
+                  },
+                  {
+                      "sha256":  "189FA2866DA294800E06A68D77838BDA88C1AFA975F75CB4B25C5A0A04D682B9",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbUltimate_ProfessionalPipeline.mqh"
+                  },
+                  {
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\TradeDayCalendarPublisher.mqh"
+                  },
+                  {
+                      "sha256":  "231D6BAAA3F1565503B1DD95A2D0839F15EC95DE6B274BD8864D2814FD403FB2",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbAdvancedAuditEngine.mqh"
+                  },
+                  {
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditKivancExport.mqh"
+                  },
+                  {
+                      "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbUltimate_RegimeMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "284512AEED76006C6C1420F8E83F169189DFDB6C5C96154640724BDB4854FFEB",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyUserLibrary.mqh"
+                  },
+                  {
+                      "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\NativeRiskBalance.mqh"
+                  },
+                  {
+                      "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditMemoIndex.mqh"
+                  },
+                  {
+                      "sha256":  "3BC455829E2609973CB96F921191C5F1FA17F32FBEB5F0C6CDE444B027158992",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbClockDashboard.mqh"
+                  },
+                  {
+                      "sha256":  "64C8995813F045227DE399560EF5E9D0C848DFD03DD651DD6D5BE8C62993AEE7",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaCrossPineStream.mqh"
+                  },
+                  {
+                      "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditMemoIndex.mqh"
+                  },
+                  {
+                      "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLJobs.mqh"
+                  },
+                  {
+                      "sha256":  "8139F4896A0C37DC0467BB69B78D2B8B588DECAC82FF953BF25F3C415019D44E",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeMacroRegime.mqh"
+                  },
+                  {
+                      "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyR7Core.mqh"
+                  },
+                  {
+                      "sha256":  "A83D41915C5653527F0924042450586A22D7E1B5D742A066F784A15757461940",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaCrossOrderFlow.mqh"
+                  },
+                  {
+                      "sha256":  "DED19E9A34D630CB516B3524DC4173C04AC11D0E0A5BFBBB45CFED6FD7421AC3",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaOrderFlowSettings.mqh"
+                  },
+                  {
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\AuditTradeCsv.mqh"
+                  },
+                  {
+                      "sha256":  "6CA978CF36D7106ED16E5F1A43C263895120497C5B52A09142D781E105E5E86E",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserContract.mqh"
+                  },
+                  {
+                      "sha256":  "D28D17B82E769604FE36A4640A2F6677D5754BE6A266822573FC68DC3B0D3133",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyLeaderboardData.mqh"
+                  },
+                  {
+                      "sha256":  "010A59467A5F6C2618374056A9310612F9EC1E9F3CF909308C4468BD9A99385A",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaCrossAuditCache.mqh"
+                  },
+                  {
+                      "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyR7Core.mqh"
+                  },
+                  {
+                      "sha256":  "1BFCD200D39EE44C4171C3A18716E9B83DA4A44E9EC788929855C64B6A3C12F0",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaOrderFlowLeaderboard.mqh"
+                  },
+                  {
+                      "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditQuantFeatures.mqh"
+                  },
+                  {
+                      "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbReplayMemoEpoch.mqh"
+                  },
+                  {
+                      "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+                      "relative":  "IndicatorCodeExamples\\orb\\OrbStrategyR7Core.mqh"
+                  },
+                  {
+                      "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbUltimate_RegimeMatrix.mqh"
+                  },
+                  {
+                      "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+                      "relative":  "IndicatorCodeExamples\\orb\\AuditTradeCsv.mqh"
+                  },
+                  {
+                      "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbReplayMemoEpoch.mqh"
+                  },
+                  {
+                      "sha256":  "AEE5555F43B7220A13E33FB1FCE3D7EB04F547414C0C13562DE7948C8CA78997",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLConfig.mqh"
+                  },
+                  {
+                      "sha256":  "F3072DA1E168B8A9B8DA03B686263B2EA0B2B1D11EBD9D444E261A5B685439D2",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaHistoricalVisualCache.mqh"
+                  },
+                  {
+                      "sha256":  "DB949D32D9CF201507FA5C08AE864EC19BAD74C970EB525AF112E487677E3E76",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\LabScalperPresets.mqh"
+                  },
+                  {
+                      "sha256":  "DC0E5BAE39A6D961737D4F6063EEC9B2166AC741CDEC2CA35D04E81A0891AEC3",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\AuditTradeCsvAdapter.mqh"
+                  },
+                  {
+                      "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\AuditKivancExport.mqh"
+                  },
+                  {
+                      "sha256":  "7F5560BF2872C06D23F7170B265E8B032B394C18990054A37B7551EE651E5AD3",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossAuditCache.mqh"
+                  },
+                  {
+                      "sha256":  "8226A77F2D9B4ADCF778B4CB306F903B23CFB2EA5D072D1970C50F349C84465B",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaCrossOrderFlowCore.mqh"
+                  },
+                  {
+                      "sha256":  "60650230A1A91FAB37E01D00B139D56DD9A3BBB6B87117A9663F3B20549E5B3B",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqImagePresets.mqh"
+                  },
+                  {
+                      "sha256":  "A3A6CA755BB1137660A3698B15B286D630AB943F954DD5F6BC346D3F9A497C34",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\MaCrossSignalCore.mqh"
+                  },
+                  {
+                      "sha256":  "1BFCD200D39EE44C4171C3A18716E9B83DA4A44E9EC788929855C64B6A3C12F0",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaOrderFlowLeaderboard.mqh"
+                  },
+                  {
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\DailyTradeQuota.mqh"
+                  },
+                  {
+                      "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLCore.mqh"
+                  },
+                  {
+                      "sha256":  "A83D41915C5653527F0924042450586A22D7E1B5D742A066F784A15757461940",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossOrderFlow.mqh"
+                  },
+                  {
+                      "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\NasUltimate_Core.mqh"
+                  },
+                  {
+                      "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLPipeline.mqh"
+                  },
+                  {
+                      "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+                      "relative":  "IndicatorCodeExamples\\SolAdvanced\\TradeDayCalendarPublisher.mqh"
+                  },
+                  {
+                      "sha256":  "2021367C1F71FA9AEBD9688F93ACAEDF6378BF7779CBAFCA06898E9D179F90AD",
+                      "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaExitPolicy.mqh"
+                  },
+                  {
+                      "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+                      "relative":  "IndicatorCodeExamples\\entry_engine_lab\\DailyTradeQuota.mqh"
+                  }
+              ],
+    "compile":  "0 errors, 0 warnings",
+    "sortImplementation":  "11CAF8C1B3A601B5B166B6B388C6956591BBE2D39A8CFEF483E8C0DE18045AF3",
+    "checkedAt":  "2026-10-09T01:31:25.2919774+03:00"
+}

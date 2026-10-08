@@ -1,0 +1,6 @@
+{
+  "control-plane.mjs": "abde0578d6100f5c65218f7fa8bfb788f4f44e53b35b06e39be13a184e52ed31",
+  "supabase-auth.mjs": "b2deb1010a8192294ba91157569e052764602b9bc80ad15123630b2bec63ef74",
+  "http.mjs": "89a1780c2fc819ab9d7cc34af586372b6c6987da4d4d8df8d685232f500c5f08",
+  "delivery.mjs": "5ca040dc7fc0ef0cff858de4b5fd6a69d5931612ac1d1c51cf215ed83842a4c5"
+}

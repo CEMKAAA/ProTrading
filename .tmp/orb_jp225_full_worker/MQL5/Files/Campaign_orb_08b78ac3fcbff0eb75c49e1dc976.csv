@@ -1,0 +1,10 @@
+catalog_id,native_id,name,symbol,chart_tf,weeks,total,wins,losses,open,flat,data,net_r,min_cum_r,as_of,status,metrics_saved,independent,elapsed_ms,detail,order_attempts
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,260,682,414,268,0,0,0,3.645083333333,-6.494500000000,1791496219,AUDITED,1,0,4797,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,208,563,354,209,0,0,0,4.560000000000,-5.579583333333,1791496224,AUDITED,1,0,1375,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,156,426,285,141,0,0,0,5.537916666667,-4.601666666667,1791496226,AUDITED,1,0,937,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,104,275,190,85,0,0,0,5.327166666667,-4.812416666667,1791496227,AUDITED,1,0,750,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,52,137,113,24,0,0,0,8.190500000000,-0.260833333333,1791496227,AUDITED,1,0,406,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,20,48,43,5,0,0,0,3.899500000000,0.000000000000,1791496228,AUDITED,1,0,203,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,10,28,25,3,0,0,0,1.468333333333,0.000000000000,1791496228,AUDITED,1,0,157,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,5,16,14,2,0,0,0,0.100000000000,-1.250000000000,1791496228,AUDITED,1,0,78,,0
+orb_08b78ac3fcbff0eb75c49e1dc976,jp_015_state_add,jp225VeryHighWRWithGateState,JP225m,5,2,7,7,0,0,0,0,1.050000000000,0.000000000000,1791496228,AUDITED,1,0,47,,0

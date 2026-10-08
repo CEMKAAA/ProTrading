@@ -17,6 +17,7 @@ import type { AgentPlan } from '@/lib/studio-agent';
 import type { TutorMood } from '@/lib/tutor-behavior';
 import {requestEaPackage,downloadEaBlob} from '@/lib/ea-download';
 import EaActivationGuide from './ea-activation-guide';
+import SharedStrategyLibrary from './shared-strategy-library';
 
 const API=CONTROL_API;
 const families:Record<Family,string>={entrylab:"Entry Lab",macross:"MA Crossover",orb:"Opening Range",sol:"Liquidity Narrative"};
@@ -237,6 +238,8 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
       description={panel==="library"?"Your private saved configurations. Select a loadout to bring its exact settings onto the desk.":"Edits stay in your draft when this window closes. Apply sends the settings to MT5; it never turns trading on."}
       footer={<><span className="console-draft"><i/><UiText>{dirty?"Draft changes / not sent to MT5":"Applied configuration"}</UiText></span><button type="button" className="secondary-btn" onClick={()=>setWindowOpen(false)}><Check size={16}/><UiText>{"Keep & close"}</UiText></button><button type="button" className="primary-btn" disabled={!!auditBlock||busy} onClick={()=>void action(async()=>{await apply();setWindowOpen(false);})}><Activity size={16}/><UiText>{"Apply & audit"}</UiText></button></>}>
       {panel==="library"?<>
+        <SharedStrategyLibrary credential={credential} onLoad={(configuration,symbol)=>{setConfig(configuration);setGroup("Entry / Execution");setQuery("");setWindowOpen(false);setAuthNotice(`${t('Loaded for')} ${symbol}. ${t('Attach the connection EA to the matching instrument before running an audit.')}`);}}/>
+        <h3><UiText>Your saved setups</UiText></h3>
         <div className="guide-inline guide-section-intro"><p>{localizedHelp(helpTopics.library,locale).summary}<UiText>{" Loading only updates the draft."}</UiText></p><HelpButton topic="library"/></div>
         <div className="uc-library-save"><label><UiText>{"Setup name"}</UiText><input value={config.name} maxLength={70} onChange={e=>setConfig(c=>({...c,name:e.target.value}))}/></label><button type="button" className="primary-btn" disabled={!session?.subscriptionActive||busy||!!validation} onClick={()=>void action(async()=>{const c=prepare(config);await api("/v1/strategies",credential,c);setStrategies((await api<{strategies:UniversalConfiguration[]}>("/v1/strategies",credential)).strategies);})}><Save size={17}/><UiText>{"Save / Update"}</UiText></button></div>
         <label className="uc-library-search"><Search size={19}/><input value={strategyQuery} onChange={e=>setStrategyQuery(e.target.value)} placeholder={t("Find your strategy...")} aria-label={t("Search saved strategies")}/></label>

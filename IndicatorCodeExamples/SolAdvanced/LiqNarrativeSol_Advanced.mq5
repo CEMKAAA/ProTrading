@@ -4,6 +4,7 @@
 //| Dashboard, historical audit, brute-force backtest, risk engine.   |
 //+------------------------------------------------------------------+
 #property strict
+#include "StrategyWindowMetrics.mqh"
 #property version "1.13"
 
 #include <Trade/Trade.mqh>
@@ -3163,6 +3164,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       Print("SolAdvanced audit stages raw=",rawMs,"ms macro=",macroMs,"ms rf=",rfMs,
          "ms nas=",nasMs,"ms result=",resultMs,"ms");
    AxCollectSol();AxSealCurrent();
+   LiqWindowAuditCompleted();
    EndHistoricalAuditProgress();
    if(UseAsyncHistoricalAudit())
    {

@@ -5153,6 +5153,10 @@
           {
             "label": "MN1",
             "value": 49153
+          },
+          {
+            "label": "H1.5",
+            "value": 90
           }
         ],
         "description": "",

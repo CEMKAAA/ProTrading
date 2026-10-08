@@ -1,0 +1,2 @@
+catalog_id,native_id,name,symbol,chart_tf,weeks,total,wins,losses,open,flat,data,net_r,min_cum_r,as_of,status,metrics_saved,independent,elapsed_ms,detail,order_attempts
+,,OrbStrategyUserLibrary/0.preset CampaignId=orb_5a2ba5aca93a0f1d9b6835a08519 CampaignProfileSignature=f1d8a84b4b8b9f01005db0c531aa03ac1d8fa0052f4cb3e1085d03731b231ab3 CampaignWeeks=2,JP225m,5,0,0,0,0,0,0,0,0,0,0,APPLY_FAILED,0,0,0,,0

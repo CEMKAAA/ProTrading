@@ -5,15 +5,15 @@ import { randomBytes,createHash } from 'node:crypto';
 import { keyPair,signed,verifySigned } from './crypto.mjs';
 import { runAgent } from './mt5-agent.mjs';
 import { DeviceClient } from './device-client.mjs';
+import { controlLocation, studioLocation } from './api-location.mjs';
 
 export async function setupConnection(packageRoot=dirname(fileURLToPath(import.meta.url)),{commonFiles=join(process.env.APPDATA??'','MetaQuotes/Terminal/Common/Files')}={}) {
   const [major,minor]=process.versions.node.split('.').map(Number);
   if(major<22||(major===22&&minor<13))throw new Error('NODE_22_13_OR_NEWER_REQUIRED');
   const {envelope,serverPublicKey}=JSON.parse(readFileSync(join(packageRoot,'personal-setup.json'),'utf8'));
   if(!verifySigned(envelope,serverPublicKey))throw new Error('PACKAGE_SIGNATURE_INVALID');
-  const p=envelope.payload,url=new URL(p.apiUrl);
-  if(url.protocol!=='https:'&&!(url.protocol==='http:'&&['127.0.0.1','localhost'].includes(url.hostname)))throw new Error('HTTPS_REQUIRED');
-  if(url.origin!==p.apiUrl)throw new Error('API_ORIGIN_REQUIRED');
+  const p=envelope.payload,apiUrl=controlLocation(p.apiUrl);
+  const studioUrl=studioLocation(p.studioUrl??'http://127.0.0.1:4310');
   for(const artifact of p.artifacts){
     if(!/^[A-Za-z0-9_./-]+$/.test(artifact.name)||artifact.name.includes('..')||artifact.name.startsWith('/'))throw new Error('PACKAGE_PATH_INVALID');
     if(createHash('sha256').update(readFileSync(join(packageRoot,artifact.name))).digest('hex')!==artifact.sha256)throw new Error('PACKAGE_ARTIFACT_CHANGED');
@@ -25,13 +25,13 @@ export async function setupConnection(packageRoot=dirname(fileURLToPath(import.m
     const keys=existsSync(keyFile)?JSON.parse(readFileSync(keyFile,'utf8')):keyPair();
     if(!existsSync(keyFile))writeFileSync(keyFile,JSON.stringify(keys),{mode:0o600});
     const body={enrollmentToken:p.enrollmentToken,publicKey:keys.publicKey,label:`MT5 / ${p.subscriberName}`.slice(0,80)};
-    const res=await fetch(url.origin+'/v1/ea/enroll',{method:'POST',headers:{'Content-Type':'application/json'},
+    const res=await fetch(apiUrl+'/v1/ea/enroll',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({...body,signature:signed(body,keys.privateKey).signature}),redirect:'error',signal:AbortSignal.timeout(10000)});
     const pair=await res.json();if(!res.ok)throw new Error(pair.error);
     if(pair.accountId!==p.accountId)throw new Error('PACKAGE_OWNER_MISMATCH');
     const folder=join(commonFiles,'Stratum',pair.installationId);mkdirSync(folder,{recursive:true});
     writeFileSync(join(folder,'local.key'),randomBytes(16).toString('hex'),{mode:0o600});
-    const config={apiUrl:url.origin,installationId:pair.installationId,pinnedServerPublicKey:serverPublicKey,folder,
+    const config={apiUrl,studioUrl,installationId:pair.installationId,pinnedServerPublicKey:serverPublicKey,folder,
       accountId:p.accountId,pairingCode:pair.code,pairingExpiresAt:pair.expiresAt,fingerprint:pair.fingerprint};
     writeFileSync(configFile+'.pending',JSON.stringify(config),{mode:0o600});renameSync(configFile+'.pending',configFile);
     writeFileSync(join(state,'connection.set'),Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(`InpInstallationId=${pair.installationId}\r\n`,'utf16le')]),{mode:0o600});
@@ -63,7 +63,7 @@ async function main(){
   const value=await prepareConnection(root);
   const pairing=value.config.pairingState==='approved'?'Device already approved. Select it and authorize this browser in Studio.':
     `Pairing code: ${value.config.pairingCode}\nCode expires: ${new Date(value.config.pairingExpiresAt).toLocaleString()} (5-minute validity)\nApprove in your own Studio account. If the code expires, Ctrl+C and restart this same BAT for a fresh code.`;
-  console.log(`\nSTRATUM / PERSONAL MT5 CONNECTION\nStudio: http://127.0.0.1:4310/studio\n${pairing}\nFingerprint: ${value.config.fingerprint}\nInpInstallationId: ${value.config.installationId}\nInputs preset: ${join(value.state,'connection.set')}\nKeep this window open. Ctrl+C stops the helper, not protective SL/TP.\n`);
+  console.log(`\nSTRATUM / PERSONAL MT5 CONNECTION\nStudio: ${studioLocation(value.config.studioUrl??'http://127.0.0.1:4310')}/studio/\n${pairing}\nFingerprint: ${value.config.fingerprint}\nInpInstallationId: ${value.config.installationId}\nInputs preset: ${join(value.state,'connection.set')}\nKeep this window open. Ctrl+C stops the helper, not protective SL/TP.\n`);
   await runAgent(['watch','--state',value.state]);
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main().catch(error=>{console.error(error.message);process.exitCode=1;});

@@ -5,10 +5,11 @@ import { demoMessages } from './demo-messages';
 import { lessonMessages } from './lesson-messages';
 import { chartMessages } from './chart-messages';
 import { agentMessages } from './agent-messages';
+import { adminMessages } from './admin-messages';
 export type Locale = 'en' | 'tr' | 'de';
 
 // Owned, bundled language packs. Engine identifiers and user content stay unchanged.
-export const messages: Record<string, readonly [string, string]> = { ...marketingMessages, ...studioMessages, ...connectionMessages, ...demoMessages, ...lessonMessages, ...chartMessages, ...agentMessages };
+export const messages: Record<string, readonly [string, string]> = { ...marketingMessages, ...studioMessages, ...connectionMessages, ...demoMessages, ...lessonMessages, ...chartMessages, ...agentMessages, ...adminMessages };
 export function translate(text: string, locale: Locale): string {
   if (locale === 'en') return text;
   const trimmed = text.trim(), message=messages[trimmed];

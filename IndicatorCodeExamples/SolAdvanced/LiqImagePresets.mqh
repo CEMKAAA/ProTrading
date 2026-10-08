@@ -41,7 +41,10 @@ LiqImagePreset g_liqImagePresets[]={
 bool LiqImageCompatible(int i)
 {
    string family=LiqLibraryFamily();StringReplace(family,"_Channel","");
-   return i>=0&&i<ArraySize(g_liqImagePresets)&&family==g_liqImagePresets[i].family&&_Symbol==g_liqImagePresets[i].symbol;
+   if(i<0||i>=ArraySize(g_liqImagePresets)||family!=g_liqImagePresets[i].family)return false;
+   // Explicitly approved migration of the two archived JP225s setups to JP225m.
+   return _Symbol==g_liqImagePresets[i].symbol
+      ||(_Symbol=="JP225m"&&g_liqImagePresets[i].symbol=="JP225s");
 }
 string LiqImagePath(int i){return LiqLibraryFolder()+"\\image_"+LiqLibraryHash(g_liqImagePresets[i].name)+".lns";}
 bool LiqImageRead(string path,string &name,double &v[])

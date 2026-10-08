@@ -1,6 +1,7 @@
 #ifndef ORB_STRATEGY_USER_LIBRARY_MQH
 #define ORB_STRATEGY_USER_LIBRARY_MQH
 #include "OrbStrategyUserContract.mqh"
+#include "StrategyWindowMetrics.mqh"
 #define ORB_CUSTOM_MAX 1024
 struct OrbUserRecord
 {
@@ -92,10 +93,22 @@ void OrbUserReload(bool force=false)
    FileFindClose(find);
 }
 
+string OrbBuiltinWindowKey(const OrbStrategyPreset &p)
+{return SwHash("ORB_BUILTIN_WINDOW_1|"+_Symbol+"|"+OrbCustomInputSignature()+"|"+OrbCustomPresetDump(p));}
+void OrbBuiltinLoadWindowMetrics(OrbStrategyPreset &p)
+{
+   SwMetric m;
+   if(!SwRead("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p),g_swWeeks,m))
+   {if(g_swWeeks!=52)p.metric1yReady=false;return;}
+   p.metric1yReady=true;p.metric1yAsOf=TimeToString(m.asOf,TIME_DATE|TIME_MINUTES);
+   p.metric1yTotal=m.total;p.metric1yWins=m.wins;p.metric1yLosses=m.losses;
+   p.metric1yNetR=m.netR;p.metric1yMinCumR=m.minCum;p.metric1yWr=SwWr(m);
+}
 int OrbStrategyPresetCount(){OrbUserReload();return OrbBuiltinStrategyPresetCount()+g_userCount;}
 bool OrbStrategyPresetLoad(const int index,OrbStrategyPreset &p)
 {
-   if(index<OrbBuiltinStrategyPresetCount())return OrbBuiltinStrategyPresetLoad(index,p);
+   if(index<OrbBuiltinStrategyPresetCount())
+   {if(!OrbBuiltinStrategyPresetLoad(index,p))return false;OrbBuiltinLoadWindowMetrics(p);return true;}
    OrbUserReload();int slot=index-OrbBuiltinStrategyPresetCount();
    if(slot<0||slot>=g_userCount||!g_userStrategies[slot].valid)return false;
    p=g_userStrategies[slot].preset;return true;

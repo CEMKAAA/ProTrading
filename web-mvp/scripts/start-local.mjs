@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const logs=join(root,'logs');
-const dashboard='http://127.0.0.1:4310/studio';
+const dashboard='http://127.0.0.1:4310/studio/';
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const owned=[];
 let stopping=false,shutdown=null,keepAlive=null;
