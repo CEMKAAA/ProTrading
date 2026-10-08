@@ -25,7 +25,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (!req.url || req.url.includes("?") || req.url.includes("%")) throw new ControlError("INVALID_PATH", 400);
       const path = req.url, method = req.method, now = Date.now();
       for (const [key, rate] of rates) if (rate.until < now) rates.delete(key);
-      const sensitive=["/v1/pairings","/v1/auth/login","/v1/auth/register","/v1/ea/enroll","/v1/ea/package"].includes(path);
+      const sensitive=["/v1/pairings","/v1/device/pairing/refresh","/v1/auth/login","/v1/auth/register","/v1/ea/enroll","/v1/ea/package"].includes(path);
       const rateKey = `${req.socket.remoteAddress}:${sensitive ? "identity" : "all"}`;
       const rate = rates.get(rateKey) ?? { until: now + 60000, count: 0 };
       if (++rate.count > (sensitive ? 5 : 240)) throw new ControlError("RATE_LIMITED", 429);
@@ -127,6 +127,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (jobRoute && method === "GET" && !jobRoute[2]) return reply(200, plane.readJob(browserToken(), jobRoute[1]));
       if (jobRoute && method === "POST" && jobRoute[2]) { exact([]); return reply(200, plane.cancelJob(browserToken(), jobRoute[1])); }
       if (method === "GET" && path === "/v1/device/pairing") { const installation = device(); return reply(200, { installationId: installation.id, state: installation.state }); }
+      if (method === "POST" && path === "/v1/device/pairing/refresh") { exact(["code"]); return reply(200, plane.refreshPairing(device(), body.code)); }
       if (method === "POST" && path === "/v1/device/heartbeat") { exact([]); return reply(200, plane.heartbeat(device())); }
       if (method === "POST" && path === "/v1/device/claim") { exact([]); return reply(200, plane.claim(device())); }
       if (method === "POST" && path === "/v1/device/progress") return reply(200, plane.progress(device(), body));

@@ -15,6 +15,8 @@ import { useMotionPreference } from '@/lib/use-motion-preference';
 import StudioAgent from './studio-agent';
 import type { AgentPlan } from '@/lib/studio-agent';
 import type { TutorMood } from '@/lib/tutor-behavior';
+import {requestEaPackage,downloadEaBlob} from '@/lib/ea-download';
+import EaActivationGuide from './ea-activation-guide';
 
 const API=CONTROL_API;
 const families:Record<Family,string>={entrylab:"Entry Lab",macross:"MA Crossover",orb:"Opening Range",sol:"Liquidity Narrative"};
@@ -107,6 +109,22 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
   const [busy,setBusy]=useState(false),[error,setError]=useState(""),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[displayName,setDisplayName]=useState(""),[signup,setSignup]=useState(false),[page,setPage]=useState(0);
   const [panel,setPanel]=useState<"library"|"controls"|"builder"|null>(null);
   const [authNotice,setAuthNotice]=useState("");
+  const [downloadBusy,setDownloadBusy]=useState(false),[downloadError,setDownloadError]=useState('');
+  const [downloadRecord,setDownloadRecord]=useState<{credential:string;url:string;filename:string}|null>(null);
+  const downloadOwner=useRef(credential);downloadOwner.current=credential;
+  useEffect(()=>{setDownloadRecord(null);setDownloadError('');},[credential]);
+  useEffect(()=>()=>{if(downloadRecord)URL.revokeObjectURL(downloadRecord.url);},[downloadRecord]);
+  async function downloadEa(){
+    if(busy||downloadBusy||!session?.subscriptionActive)return;
+    const owner=credential,filename=`Stratum-${session.accountId.slice(0,8)}.zip`;
+    setBusy(true);setDownloadBusy(true);setDownloadError('');setError('');
+    try{
+      const blob=await requestEaPackage(owner);
+      if(downloadOwner.current!==owner)return;
+      const url=downloadEaBlob(blob,filename);setDownloadRecord({credential:owner,url,filename});
+    }catch(e){if(downloadOwner.current===owner)setDownloadError(e instanceof Error?e.message:'EA_DOWNLOAD_FAILED');}
+    finally{setDownloadBusy(false);setBusy(false);}
+  }
   const [windowOpen,setWindowOpen]=useState(false),windowTrigger=useRef<HTMLButtonElement|null>(null);
   const [clock,setClock]=useState(0);
   const [expert,setExpert]=useState(false),[coachPaused,setCoachPaused]=useState(false),[coachMotion,setCoachMotion]=useState(false);
@@ -176,9 +194,13 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
       <div className="uc-row"><button className="secondary-btn" onClick={onConnect}><Terminal size={16}/><UiText>{"Connect / Manage MT5"}</UiText></button><HelpButton topic="connect"/><select aria-label={t("Installation")} value={selected} onChange={e=>setSelected(e.target.value)}><option value=""><UiText>{"Choose your approved connection"}</UiText></option>{session.installations.filter(i=>i.state==="approved").map(i=><option key={i.id} value={i.id}>{i.label}</option>)}</select>
         <button className="secondary-btn" disabled={!selected||busy||!session.subscriptionActive} onClick={()=>void action(async()=>{await api(`/v1/installations/${selected}/activate`,credential,{});await refresh();})}><UiText>{permitted?'This browser is authorized':'Authorize this browser'}</UiText></button><HelpButton topic="controller"/>
         <button className="secondary-btn" disabled={busy} onClick={()=>void action(async()=>{const data=await api<{url:string}>("/v1/subscription/checkout",credential,{});window.location.assign(data.url);})}><UiText>{"Subscription"}</UiText></button>
-        <button className="primary-btn" disabled={busy||!session.subscriptionActive} onClick={()=>void action(async()=>{const response=await fetch(API+"/v1/ea/package",{method:"POST",headers:{Authorization:`Bearer ${credential}`,"Content-Type":"application/json"},body:"{}",signal:AbortSignal.timeout(60000),cache:"no-store",redirect:"error",credentials:"include"});if(!response.ok)throw new Error(((await response.json()) as {error:string}).error);const url=URL.createObjectURL(await response.blob());const a=document.createElement("a");a.href=url;a.download=`Stratum-${session.accountId.slice(0,8)}.zip`;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);})}><Download size={17}/><UiText>{"Download your personalized EA"}</UiText></button>
+        <button type="button" className="primary-btn" disabled={busy||!session.subscriptionActive} onClick={()=>void downloadEa()}><Download size={17}/><UiText>{downloadBusy?"Preparing your EA package...":"Download your personalized EA"}</UiText></button>
         <button className="text-btn" onClick={()=>void action(async()=>{await api("/v1/auth/logout",credential,{});onCredential("");setJob(null);})}><UiText>{"Sign Out"}</UiText></button></div></>}
+      {session&&downloadBusy&&<p role="status" className="uc-caption"><UiText>{"Preparing and verifying the signed EA package. Stay on this page."}</UiText></p>}
+      {session&&downloadError&&<p role="alert" className="uc-error" data-download-error={downloadError}><UiText>{friendlyError(downloadError)}</UiText></p>}
+      {session&&downloadRecord?.credential===credential&&<p role="status" className="uc-download-ready"><Check size={18}/><UiText>{"Your ZIP is ready and includes the EX5 and personal setup. If the browser did not start the download, use this link:"}</UiText><a href={downloadRecord.url} download={downloadRecord.filename}><UiText>{"Download ready ZIP"}</UiText></a></p>}
       <p className="uc-caption"><UiText>{"New accounts receive one 30-day demo from registration. The personalized ZIP includes the closed-source EA, companion and a single-use setup ticket. Pair it to this account within 5 minutes of starting the helper. Downloading again never restarts the demo. Need MT5? "}</UiText><a href="https://www.metatrader5.com/en/download" target="_blank" rel="noopener noreferrer"><UiText>{"Official MetaTrader 5 download"}</UiText></a><UiText>{"."}</UiText></p>
+      <EaActivationGuide signedIn={!!session} active={!!session?.subscriptionActive} online={!!online} authorized={!!permitted} onConnect={onConnect}/>
     </div>
     <section className="uc-settings surface"><div className="uc-row"><div><span className="eyebrow"><UiText>{"ONE TERMINAL / FOUR ENGINE FAMILIES"}</UiText></span><h2><UiText>{"Build. Audit. Then authorize."}</UiText></h2></div><span className="uc-safe-state"><Square size={12}/><UiText>{terminal?.trading?"TERMINAL TRADING ON":"TRADING OFF"}</UiText></span></div>
       <div className="guide-inline guide-section-intro"><div><strong><UiText>{"Step 3 / Choose your signal engine"}</UiText></strong><p><UiText>{"This decides when a setup appears. Risk, filters and exits are configured separately."}</UiText></p></div><HelpButton topic="engines"/></div>

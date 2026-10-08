@@ -7,10 +7,17 @@ import { tmpdir } from 'node:os';
 import { ControlPlane } from '../control-service/control-plane.mjs';
 import { keyPair,signed,verifySigned,makeProof,id } from '../control-service/crypto.mjs';
 import { verifyEaCommand } from '../control-service/ea-authority.mjs';
-import { personalPackage,zipFiles } from '../control-service/delivery.mjs';
-import { setupConnection } from '../control-service/personal-setup.mjs';
+import { personalPackage,zipFiles,parseArtifactJson } from '../control-service/delivery.mjs';
+import { setupConnection,prepareConnection } from '../control-service/personal-setup.mjs';
 import { controlHttp } from '../control-service/http.mjs';
 const DAY=86400000;
+test('Windows BOM verification reports parse without altering hashes or accepting malformed JSON',()=>{
+ const report={status:'PASS',binarySha256:'a'.repeat(64),differences:[]};
+ assert.deepEqual(parseArtifactJson('\uFEFF'+JSON.stringify(report)),report);
+ assert.deepEqual(parseArtifactJson(JSON.stringify(report)),report);
+ assert.deepEqual(parseArtifactJson('\uFEFF[{"file":"EA.mq5","sha256":"abc"}]'),[{file:'EA.mq5',sha256:'abc'}]);
+ assert.throws(()=>parseArtifactJson('\uFEFFnot json'));assert.throws(()=>parseArtifactJson('{"status":"PASS",}'));
+});
 const reject=(fn,code)=>assert.throws(fn,e=>e.code===code);
 const register=p=>p.register({email:'demo@example.com',password:'a-long-private-password',displayName:'Cem Quant'});
 function request(ticket,keys=keyPair()) {
@@ -107,5 +114,74 @@ test('downloaded setup generates local device keys and owner-bound MT5 preset en
   const result=await setupConnection(dir,{commonFiles:common});assert.ok(existsSync(join(result.state,'device-key.json')));assert.ok(!existsSync(join(dir,'personal-setup.json')));
   assert.equal(result.config.accountId,p.browser(a.accessToken).accountId);assert.ok(readFileSync(join(result.state,'connection.set')).includes(Buffer.from(result.config.installationId,'utf16le')));
   p.approvePairing(a.accessToken,result.config.pairingCode,result.config.fingerprint);assert.equal(p.get('SELECT state FROM installations WHERE id=?',result.config.installationId).state,'approved');
+ }finally{server.closeAllConnections();await new Promise(r=>server.close(r));p.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('expired pairing renews only with the original device proof; owner and fingerprint stay bound',()=>{
+ let at=Date.now();const p=new ControlPlane({now:()=>at}),a=register(p),keys=keyPair();
+ const pair=p.enrollInstallation(request(p.issueEnrollment(a.accessToken),keys)),path='/v1/device/pairing/refresh',body={code:pair.code};
+ const device=()=>p.authenticateDevice(makeProof(pair.installationId,'POST',path,body,keys.privateKey,at,id()),'POST',path,body);
+ try{
+  const first=p.refreshPairing(device(),body.code);assert.ok(verifySigned(first,p.signingKey.publicKey));
+  assert.equal(first.payload.pairingCode,pair.code);assert.equal(first.payload.pairingExpiresAt,pair.expiresAt);
+  at+=300001;reject(()=>p.reviewPairing(a.accessToken,pair.code),'PAIRING_EXPIRED_OR_UNKNOWN');
+  const forged=makeProof(pair.installationId,'POST',path,body,keyPair().privateKey,at,id());
+  reject(()=>p.authenticateDevice(forged,'POST',path,body),'INVALID_SIGNATURE');
+  const proof=makeProof(pair.installationId,'POST',path,body,keys.privateKey,at,id());
+  const install=p.authenticateDevice(proof,'POST',path,body);
+  reject(()=>p.authenticateDevice(proof,'POST',path,body),'PROOF_REPLAY');
+  const renewed=p.refreshPairing(install,body.code).payload;
+  assert.notEqual(renewed.pairingCode,pair.code);assert.equal(renewed.installationId,pair.installationId);
+  assert.equal(renewed.fingerprint,pair.fingerprint);assert.equal(renewed.accountId,pair.accountId);
+  assert.equal(renewed.pairingExpiresAt,at+300000);assert.equal(renewed.liveTradingAllowed,false);
+  reject(()=>p.reviewPairing(a.accessToken,pair.code),'PAIRING_EXPIRED_OR_UNKNOWN');
+  assert.equal(p.reviewPairing(a.accessToken,renewed.pairingCode).installationId,pair.installationId);
+  const other=p.register({email:'wrong-owner@example.com',password:'another-private-password'});
+  reject(()=>p.approvePairing(other.accessToken,renewed.pairingCode,renewed.fingerprint),'PAIRING_OWNER_MISMATCH');
+  assert.equal(p.get('SELECT count(*) AS n FROM leases').n,0);assert.equal(p.tradingInfo(pair.accountId).enabled,false);
+  reject(()=>p.authenticateDevice(makeProof(pair.installationId,'POST','/v1/device/heartbeat',{},keys.privateKey,at,id()),'POST','/v1/device/heartbeat',{}),'PAIRING_REQUIRED');
+ }finally{p.close();}
+});
+
+test('pairing refresh cannot revive revoked, unowned or expired-entitlement devices or reset approved codes',()=>{
+ let at=Date.now();const p=new ControlPlane({now:()=>at}),a=register(p),keys=keyPair();
+ const pair=p.enrollInstallation(request(p.issueEnrollment(a.accessToken),keys)),path='/v1/device/pairing/refresh',body={code:pair.code};
+ const device=()=>p.authenticateDevice(makeProof(pair.installationId,'POST',path,body,keys.privateKey,at,id()),'POST',path,body);
+ try{
+  p.approvePairing(a.accessToken,pair.code,pair.fingerprint);const prior=p.get('SELECT * FROM pairings WHERE installation_id=?',pair.installationId);
+  const result=p.refreshPairing(device(),pair.code).payload;assert.equal(result.state,'approved');assert.equal(result.pairingCode,null);
+  assert.deepEqual(p.get('SELECT * FROM pairings WHERE installation_id=?',pair.installationId),prior);
+  p.revokeInstallation(a.accessToken,pair.installationId);reject(device,'INSTALLATION_REVOKED_OR_UNKNOWN');
+  const bare=p.beginPairing({publicKey:keys.publicKey,label:'Unowned'});
+  const unowned=p.authenticateDevice(makeProof(bare.installationId,'POST',path,body,keys.privateKey,at,id()),'POST',path,body);
+  reject(()=>p.refreshPairing(unowned,pair.code),'PAIRING_OWNER_REQUIRED');
+  const expired=p.enrollInstallation(request(p.issueEnrollment(a.accessToken),keys));at+=30*DAY;
+  const install=p.authenticateDevice(makeProof(expired.installationId,'POST',path,{code:expired.code},keys.privateKey,at,id()),'POST',path,{code:expired.code});
+  reject(()=>p.refreshPairing(install,expired.code),'ENTITLEMENT_EXPIRED');
+ }finally{p.close();}
+});
+
+test('helper restart replaces an expired cached code, keeps keys/preset and handles approved devices without re-pairing',async()=>{
+ const p=new ControlPlane(),a=register(p),server=controlHttp(p);server.listen(0,'127.0.0.1');await once(server,'listening');
+ const dir=mkdtempSync(join(tmpdir(),'stratum-resume-')),common=join(dir,'common'),api=`http://127.0.0.1:${server.address().port}`;
+ try{
+  const bundle=await personalPackage(p,a.accessToken,api,()=>({binary:Buffer.from('EA'),worker:Buffer.from('OF')}),async()=>Buffer.from('HELPER'));
+  const files=unzipStored(bundle.bytes);
+  for(const [name,data] of files){const {mkdirSync}=await import('node:fs');const {dirname}=await import('node:path');mkdirSync(dirname(join(dir,name)),{recursive:true});writeFileSync(join(dir,name),data);}
+  const first=await prepareConnection(dir,{commonFiles:common}),state=first.state;
+  const originalKeys=readFileSync(join(state,'device-key.json')),preset=readFileSync(join(state,'connection.set')),local=readFileSync(join(first.config.folder,'local.key'));
+  // Models old downloads which persisted the code but no expiry timestamp.
+  const configFile=join(state,'installation.json'),cached=JSON.parse(readFileSync(configFile,'utf8'));delete cached.pairingExpiresAt;writeFileSync(configFile,JSON.stringify(cached));
+  p.run('UPDATE pairings SET expires_at=? WHERE installation_id=?',Date.now()-1,first.config.installationId);
+  // Re-extracting a ZIP over this folder must not shadow the enrolled device.
+  writeFileSync(join(dir,'personal-setup.json'),files.get('personal-setup.json'));
+  writeFileSync(join(dir,'connection.mjs'),'UPDATED VERIFIED HELPER');
+  const next=await prepareConnection(dir);assert.notEqual(next.config.pairingCode,first.config.pairingCode);
+  assert.equal(next.config.installationId,first.config.installationId);assert.equal(next.config.fingerprint,first.config.fingerprint);
+  assert.ok(next.config.pairingExpiresAt>Date.now());assert.equal((await prepareConnection(dir)).config.pairingCode,next.config.pairingCode);
+  p.approvePairing(a.accessToken,next.config.pairingCode,next.config.fingerprint);
+  const approved=await prepareConnection(dir);assert.equal(approved.config.pairingState,'approved');assert.equal(approved.config.pairingCode,null);
+  assert.deepEqual(readFileSync(join(state,'device-key.json')),originalKeys);assert.deepEqual(readFileSync(join(state,'connection.set')),preset);assert.deepEqual(readFileSync(join(first.config.folder,'local.key')),local);
+  assert.equal(p.get('SELECT count(*) AS n FROM installations').n,1);assert.equal(p.get('SELECT count(*) AS n FROM leases').n,0);
  }finally{server.closeAllConnections();await new Promise(r=>server.close(r));p.close();rmSync(dir,{recursive:true,force:true});}
 });

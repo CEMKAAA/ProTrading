@@ -304,6 +304,30 @@ export class ControlPlane {
     requireThat(row && !row.used && row.expires_at > this.now(), "PAIRING_EXPIRED_OR_UNKNOWN", 404);
     return row;
   }
+  refreshPairing(installation, code) {
+    requireThat(code === null || (typeof code === "string" && /^[A-F0-9]{4}-[A-F0-9]{4}$/.test(code)), "INVALID_PAIRING", 400);
+    return this.atomic(() => {
+      const current = this.get("SELECT * FROM installations WHERE id=?", installation.id);
+      requireThat(current && current.state !== "revoked", "INSTALLATION_REVOKED_OR_UNKNOWN", 401);
+      let pairingCode = null, pairingExpiresAt = null;
+      if (current.state === "pending") {
+        requireThat(current.account_id, "PAIRING_OWNER_REQUIRED", 403);
+        this.entitlement(current.account_id);
+        const prior = this.get("SELECT * FROM pairings WHERE installation_id=?", current.id);
+        // A restart keeps a still-valid code; an expired code cannot be revived.
+        if (prior && !prior.used && prior.expires_at > this.now() && code && prior.code_hash === hash(code)) {
+          pairingCode = code; pairingExpiresAt = prior.expires_at;
+        } else {
+          const raw = randomBytes(4).toString("hex").toUpperCase();
+          pairingCode = `${raw.slice(0, 4)}-${raw.slice(4)}`; pairingExpiresAt = this.now() + 300000;
+          this.run("INSERT INTO pairings(code_hash,installation_id,expires_at,used) VALUES(?,?,?,0) ON CONFLICT(installation_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,used=0", hash(pairingCode), current.id, pairingExpiresAt);
+        }
+      }
+      return this.ticket({version:1,kind:"pairing_status",audience:"stratum-mt5",installationId:current.id,
+        accountId:current.account_id,state:current.state,fingerprint:hash(current.public_key),pairingCode,pairingExpiresAt,
+        expiresAt:this.now()+30000,liveTradingAllowed:false});
+    });
+  }
   reviewPairing(accessToken, code) {
     const actor = this.browser(accessToken); this.entitlement(actor.accountId);
     const row = this.pairing(code);
@@ -356,10 +380,10 @@ export class ControlPlane {
     requireThat(Math.abs(proof.issuedAt - this.now()) <= 30000, "PROOF_EXPIRED", 401);
     const installation = this.get("SELECT * FROM installations WHERE id=?", proof.installationId);
     requireThat(installation && installation.state !== "revoked", "INSTALLATION_REVOKED_OR_UNKNOWN", 401);
-    requireThat(installation.state === "approved" || path === "/v1/device/pairing", "PAIRING_REQUIRED", 403);
+    requireThat(installation.state === "approved" || ["/v1/device/pairing", "/v1/device/pairing/refresh"].includes(path), "PAIRING_REQUIRED", 403);
     requireThat(verifySigned({ payload, signature }, installation.public_key), "INVALID_SIGNATURE", 401);
     if (["/v1/device/command", "/v1/device/status", "/v1/device/connect", "/v1/device/identity"].includes(path)) requireThat(proof.agentId, "AGENT_SESSION_REQUIRED", 403);
-    if (proof.agentId && !["/v1/device/connect", "/v1/device/pairing", "/v1/device/identity"].includes(path)) {
+    if (proof.agentId && !["/v1/device/connect", "/v1/device/pairing", "/v1/device/pairing/refresh", "/v1/device/identity"].includes(path)) {
       const agent = this.get("SELECT * FROM agent_sessions WHERE installation_id=?", installation.id);
       requireThat(agent && agent.agent_id === proof.agentId && agent.expires_at > this.now(), "AGENT_SESSION_EXPIRED", 403);
       requireThat(agent.generation === this.currentLease(installation).generation, "AGENT_CONTROLLER_CHANGED", 403);

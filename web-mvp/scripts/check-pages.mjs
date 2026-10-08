@@ -16,7 +16,7 @@ for(const [route,expected] of [["/","Build your own."],["/studio","Your controls
  } else {
   for(const label of ["Strategy library","Entry builder","YOUR CONTROL DECK","Guided view","Show expert controls","Time Matrix","One step at a time."])assert.ok(html.includes(label),`Guided control-room launcher ${label}`);
   assert.ok(html.includes('role="switch"')&&html.includes('aria-checked="false"'),"Accessible disabled lever switches render");
-  assert.ok(html.includes("Pause coin animation"),"Coin flow starts automatically but can be paused");
+  assert.ok(html.includes('data-autoplay="true"'),"Coin flow is automatic, without a start button");
  }
  console.log(`PASS ${route}: HTTP 200, metadata/product content, disclosure, controls, anchors`);
 }

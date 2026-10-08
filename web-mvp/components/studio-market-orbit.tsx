@@ -1,9 +1,7 @@
 "use client";
 import { UiText, useLanguage } from './language-provider';
 import { useEffect, useRef, useState } from "react";
-import { Pause, Play } from "lucide-react";
 import { studioCoinPose } from "@/lib/scene-motion";
-import { useMotionPreference } from "@/lib/use-motion-preference";
 
 const markets = [
   ["BTCUSD", "BTC", "#e8b650", "#584018"], ["EURUSD", "FX", "#b6d0df", "#27475c"],
@@ -14,8 +12,6 @@ const markets = [
 export default function StudioMarketOrbit() {
  const {t}=useLanguage();
   const host = useRef<HTMLDivElement>(null), [fallback, setFallback] = useState(false);
-  const [paused, setPaused] = useState(false), pausedRef = useRef(false);
-  const reduced = useMotionPreference();
   useEffect(() => {
     const element = host.current; if (!element) return;
     let disposed = false, cleanup: (() => void) | undefined;
@@ -57,7 +53,6 @@ export default function StudioMarketOrbit() {
         return { coin, hover: 0, turn: 0 };
       });
       let width = 1, viewWidth = 16, frame = 0, lastFrame = 0, activeTime = 0, hovered = -1, visible = true;
-      const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
       const resize = () => {
         width = element.clientWidth; const height = element.clientHeight; if (!width || !height) return;
         viewWidth = Math.max(9, width / height * 6); camera.left = -viewWidth / 2; camera.right = viewWidth / 2;
@@ -77,7 +72,8 @@ export default function StudioMarketOrbit() {
         frame = requestAnimationFrame(render);
         if (document.hidden || !visible || now - lastFrame < 32) { if(document.hidden || !visible)lastFrame=now; return; }
         const dt = Math.min((now-lastFrame)/1000, .1); lastFrame=now;
-        if (!motion.matches && !pausedRef.current) activeTime += dt;
+        // Explicit scene autoplay: time drives travel even without scrolling or hover.
+        activeTime += dt;
         const mobile = width < 500;
         // Re-evaluate a stationary pointer as coins move underneath it.
         if (pointer.x !== 9) {
@@ -90,11 +86,12 @@ export default function StudioMarketOrbit() {
         coins.forEach((state, i) => {
           const pose = studioCoinPose(i, coins.length, viewWidth, activeTime);
           state.hover += ((i === hovered ? 1 : 0) - state.hover) * (1-Math.exp(-dt*10));
-          state.turn += dt * (motion.matches || pausedRef.current ? 0 : i === hovered ? 1.8 : 0);
+          state.turn += dt * (i === hovered ? 1.8 : 0);
           state.coin.position.set(pose.x, pose.y, pose.z);
           state.coin.rotation.set(pose.rotationX, pose.rotationY+state.turn+state.hover*.3, pose.rotationZ);
           state.coin.scale.setScalar((mobile?.75:.92)*(1+state.hover*.1));
         });
+        renderer.domElement.dataset.elapsed=activeTime.toFixed(3);
         renderer.render(scene, camera);
       };
       frame=requestAnimationFrame(render);
@@ -103,8 +100,7 @@ export default function StudioMarketOrbit() {
     }).catch(()=>{if(!disposed)setFallback(true);});
     return()=>{disposed=true;cleanup?.();};
   },[]);
-  return <div className="studio-orbit" ref={host} data-paused={paused || reduced} aria-label={t("Interactive three-dimensional market coins: BTCUSD, EURUSD, XAUUSD, USDJPY and JP225")}>
+  return <div className="studio-orbit" ref={host} data-autoplay="true" aria-label={t("Interactive three-dimensional market coins: BTCUSD, EURUSD, XAUUSD, USDJPY and JP225")}>
     {fallback&&<div className="studio-orbit-fallback">{markets.map(([pair,mark],i)=><div className="studio-fallback-coin" style={{animationDelay:`${-i*8}s`}} key={pair}><strong><UiText>{mark}</UiText></strong><span><UiText>{pair}</UiText></span></div>)}</div>}
-    <button type="button" className="studio-orbit-pause" disabled={reduced} aria-label={reduced?"Coin motion disabled by device preference":paused?"Resume coin animation":"Pause coin animation"} onClick={()=>{pausedRef.current=!paused;setPaused(!paused);}}>{paused || reduced?<Play size={13}/>:<Pause size={13}/>}<span><UiText>{reduced?"Motion off":paused?"Resume":"Pause"}</UiText></span></button>
   </div>;
 }

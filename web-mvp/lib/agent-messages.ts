@@ -92,7 +92,7 @@ export const agentMessages:Record<string,readonly [string,string]>={
  'This switch is OFF in your draft. The animation illustrates how its enabled rule works; it does not activate it.':['Taslağında bu şalter KAPALI. Animasyon açıkken kuralın nasıl çalıştığını gösterir; ayarı açmaz.','Dieser Schalter ist im Entwurf AUS. Die Animation zeigt die aktive Regel, aktiviert sie aber nicht.'],
  'What changes':['Ne değişir','Was sich ändert'], 'What stays the same':['Ne aynı kalır','Was gleich bleibt'],
  'YOUR PRIVATE CONVERSATIONS':['SANA ÖZEL KONUŞMALAR','DEINE PRIVATEN GESPRÄCHE'],
- 'Conversation title':['Konuşma başlığı','Gesprächstitle'],
+ 'Conversation title':['Konuşma başlığı','Gesprächstitel'],
  'Save conversation':['Konuşmayı kaydet','Gespräch speichern'],
  'Chat history':['Sohbet geçmişi','Chatverlauf'],
  'New conversation':['Yeni konuşma','Neues Gespräch'],

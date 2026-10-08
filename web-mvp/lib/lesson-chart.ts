@@ -10,11 +10,23 @@ export type ChartTrace={values:number[];label:string;tone:Tone};
 export type ChartFrame={bars:Candle[];lines:ChartLine[];marks:ChartMark[];bands:ChartBand[];traces:ChartTrace[];activity:number[];note:string;badge:string;size?:string;indicator?:{label:string;values:number[];threshold:number}};
 
 // Synthetic, normalized prices are a teaching canvas, never broker history.
-const sample:Candle[]=Array.from({length:32},(_,i)=>{
- const open=100+Math.sin(i*.42)*1.3+Math.sin(i*.9)*.45+i*.055;
- const close=open+Math.sin(i*1.37+.7)*.52;
- return {open,close,high:Math.max(open,close)+.3+(i%3)*.09,low:Math.min(open,close)-.27-(i%4)*.08};
-});
+export function teachingCandles(key:string,effect:Effect):Candle[] {
+ let seed=2166136261;
+ for(const char of key)seed=Math.imul(seed^char.charCodeAt(0),16777619)>>>0;
+ const phase=(seed%1000)/1000*Math.PI*2,amplitude=.55+(seed%71)/100,pace=.20+(seed%29)/100;
+ const center=(i:number)=>{
+  if(effect==='range')return i<9?99.95+Math.sin(i*.8+phase)*.45:i<17?100.35+Math.sin(i*.7)*.35:101.25+(i-17)*.045+Math.sin(i*.8)*.12;
+  if(effect==='retest')return i<12?100+Math.sin(i*.6+phase)*.35:i<17?101.15+(i-12)*.1:i<23?101.6-(i-17)*.10:101.15+(i-23)*.1;
+  if(effect==='regime')return i<11?99.4+i*.13:i<22?100.8+Math.sin(i*1.1)*.25:100.7+Math.sin(i*.9)*.9;
+  if(effect==='ma'||effect==='logic')return 100+Math.sin(i*pace+phase)*amplitude+(i-16)*.025;
+  if(effect==='sweep')return 100+Math.sin(i*.47+phase)*.5;
+  return 100+Math.sin(i*pace+phase)*amplitude+Math.sin(i*.83+phase)*.27+(i-16)*((seed%9)-4)*.011;
+ };
+ return Array.from({length:32},(_,i)=>{
+  const open=i?center(i-1):center(0)-.16,close=center(i),wick=.13+((seed+i*13)%21)/100;
+  return {open,close,high:Math.max(open,close)+wick,low:Math.min(open,close)-wick*.85};
+ });
+}
 const eventBars=[5,9,12,17,22,27];
 const n=(value:unknown,fallback:number)=>Number.isFinite(Number(value))?Number(value):fallback;
 const clamp=(v:number,a:number,b:number)=>Math.max(a,Math.min(b,v));
@@ -95,7 +107,7 @@ function rma(values:number[],period:number):number[] {
 }
 function oscillator(bars:Candle[],period:number,kind:'RSI'|'ADX'|'ATR'):number[] {
  // Synthetic warm-up reduces initialization effects. This is not EA parity data.
- const prefix=Array.from({length:250},(_,i)=>sample[i%sample.length]),all=[...prefix,...bars];
+ const prefix=Array.from({length:250},(_,i)=>bars[i%bars.length]),all=[...prefix,...bars];
  const ranges=all.map((b,i)=>Math.max(b.high-b.low,i?Math.abs(b.high-all[i-1].close):0,i?Math.abs(b.low-all[i-1].close):0)),atr=rma(ranges,period);
  if(kind==='ATR')return atr.slice(-bars.length);
  if(kind==='RSI'){
@@ -110,7 +122,8 @@ function marks(bars:number[],rejected=false):ChartMark[]{return bars.map((bar,i)
 
 export function chartLessonFrame(topic:HelpTopic,step:number):ChartFrame {
  const phase=clamp(Math.floor(step),0,2),key=keyOf(topic),k=key.toLowerCase(),effect=lessonEffect(topic);
- const bars=sample.map(b=>({...b}));
+ // Seed only by setting identity: changing values/phases preserves comparable history.
+ const bars=teachingCandles(key,effect);
  const f:ChartFrame={bars,lines:[],marks:[],bands:[],traces:[],activity:[],badge:key,note:effectSteps[effect][phase]};
  const entry=bars[9].close,stop=entry-1.3;
  const value=topic.currentValue??topic.defaultValue;

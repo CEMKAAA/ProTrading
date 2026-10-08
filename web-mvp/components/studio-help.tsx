@@ -12,7 +12,7 @@ import { useLanguage } from './language-provider';
 import { localizedHelp } from '@/lib/localized-help';
 
 export function Lesson({topic}:{topic:HelpTopic}) {
- const [step,setStep]=useState(0),[paused,setPaused]=useState(false),[allowMotion,setAllowMotion]=useState(false),[compareDefault,setCompareDefault]=useState(false),reduced=useMotionPreference(),{t,locale}=useLanguage();
+ const [step,setStep]=useState(0),[paused,setPaused]=useState(false),[allowMotion,setAllowMotion]=useState(true),[compareDefault,setCompareDefault]=useState(false),reduced=useMotionPreference(),{t,locale}=useLanguage();
  const copy=localizedHelp(topic,locale);
  const still=paused||(reduced&&!allowMotion);
  const steps=effectSteps[lessonEffect(topic)];

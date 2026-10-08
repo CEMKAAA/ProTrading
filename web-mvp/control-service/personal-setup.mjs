@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes,createHash } from 'node:crypto';
 import { keyPair,signed,verifySigned } from './crypto.mjs';
 import { runAgent } from './mt5-agent.mjs';
+import { DeviceClient } from './device-client.mjs';
 
 export async function setupConnection(packageRoot=dirname(fileURLToPath(import.meta.url)),{commonFiles=join(process.env.APPDATA??'','MetaQuotes/Terminal/Common/Files')}={}) {
   const [major,minor]=process.versions.node.split('.').map(Number);
@@ -31,7 +32,7 @@ export async function setupConnection(packageRoot=dirname(fileURLToPath(import.m
     const folder=join(commonFiles,'Stratum',pair.installationId);mkdirSync(folder,{recursive:true});
     writeFileSync(join(folder,'local.key'),randomBytes(16).toString('hex'),{mode:0o600});
     const config={apiUrl:url.origin,installationId:pair.installationId,pinnedServerPublicKey:serverPublicKey,folder,
-      accountId:p.accountId,pairingCode:pair.code,fingerprint:pair.fingerprint};
+      accountId:p.accountId,pairingCode:pair.code,pairingExpiresAt:pair.expiresAt,fingerprint:pair.fingerprint};
     writeFileSync(configFile+'.pending',JSON.stringify(config),{mode:0o600});renameSync(configFile+'.pending',configFile);
     writeFileSync(join(state,'connection.set'),Buffer.concat([Buffer.from([0xff,0xfe]),Buffer.from(`InpInstallationId=${pair.installationId}\r\n`,'utf16le')]),{mode:0o600});
     // The used enrollment secret is no longer needed on disk.
@@ -40,14 +41,29 @@ export async function setupConnection(packageRoot=dirname(fileURLToPath(import.m
   }
   return {state,config:JSON.parse(readFileSync(configFile,'utf8'))};
 }
-async function main(){
-  const root=dirname(fileURLToPath(import.meta.url));
+export async function prepareConnection(root,options={}){
   // After first activation, resume using the local device key, never the ticket.
   let value;
-  if(existsSync(join(root,'.state/installation.json'))&&!existsSync(join(root,'personal-setup.json'))){
+  if(existsSync(join(root,'.state/installation.json'))){
     value={state:join(root,'.state'),config:JSON.parse(readFileSync(join(root,'.state/installation.json'),'utf8'))};
-  }else value=await setupConnection(root);
-  console.log(`\nSTRATUM / PERSONAL MT5 CONNECTION\nStudio: http://127.0.0.1:4310/studio\nPairing code: ${value.config.pairingCode}\nFingerprint: ${value.config.fingerprint}\nInpInstallationId: ${value.config.installationId}\nInputs preset: ${join(value.state,'connection.set')}\nApprove in your own Studio account. Keep this window open. Ctrl+C stops the helper, not protective SL/TP.\n`);
+  }else value=await setupConnection(root,options);
+  const keys=JSON.parse(readFileSync(join(value.state,'device-key.json'),'utf8'));
+  const client=new DeviceClient({...value.config,privateKey:keys.privateKey});
+  const status=client.verified(await client.request('/v1/device/pairing/refresh',{code:value.config.pairingCode??null}),'pairing_status');
+  if(status.accountId!==value.config.accountId||status.fingerprint!==createHash('sha256').update(keys.publicKey).digest('hex'))throw new Error('PACKAGE_OWNER_MISMATCH');
+  if(!['pending','approved'].includes(status.state))throw new Error('PAIRING_STATUS_INVALID');
+  if(status.state==='pending'&&(!/^[A-F0-9]{4}-[A-F0-9]{4}$/.test(status.pairingCode??'')||status.pairingExpiresAt<=Date.now()))throw new Error('PAIRING_STATUS_INVALID');
+  value.config={...value.config,pairingCode:status.pairingCode,pairingExpiresAt:status.pairingExpiresAt,fingerprint:status.fingerprint,pairingState:status.state};
+  const configFile=join(value.state,'installation.json');
+  writeFileSync(configFile+'.pending',JSON.stringify(value.config),{mode:0o600});renameSync(configFile+'.pending',configFile);
+  return value;
+}
+async function main(){
+  const root=dirname(fileURLToPath(import.meta.url));
+  const value=await prepareConnection(root);
+  const pairing=value.config.pairingState==='approved'?'Device already approved. Select it and authorize this browser in Studio.':
+    `Pairing code: ${value.config.pairingCode}\nCode expires: ${new Date(value.config.pairingExpiresAt).toLocaleString()} (5-minute validity)\nApprove in your own Studio account. If the code expires, Ctrl+C and restart this same BAT for a fresh code.`;
+  console.log(`\nSTRATUM / PERSONAL MT5 CONNECTION\nStudio: http://127.0.0.1:4310/studio\n${pairing}\nFingerprint: ${value.config.fingerprint}\nInpInstallationId: ${value.config.installationId}\nInputs preset: ${join(value.state,'connection.set')}\nKeep this window open. Ctrl+C stops the helper, not protective SL/TP.\n`);
   await runAgent(['watch','--state',value.state]);
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url))main().catch(error=>{console.error(error.message);process.exitCode=1;});

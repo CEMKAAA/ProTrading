@@ -6,8 +6,11 @@ import { signed } from './crypto.mjs';
 import { ControlError } from './control-plane.mjs';
 
 const sha = data => createHash('sha256').update(data).digest('hex');
+// Windows PowerShell writes UTF-8 JSON with a BOM. This does not weaken hash checks.
+export const parseArtifactJson=text=>JSON.parse(text.replace(/^\uFEFF/,''));
+const verificationJson=url=>parseArtifactJson(readFileSync(url,'utf8'));
 let helper;
-async function companion() {
+export async function companion() {
   // One bounded, in-memory build. No user compilation or private EA source export.
   helper ??= build({ input:fileURLToPath(new URL('./personal-setup.mjs',import.meta.url)),platform:'node',
     external:id=>id.startsWith('node:'),write:false,output:{format:'esm',codeSplitting:false},
@@ -22,10 +25,10 @@ export function verifiedArtifacts(plane) {
   try {
     const root=new URL('../../',import.meta.url),dir=new URL('IndicatorCodeExamples/universal/',root);
     const binary=readFileSync(new URL('UniversalConnectionEA.ex5',dir));
-    const report=JSON.parse(readFileSync(new URL('tmp/universal_connection_validation/roundtrip-report.json',root)));
-    const parity=JSON.parse(readFileSync(new URL('tmp/universal_connection_validation/canonical-parity-report.json',root)));
+    const report=verificationJson(new URL('tmp/universal_connection_validation/roundtrip-report.json',root));
+    const parity=verificationJson(new URL('tmp/universal_connection_validation/canonical-parity-report.json',root));
     if(report.status!=='PASS'||parity.status!=='PASS'||parity.differences.length||report.binarySha256!==sha(binary)||parity.binarySha256!==sha(binary))throw new Error();
-    const sources=JSON.parse(readFileSync(new URL('tmp/universal_connection_validation/compile-sources.json',root)));
+    const sources=verificationJson(new URL('tmp/universal_connection_validation/compile-sources.json',root));
     for(const item of sources)if(sha(readFileSync(new URL(item.file.replaceAll('\\','/'),dir)))!==item.sha256.toLowerCase())throw new Error();
     const pin=readFileSync(new URL('UniversalAuthorityKey.mqh',dir),'utf8');
     const jwk=createPublicKey(plane.eaSigningKey.publicKey).export({format:'jwk'});
