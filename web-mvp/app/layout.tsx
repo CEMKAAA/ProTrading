@@ -3,6 +3,7 @@ import "./globals.css";
 import "@fontsource-variable/manrope";
 import "@fontsource/ibm-plex-mono/400.css";
 import { LanguageProvider } from '@/components/language-provider';
+import { publicPath } from '@/lib/public-path';
 
 export const metadata: Metadata = {
   title: "Stratum | Your ideas. Your rules. Your edge.",
@@ -11,8 +12,8 @@ export const metadata: Metadata = {
     "theme-color": "#eef7fd",
   },
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: publicPath("/favicon.svg"),
+    shortcut: publicPath("/favicon.svg"),
   },
 };
 

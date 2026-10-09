@@ -18,5 +18,5 @@ export function loadUi(path){
   }
   return require(id);
  };
- runInNewContext(output,{module,exports:module.exports,require:local,process,structuredClone,console});cache.set(file,module.exports);return module.exports;
+ runInNewContext(output,{module,exports:module.exports,require:local,process,structuredClone,URL,URLSearchParams,console});cache.set(file,module.exports);return module.exports;
 }
