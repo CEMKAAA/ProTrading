@@ -144,7 +144,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       if (method === "POST" && path === "/v1/device/claim") { exact([]); return reply(200, plane.claim(device())); }
       if (method === "POST" && path === "/v1/device/progress") return reply(200, plane.progress(device(), body));
       if (method === "POST" && path === "/v1/device/result") return reply(200, plane.finish(device(), body));
-      if (method === "POST" && path === "/v1/device/failure") { exact(["jobId", "attemptId", "code"]); return reply(200, plane.fail(device(), body)); }
+      if (method === "POST" && path === "/v1/device/failure") { exact(["jobId", "attemptId", "code", ...(keys.includes("detail")?["detail"]:[])]); return reply(200, plane.fail(device(), body)); }
       if(method==="POST"&&path==="/v1/device/status")return reply(200,plane.terminalStatus(device(),body));
       if(method==="POST"&&path==="/v1/device/operation"){exact([]);return reply(200,plane.operation(device()));}
       if(method==="POST"&&path==="/v1/device/command")return reply(200,plane.eaCommand(device(),body));

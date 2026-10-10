@@ -1,5 +1,5 @@
 #property strict
-#property version "1.03"
+#property version "1.05"
 #property description "Stratum subscriber connection. Starts in standby. Trading requires leased web authority."
 #include "generated/sdk.mqh"
 

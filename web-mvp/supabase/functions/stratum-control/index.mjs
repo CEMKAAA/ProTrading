@@ -38,13 +38,26 @@ async function configuration(requireArtifacts=false){
  if(requireArtifacts&&!state.artifacts){
  const artifacts={};
  for(const [name,expected]of Object.entries(state.config.artifacts)){
-  const bytes=Buffer.from(await (await storage('object/authenticated/stratum-private-builds/'+name)).arrayBuffer());
+  const artifactPath=state.config.artifactPaths?.[name]??name;
+  if(artifactPath!==name&&artifactPath!==name+'.'+expected)throw new Error('VERIFIED_EA_BUILD_UNAVAILABLE');
+  const bytes=Buffer.from(await (await storage('object/authenticated/stratum-private-builds/'+artifactPath)).arrayBuffer());
   if(digest(bytes)!==expected)throw new Error('VERIFIED_EA_BUILD_UNAVAILABLE');
   artifacts[name==='connection.mjs'?'helper':name==='UniversalConnectionEA.ex5'?'binary':'worker']=bytes;
  }
  state.artifacts=artifacts;
  }
  return state;
+}
+
+async function installArtifact(config,sealed,name,bytes,sha256){
+ const artifactPath=name+'.'+sha256;
+ // Publish immutable bytes first, then swap only the pinned artifact metadata.
+ // Existing enrollment, device and encryption keys remain unchanged.
+ await storage('object/stratum-private-builds/'+artifactPath,{method:'POST',headers:{'Content-Type':'application/octet-stream','x-upsert':'true'},body:bytes});
+ const next={...config,artifacts:{...config.artifacts,[name]:sha256},artifactPaths:{...config.artifactPaths,[name]:artifactPath}};
+ const updated=await database`UPDATE stratum_runtime.deployment_configuration SET sealed=${encrypt(next)} WHERE id=1 AND sealed=${sealed} RETURNING id`;
+ if(updated.length!==1)throw new Error('ARTIFACT_SCOPE_INVALID');
+ cached=null;
 }
 
 Deno.serve(async request=>{
@@ -87,30 +100,31 @@ Deno.serve(async request=>{
    operatorProof(proof.payload,proof.signature);
    if(!['artifact','artifact_chunk','artifact_complete'].includes(proof.payload.kind)||proof.payload.name!==name)throw new Error('OPERATOR_PROOF_INVALID');
    const row=await database`SELECT sealed FROM stratum_runtime.deployment_configuration WHERE id=1`,c=decrypt(row[0].sealed);
-   if(!c.artifacts[name]||c.artifacts[name]!==proof.payload.sha256)throw new Error('ARTIFACT_SCOPE_INVALID');
+   const sha256=proof.payload.sha256,stage=name+'.'+sha256;
+   if(!c.artifacts[name]||!/^[a-f0-9]{64}$/.test(sha256))throw new Error('ARTIFACT_SCOPE_INVALID');
    if(proof.payload.kind==='artifact_chunk'){
     const {index,count,chunkHash}=proof.payload;
     if(!Number.isInteger(index)||!Number.isInteger(count)||index<0||index>=count||count>256)throw new Error('ARTIFACT_SCOPE_INVALID');
     const chunk=Buffer.from(await request.arrayBuffer());
     if(chunk.length>65536||digest(chunk)!==chunkHash)throw new Error('ARTIFACT_HASH_INVALID');
-    await storage('object/stratum-private-builds/'+name+'.part-'+index,{method:'POST',headers:{'Content-Type':'application/octet-stream','x-upsert':'true'},body:chunk});
+    await storage('object/stratum-private-builds/'+stage+'.part-'+index,{method:'POST',headers:{'Content-Type':'application/octet-stream','x-upsert':'true'},body:chunk});
     return response(200,{uploaded:true,index},origin);
    }
    if(proof.payload.kind==='artifact_complete'){
     const {count}=proof.payload;
     if(!Number.isInteger(count)||count<1||count>256)throw new Error('ARTIFACT_SCOPE_INVALID');
     const chunks=[];
-    for(let i=0;i<count;i+=8)chunks.push(...await Promise.all(Array.from({length:Math.min(8,count-i)},async(_,j)=>Buffer.from(await(await storage('object/authenticated/stratum-private-builds/'+name+'.part-'+(i+j))).arrayBuffer()))));
+    for(let i=0;i<count;i+=8)chunks.push(...await Promise.all(Array.from({length:Math.min(8,count-i)},async(_,j)=>Buffer.from(await(await storage('object/authenticated/stratum-private-builds/'+stage+'.part-'+(i+j))).arrayBuffer()))));
     const bytes=Buffer.concat(chunks);
-    if(bytes.length>10*1024*1024||digest(bytes)!==c.artifacts[name])throw new Error('ARTIFACT_HASH_INVALID');
-    await storage('object/stratum-private-builds/'+name,{method:'POST',headers:{'Content-Type':'application/octet-stream','x-upsert':'true'},body:bytes});
-    await storage('object/stratum-private-builds',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:Array.from({length:count},(_,i)=>name+'.part-'+i)})});cached=null;
-    return response(200,{uploaded:true,name,sha256:c.artifacts[name]},origin);
+    if(bytes.length>10*1024*1024||digest(bytes)!==sha256)throw new Error('ARTIFACT_HASH_INVALID');
+    await installArtifact(c,row[0].sealed,name,bytes,sha256);
+    await storage('object/stratum-private-builds',{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefixes:Array.from({length:count},(_,i)=>stage+'.part-'+i)})});
+    return response(200,{uploaded:true,name,sha256},origin);
    }
    const bytes=Buffer.from(await request.arrayBuffer());
-   if(bytes.length>10*1024*1024||digest(bytes)!==c.artifacts[name])throw new Error('ARTIFACT_HASH_INVALID');
-   await storage('object/stratum-private-builds/'+name,{method:'POST',headers:{'Content-Type':'application/octet-stream','x-upsert':'true'},body:bytes});cached=null;
-   return response(200,{uploaded:true,name,sha256:c.artifacts[name]},origin);
+   if(bytes.length>10*1024*1024||digest(bytes)!==sha256)throw new Error('ARTIFACT_HASH_INVALID');
+   await installArtifact(c,row[0].sealed,name,bytes,sha256);
+   return response(200,{uploaded:true,name,sha256},origin);
   }
   const state=await configuration(['/health','/v1/ea/package','/v1/ea/download'].includes(path));
   if(path==='/health')return response(200,{service:'stratum-control',authMode:'supabase',protocolVersion:2,ready:true,liveTradingDefault:false,billingConfigured:false},origin);

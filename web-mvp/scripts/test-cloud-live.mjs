@@ -77,7 +77,12 @@ try{
   const job=await api('/v1/jobs',request,token);check(job,201);assert.equal(job.value.configurationHash,hash(c));
   const claim=await device('/v1/device/claim',{});check(claim,200);assert.ok(verifySigned(claim.value.job,setup.serverPublicKey));assert.equal(claim.value.job.payload.liveTradingAllowed,false);
   check(await api('/v1/trading',{installationId,enabled:true,jobId:job.value.id},token),409);
-  check(await api('/v1/jobs/'+job.value.id+'/cancel',{},token),200);
+  const attemptId=claim.value.job.payload.attemptId;
+  const detail='QA native history diagnostic: M1 need~20361 max=5000 bars=5000 oldest=syncing';
+  check(await device('/v1/device/progress',{jobId:job.value.id,attemptId,phase:'downloading',processed:0,total:null,detail}),200);
+  const failed=await device('/v1/device/failure',{jobId:job.value.id,attemptId,code:'AUDIT_HISTORY_BLOCKED',detail});check(failed,200);
+  assert.equal(failed.value.state,'failed');assert.equal(failed.value.progress.detail,detail);assert.equal(failed.value.result,null);
+  const read=await api('/v1/jobs/'+job.value.id,undefined,token);check(read,200);assert.equal(read.value.failureCode,'AUDIT_HISTORY_BLOCKED');assert.equal(read.value.progress.detail,detail);
  }finally{stopHeartbeat=true;await keepAlive;}
  if(heartbeatError)throw heartbeatError;
 }finally{

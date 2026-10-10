@@ -1,10 +1,10 @@
 {
-  "checkedAt": "2026-10-06T19:46:54.544Z",
+  "checkedAt": "2026-10-10T21:45:55.519Z",
   "strategy": "jp225Close/Reverse0.25R",
   "strategyId": "user_853fdb478ffc791a62835a66",
   "symbol": "JP225m",
   "baseline": "unmodified canonical MaCross source, saved-strategy application and normal historical audit",
-  "binarySha256": "55f0c5c47c05a7ff744d5b0a7bbc57b429b9888021c110c49790ae4eda2a0eb6",
+  "binarySha256": "c7435543b2e4285f4ae14711880184efffd4b5f18b3568c41e383450e63e6a7f",
   "configurationSha256": "7fd91a58e13758189480516e1735e594733ba575baad41fb7ad18ba1e029b5f7",
   "rows": 41,
   "differences": [],

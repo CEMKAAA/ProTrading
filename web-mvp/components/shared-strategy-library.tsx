@@ -4,16 +4,18 @@ import {ArrowUpRight,Library,RefreshCw,Search} from 'lucide-react';
 import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS} from '@/lib/control-endpoint';
 import {universalConfigurationSchema,type Family,type UniversalConfiguration} from '@/lib/universal-contract';
 import type {SharedLoad,SharedStrategy} from '@/lib/strategy-access';
-import {campaignWindows} from '@/lib/strategy-campaign';
+import {campaignWindows,cycleCampaignSort,rankCampaignStrategies,type CampaignSort} from '@/lib/strategy-campaign';
 import StrategyCampaignStats from './strategy-campaign-stats';
 import {UiText,useLanguage} from './language-provider';
 
 const families:Record<Family,string>={orb:'ORB',macross:'MA Crossover',sol:'Sol Advanced',entrylab:'Entry Lab'};
+const sortOptions:{key:CampaignSort['key'];label:string}[]=[{key:'winRate',label:'Win rate'},{key:'total',label:'Trade count'},{key:'wins',label:'Wins'},{key:'losses',label:'Losses'},{key:'netR',label:'Net R'},{key:'minCumR',label:'MC (MinCum R)'}];
 export default function SharedStrategyLibrary({credential,onLoad}:{credential:string;onLoad:(c:UniversalConfiguration,symbol:string)=>void}){
  const {t}=useLanguage();
  const [record,setRecord]=useState<{owner:string;items:SharedStrategy[]}>({owner:'',items:[]});
  const [family,setFamily]=useState<Family>('orb'),[query,setQuery]=useState(''),[error,setError]=useState(''),[loading,setLoading]=useState(true),[pending,setPending]=useState(''),[refresh,setRefresh]=useState(0);
  const [weeks,setWeeks]=useState(260);
+ const [sorts,setSorts]=useState<CampaignSort[]>([{key:'winRate',direction:'desc'},{key:'total',direction:'desc'}]);
  const owner=useRef(credential);owner.current=credential;
  useEffect(()=>{
   const abort=new AbortController();setRecord({owner:'',items:[]});setError('');setLoading(true);
@@ -36,11 +38,17 @@ export default function SharedStrategyLibrary({credential,onLoad}:{credential:st
   finally{setPending('');}
  }
  const items=record.owner===credential?record.items:[];
- const visible=items.filter(s=>s.family===family&&(s.name+' '+s.symbol).toLowerCase().includes(query.toLowerCase()));
+ const visible=rankCampaignStrategies(items.filter(s=>s.family===family&&(s.name+' '+s.symbol).toLowerCase().includes(query.toLowerCase())),weeks,sorts);
  return <section className="shared-strategy-library"><div className="admin-access-heading"><div><h3><UiText>Assigned strategies</UiText></h3><p><UiText>Strategies your administrator has made available to your account. Loading updates your draft only.</UiText></p></div><button className="secondary-btn" disabled={loading||!!pending} onClick={()=>setRefresh(n=>n+1)}><RefreshCw size={16}/><UiText>Refresh</UiText></button></div>
   <nav className="admin-family-tabs" aria-label={t('Assigned EA families')}>{(Object.keys(families) as Family[]).map(f=><button key={f} aria-pressed={f===family} disabled={!!pending} onClick={()=>{setFamily(f);setQuery('');}}>{families[f]} <span>{items.filter(s=>s.family===f).length}</span></button>)}</nav>
   <label className="uc-library-search"><Search size={19}/><input value={query} onChange={e=>setQuery(e.target.value)} placeholder={t('Search assigned strategies')} aria-label={t('Search assigned strategies')}/></label>
   <div className="campaign-selector"><strong><UiText>Verified MEGA campaign</UiText></strong><nav aria-label={t('Campaign audit window')}>{campaignWindows.map(w=><button type="button" key={w.weeks} aria-pressed={weeks===w.weeks} onClick={()=>setWeeks(w.weeks)}>{w.label}</button>)}</nav></div>
+  <div className="campaign-sorting"><div className="uc-row"><strong><UiText>Sort this audit window</UiText></strong><button type="button" className="text-btn" disabled={!sorts.length} onClick={()=>setSorts([])}><UiText>Clear sorting</UiText></button></div>
+   <div className="campaign-sort-controls">{sortOptions.map(option=>{const index=sorts.findIndex(s=>s.key===option.key),sort=sorts[index];return <button type="button" key={option.key} aria-pressed={!!sort} onClick={()=>setSorts(s=>cycleCampaignSort(s,option.key))}>
+    {sort&&<span className="campaign-sort-priority">{index+1}</span>}<UiText>{option.label}</UiText><small><UiText>{sort?.direction==='desc'?'Highest first':sort?'Lowest first':'Not sorted'}</UiText></small>
+   </button>;})}</div>
+   <p className="campaign-explanation"><UiText>Combine rankings. Priority follows selection order; ties use the next ranking. Click to cycle highest, lowest, off. Missing results stay last.</UiText></p>
+  </div>
   <p className="campaign-explanation"><UiText>Frozen historical results, not a live forecast. Select a window to compare the same recorded audit period.</UiText></p>
   <p className="campaign-explanation"><UiText>W: wins / L: losses / O: open trades. WR excludes open and flat trades.</UiText></p>
   {error&&<p role="alert" className="uc-error">{error}</p>}

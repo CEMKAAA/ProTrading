@@ -518,11 +518,13 @@ export class ControlPlane {
       return this.viewJob(this.get("SELECT * FROM jobs WHERE id=?", row.id));
     });
   }
-  fail(installation, { jobId, attemptId, code }) {
+  fail(installation, { jobId, attemptId, code, detail }) {
     requireThat(typeof code === "string" && /^[A-Z0-9_]{1,80}$/.test(code), "INVALID_FAILURE_CODE", 400);
+    requireThat(detail===undefined||typeof detail==="string"&&detail.length<=1024&&!/[\r\n\x00]/.test(detail), "INVALID_FAILURE_DETAIL", 400);
     return this.atomic(() => {
       const row = this.runningJob(installation, jobId, attemptId);
-      this.run("UPDATE jobs SET state='failed',failure_code=?,updated_at=? WHERE id=?", code, this.now(), row.id);
+      const progress=detail===undefined?row.progress_json:JSON.stringify({...(row.progress_json?JSON.parse(row.progress_json):{jobId,attemptId,phase:"preparing",processed:0,total:null}),detail});
+      this.run("UPDATE jobs SET state='failed',failure_code=?,progress_json=?,updated_at=? WHERE id=?", code, progress, this.now(), row.id);
       this.event(row.account_id, "backtest_failed", { jobId, code });
       return this.viewJob(this.get("SELECT * FROM jobs WHERE id=?", row.id));
     });

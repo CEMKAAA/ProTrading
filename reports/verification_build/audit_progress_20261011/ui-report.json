@@ -1,0 +1,12 @@
+{
+  "status": "PASS",
+  "mockApi": true,
+  "liveBrokerAuditClaimed": false,
+  "checks": [
+    "indeterminate animated history with elapsed time and real diagnostic, no fake percentage",
+    "actual replay percentage",
+    "temporary authority pause, not fake success",
+    "completed result wins over stale terminal pause / 38% progress",
+    "mobile width"
+  ]
+}

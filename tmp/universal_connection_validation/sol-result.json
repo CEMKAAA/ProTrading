@@ -1,14 +1,14 @@
 {
-  "jobId": "873ad788-203b-4f63-9830-1552a1e54462",
-  "attemptId": "26a29e96-b829-4da7-8e1f-932a18723f74",
+  "jobId": "8044de1c-4860-455a-bd95-6460b78194a3",
+  "attemptId": "ebb8c176-7ec4-49fb-a7ae-5e5ced21150c",
   "configurationHash": "070c66653a3de6a7d0c507b40bc99f559012ac3f50f33c6f318acbcf7276984d",
-  "requestHash": "e6e8da403690e293fce46d713af36b6fb09ec88057c07c9cca33c2cb21f3f9b0",
+  "requestHash": "95518d503a938264170cf60bd9195284707b8343c24f40ec6c46c9e6a35b559f",
   "engineRuntime": "universal-adapter/v2",
   "auditBuild": "canonical-bundle/v1",
   "brokerServer": "Exness-MT5Trial15",
   "symbol": "JP225m",
   "coverage": {
-    "datasetFingerprint": "17f2c97b9e14c2e2e03d0311a07f8cda657ff592f80d82ebf79c9177d942d631",
+    "datasetFingerprint": "e7ba1d6cd419e0f6ee7de14a237aaabd42f60893305441eb2f30fe094b4b72fd",
     "realTicks": 0,
     "generatedTicks": 0,
     "mode": "existing_audit",
@@ -17,42 +17,6 @@
   "trades": [
     {
       "id": "1",
-      "direction": "SELL",
-      "signalUtc": "2026-09-23T04:00:00.000Z",
-      "entryUtc": "2026-09-23T05:00:00.000Z",
-      "exitUtc": "2026-09-23T05:01:30.000Z",
-      "entryPrice": 66843.5,
-      "exitPrice": null,
-      "sl": 66863.5,
-      "tp": 66823.5,
-      "outcome": "LOSS",
-      "exitReason": "SL",
-      "netR": -1,
-      "spreadPrice": 3.100000000006,
-      "slippagePrice": null,
-      "commission": null,
-      "swap": null
-    },
-    {
-      "id": "2",
-      "direction": "BUY",
-      "signalUtc": "2026-09-25T14:00:00.000Z",
-      "entryUtc": "2026-09-25T15:00:00.000Z",
-      "exitUtc": "2026-09-25T15:02:18.000Z",
-      "entryPrice": 66206.5,
-      "exitPrice": null,
-      "sl": 66186.5,
-      "tp": 66226.5,
-      "outcome": "WIN",
-      "exitReason": "TP",
-      "netR": 1,
-      "spreadPrice": 3.100000000006,
-      "slippagePrice": null,
-      "commission": null,
-      "swap": null
-    },
-    {
-      "id": "3",
       "direction": "SELL",
       "signalUtc": "2026-09-28T11:00:00.000Z",
       "entryUtc": "2026-09-28T12:00:00.000Z",
@@ -70,7 +34,7 @@
       "swap": null
     },
     {
-      "id": "4",
+      "id": "2",
       "direction": "SELL",
       "signalUtc": "2026-09-30T00:00:00.000Z",
       "entryUtc": "2026-09-30T01:00:00.000Z",
@@ -88,7 +52,7 @@
       "swap": null
     },
     {
-      "id": "5",
+      "id": "3",
       "direction": "SELL",
       "signalUtc": "2026-09-30T08:00:00.000Z",
       "entryUtc": "2026-09-30T09:00:00.000Z",
@@ -106,7 +70,7 @@
       "swap": null
     },
     {
-      "id": "6",
+      "id": "4",
       "direction": "BUY",
       "signalUtc": "2026-09-30T22:00:00.000Z",
       "entryUtc": "2026-09-30T23:00:00.000Z",
@@ -124,7 +88,7 @@
       "swap": null
     },
     {
-      "id": "7",
+      "id": "5",
       "direction": "BUY",
       "signalUtc": "2026-09-30T23:00:00.000Z",
       "entryUtc": "2026-10-01T00:00:00.000Z",
@@ -142,7 +106,7 @@
       "swap": null
     },
     {
-      "id": "8",
+      "id": "6",
       "direction": "BUY",
       "signalUtc": "2026-10-01T07:00:00.000Z",
       "entryUtc": "2026-10-01T08:00:00.000Z",
@@ -160,7 +124,7 @@
       "swap": null
     },
     {
-      "id": "9",
+      "id": "7",
       "direction": "SELL",
       "signalUtc": "2026-10-02T14:00:00.000Z",
       "entryUtc": "2026-10-02T15:00:00.000Z",
@@ -176,17 +140,71 @@
       "slippagePrice": null,
       "commission": null,
       "swap": null
+    },
+    {
+      "id": "8",
+      "direction": "SELL",
+      "signalUtc": "2026-10-07T05:00:00.000Z",
+      "entryUtc": "2026-10-07T06:00:00.000Z",
+      "exitUtc": "2026-10-07T06:00:27.000Z",
+      "entryPrice": 70350.4,
+      "exitPrice": null,
+      "sl": 70370.4,
+      "tp": 70330.4,
+      "outcome": "LOSS",
+      "exitReason": "SL",
+      "netR": -1,
+      "spreadPrice": 3.100000000006,
+      "slippagePrice": null,
+      "commission": null,
+      "swap": null
+    },
+    {
+      "id": "9",
+      "direction": "BUY",
+      "signalUtc": "2026-10-08T05:00:00.000Z",
+      "entryUtc": "2026-10-08T06:00:00.000Z",
+      "exitUtc": "2026-10-08T06:00:05.000Z",
+      "entryPrice": 69339.5,
+      "exitPrice": null,
+      "sl": 69319.5,
+      "tp": 69359.5,
+      "outcome": "LOSS",
+      "exitReason": "SL",
+      "netR": -1,
+      "spreadPrice": 3.100000000006,
+      "slippagePrice": null,
+      "commission": null,
+      "swap": null
+    },
+    {
+      "id": "10",
+      "direction": "SELL",
+      "signalUtc": "2026-10-08T22:00:00.000Z",
+      "entryUtc": "2026-10-08T23:00:01.000Z",
+      "exitUtc": "2026-10-08T23:08:22.000Z",
+      "entryPrice": 68378.4,
+      "exitPrice": null,
+      "sl": 68398.4,
+      "tp": 68358.4,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 1,
+      "spreadPrice": 3.400000000009,
+      "slippagePrice": null,
+      "commission": null,
+      "swap": null
     }
   ],
   "summary": {
     "wins": 4,
-    "losses": 5,
+    "losses": 6,
     "flat": 0,
     "open": 0,
     "data": 0,
-    "netR": -1,
-    "maxClosedDrawdownR": 3,
-    "winRate": 44.44444444444444,
+    "netR": -2,
+    "maxClosedDrawdownR": 5,
+    "winRate": 40,
     "trust": "client_reported",
     "coverageComplete": true
   }

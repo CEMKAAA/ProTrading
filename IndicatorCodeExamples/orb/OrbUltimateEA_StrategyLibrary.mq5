@@ -2796,6 +2796,15 @@ void OrbStrategyWindowControls(int x,int y)
 {
    CreateButton("BTN_SW_SOURCE",x+138,y+5,240,20,SwSourceCaption(),g_swFrozen?C'184,103,22':C'38,101,176');
    ObjectSetString(0,PREFIX+"BTN_SW_SOURCE",OBJPROP_TOOLTIP,"View only: CURRENT -> verified MEGA 2 -> original MEGA 1 (old calculation). Does not apply strategy settings. Compare identical profiles/endpoints; legacy corrections are not alpha decay.");
+   TCalCsvLauncher(PREFIX,OrbLibraryX(x+420),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
+   // Keep the export path below the header, out of the source selector and search popup.
+   string csvLabels[]={"CSV_FOLDER_ROOT","CSV_FOLDER_SUFFIX"};
+   for(int line=0;line<2;line++)
+   {
+      string obj=TCalId(csvLabels[line]);
+      if(g_strategyPopupOpen)ObjectDelete(0,obj);
+      else {ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,OrbLibraryX(x+12));ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,OrbLibraryY(y+184+line*10));}
+   }
    for(int i=0;i<9;i++)CreateButton("BTN_SW_WINDOW_"+(string)i,x+12+i*65,y+102,61,20,SwWindow(SwWeeks(i)),g_swWeeks==SwWeeks(i)?C'184,103,22':C'38,101,176');
    for(int i=0;i<5;i++)CreateButton("BTN_SW_SORT_"+(string)i,x+12+i*118,y+126,114,20,SwSortCaption(i),g_swDirection[i]==0?C'80,80,80':C'30,150,95');
 }
@@ -7716,7 +7725,6 @@ void UpdateDashboard()
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
    OrbUserDraw();OrbPositionDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+496,false,!g_orbMoneyRisk); OrbClockUiDraw();
-   TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');
@@ -7900,7 +7908,7 @@ void UpdateDashboard()
    CreateButton("BTN_BRIDGE_PUB",x+424,y+490,58,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
    CreateButton("BTN_BRIDGE_ONLY",x+486,y+490,62,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
    CreateButton("BTN_BRIDGE_NATIVE",x+552,y+490,52,18,g_orbNativeWithBridgeOnly?"NAT ON":"NAT OFF",g_orbNativeWithBridgeOnly?C'184,103,22':C'80,80,80');
-   CreateButton("BTN_UTC_SESSION",x+424,y+513,82,18,g_rtUtcMidnightSession?"UTC00 ON":"UTC00 OFF",g_rtUtcMidnightSession?C'30,150,95':C'80,80,80');
+   CreateButton("BTN_UTC_SESSION",x+544,y+513,74,18,g_rtUtcMidnightSession?"UTC00 ON":"UTC00 OFF",g_rtUtcMidnightSession?C'30,150,95':C'80,80,80');
    bool winApplied=(g_entryWindowApplyFlashUntil>TimeLocal());
    CreateButton("BTN_ENTRY_WINDOW",x+12,y+536,74,18,g_rtEntryWindow?"WIN ON":"WIN OFF",g_rtEntryWindow?C'30,150,95':C'80,80,80');
    CreateEdit("EDIT_ENTRY_WIN_START",x+92,y+536,52,18,ClockMinutesText(g_rtEntryWindowStartMin));

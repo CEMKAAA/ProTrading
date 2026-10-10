@@ -2861,6 +2861,15 @@ void OrbStrategyWindowControls(int x,int y)
 {
    CreateButton("BTN_SW_SOURCE",x+138,y+5,240,20,SwSourceCaption(),g_swFrozen?C'184,103,22':C'38,101,176');
    ObjectSetString(0,PREFIX+"BTN_SW_SOURCE",OBJPROP_TOOLTIP,"View only: CURRENT -> verified MEGA 2 -> original MEGA 1 (old calculation). Does not apply strategy settings. Compare identical profiles/endpoints; legacy corrections are not alpha decay.");
+   TCalCsvLauncher(PREFIX,OrbLibraryX(x+420),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
+   // Keep the export path below the header, out of the source selector and search popup.
+   string csvLabels[]={"CSV_FOLDER_ROOT","CSV_FOLDER_SUFFIX"};
+   for(int line=0;line<2;line++)
+   {
+      string obj=TCalId(csvLabels[line]);
+      if(g_strategyPopupOpen)ObjectDelete(0,obj);
+      else {ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,OrbLibraryX(x+12));ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,OrbLibraryY(y+184+line*10));}
+   }
    for(int i=0;i<9;i++)CreateButton("BTN_SW_WINDOW_"+(string)i,x+12+i*65,y+102,61,20,SwWindow(SwWeeks(i)),g_swWeeks==SwWeeks(i)?C'184,103,22':C'38,101,176');
    for(int i=0;i<5;i++)CreateButton("BTN_SW_SORT_"+(string)i,x+12+i*118,y+126,114,20,SwSortCaption(i),g_swDirection[i]==0?C'80,80,80':C'30,150,95');
 }
@@ -8373,7 +8382,6 @@ void UpdateDashboard()
    McOfUiDraw();
    TCalLauncher(PREFIX,OrbLibraryX(InpDashboardX+644),OrbLibraryY(InpDashboardY+5),
       InpDashboardX+300,InpDashboardY+34,"SESSION LOCAL TIME");
-   TCalCsvLauncher(PREFIX,OrbLibraryX(InpDashboardX+772),OrbLibraryY(InpDashboardY+5),g_libraryDashScale,DASH_Z+3);
 }
 
 //=========================================================================

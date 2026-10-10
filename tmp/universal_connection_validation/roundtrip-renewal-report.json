@@ -1,0 +1,15 @@
+{
+  "checkedAt": "2026-10-10T21:54:16.059Z",
+  "installationId": "690882e7-e91a-48ee-ad82-a3b4ce6c0dbd",
+  "compile": "0 errors, 0 warnings",
+  "binarySha256": "c7435543b2e4285f4ae14711880184efffd4b5f18b3568c41e383450e63e6a7f",
+  "families": [],
+  "authorization": {
+    "expiredAuditPauses": true
+  },
+  "chart": {
+    "subscriberPanel": true
+  },
+  "status": "FAIL",
+  "error": "MT5_TEST_TIMEOUT"
+}

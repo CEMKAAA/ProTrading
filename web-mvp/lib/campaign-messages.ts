@@ -1,4 +1,17 @@
 export const campaignMessages:Record<string,readonly [string,string]>={
+ 'Sort this audit window':['Bu audit penceresini s\u0131rala','Dieses Audit-Zeitfenster sortieren'],
+ 'Clear sorting':['S\u0131ralamay\u0131 temizle','Sortierung entfernen'],
+ 'Win rate':['Kazanma oran\u0131','Gewinnquote'],
+ 'Trade count':['\u0130\u015flem say\u0131s\u0131','Trade-Anzahl'],
+ 'Wins':['Kazananlar','Gewinne'],
+ 'Losses':['Kaybedenler','Verluste'],
+ 'MC (MinCum R)':['MC (MinCum R)','MC (MinCum R)'],
+ 'Highest first':['Y\u00fcksekten d\u00fc\u015f\u00fc\u011fe','Absteigend'],
+ 'Lowest first':['D\u00fc\u015f\u00fckten y\u00fckse\u011fe','Aufsteigend'],
+ 'Not sorted':['S\u0131ralama kapal\u0131','Nicht sortiert'],
+ 'Combine rankings. Priority follows selection order; ties use the next ranking. Click to cycle highest, lowest, off. Missing results stay last.':[
+  'S\u0131ralamalar birlikte kullan\u0131l\u0131r. Se\u00e7im s\u0131ras\u0131 \u00f6nceliktir; e\u015fitlikte sonraki \u00f6l\u00e7\u00fct kullan\u0131l\u0131r. T\u0131klayarak y\u00fcksekten, d\u00fc\u015f\u00fckten, kapal\u0131 aras\u0131nda ge\u00e7. Eksik sonu\u00e7lar en sonda kal\u0131r.',
+  'Rangfolgen kombinieren. Die Auswahlreihenfolge bestimmt die Priorit\u00e4t; bei Gleichstand folgt das n\u00e4chste Kriterium. Klicken: absteigend, aufsteigend, aus. Fehlende Ergebnisse bleiben zuletzt.'],
  'Verified MEGA campaign':['Do\u011frulanm\u0131\u015f MEGA kampanya','Verifizierte MEGA-Kampagne'],
  'Campaign audit window':['Kampanya audit penceresi','Audit-Zeitraum der Kampagne'],
  'W: wins / L: losses / O: open trades. WR excludes open and flat trades.':[

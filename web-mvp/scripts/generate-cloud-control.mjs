@@ -1,11 +1,15 @@
 import ts from 'typescript';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 
 const root=resolve(import.meta.dirname,'..'), out=resolve(root,'control-service/cloud/generated');
 mkdirSync(out,{recursive:true});
 const sources={};
+function writeGenerated(path,text){
+  // Atomic replacement also avoids truncating a file mapped by a Windows reader.
+  writeFileSync(path+'.partial',text);renameSync(path+'.partial',path);
+}
 const pure=new Set(['now','ticket','viewJob','conversationSummary','seal','unseal','conversationRow','fetcher']);
 
 // Mechanically preserve the already-tested policy; only the database boundary becomes async.
@@ -40,7 +44,7 @@ function convert(file, replacements=[], pureThis=pure, receivers=['this','p','pl
     return n=>ts.visitNode(n,visit);
   }]);
   const text='// Generated from canonical policy. Run scripts/generate-cloud-control.mjs; do not edit.\n'+ts.createPrinter().printFile(result.transformed[0]);
-  result.dispose();writeFileSync(resolve(out,file),text);
+  result.dispose();writeGenerated(resolve(out,file),text);
 }
 
 convert('control-plane.mjs',[

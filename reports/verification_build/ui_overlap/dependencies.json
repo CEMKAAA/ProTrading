@@ -1,0 +1,926 @@
+﻿[
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditKivancExport.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditKivancExport.mqh",
+        "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditKivancFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditKivancFeatures.mqh",
+        "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditMemoIndex.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditMemoIndex.mqh",
+        "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditQuantFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditQuantFeatures.mqh",
+        "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditSignalFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditSignalFeatures.mqh",
+        "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditTickReadGuard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditTickReadGuard.mqh",
+        "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditTradeCsv.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditTradeCsv.mqh",
+        "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\AuditTradeCsvAdapter.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\AuditTradeCsvAdapter.mqh",
+        "sha256":  "DC0E5BAE39A6D961737D4F6063EEC9B2166AC741CDEC2CA35D04E81A0891AEC3",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\DailyTradeQuota.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\DailyTradeQuota.mqh",
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LabEntryBuilder.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LabEntryBuilder.mqh",
+        "sha256":  "0083FAC0A5183AFB60B1F55733E6668B08B41B983F144226DCAAEB609A38DDAC",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LabEntryLogic.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LabEntryLogic.mqh",
+        "sha256":  "28311DDB3E22E64BD5A0EE309CD3C6303FCC528EFA3785C07667566D74E3DF48",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LabNativeTradeVisuals.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LabNativeTradeVisuals.mqh",
+        "sha256":  "9D7CCFAE80DFE0BBC054C3A52A91C98186F2A195D8E1D80365F6758BC9DFCD85",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LabParameterizedFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LabParameterizedFeatures.mqh",
+        "sha256":  "4928221BB66C5CB55DB661FDE8635E1EEBC711B1FA767CFFE0B228CC224C4BF0",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LabPolicyRuntime.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LabPolicyRuntime.mqh",
+        "sha256":  "BC6B3B2C3696EF252CE409BB64CEE64680767A478EC21FA8FC31A63C2F89A0C0",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LabScalperPresets.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LabScalperPresets.mqh",
+        "sha256":  "DB949D32D9CF201507FA5C08AE864EC19BAD74C970EB525AF112E487677E3E76",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\LiqNarrativeSol_RegimeV3.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaCrossAuditCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaCrossAuditCache.mqh",
+        "sha256":  "F3C9657F716EFF818F57F5DDA64E5C4F81F39935D287E5805927904E17ABCA1F",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaCrossEventAudit.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaCrossEventAudit.mqh",
+        "sha256":  "F39B8A6FE69972F278AD14BEB6E68C38C7B133A6BC56D6F9F4C0C4973272B5C4",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaCrossOrderFlow.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaCrossOrderFlow.mqh",
+        "sha256":  "A83D41915C5653527F0924042450586A22D7E1B5D742A066F784A15757461940",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaCrossOrderFlowCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaCrossOrderFlowCore.mqh",
+        "sha256":  "8226A77F2D9B4ADCF778B4CB306F903B23CFB2EA5D072D1970C50F349C84465B",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaCrossPineStream.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaCrossPineStream.mqh",
+        "sha256":  "E1CCECDF9CA3C0E5F83205B37670405D082FDEC5854895FAB476850AD71314FB",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaCrossSignalCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaCrossSignalCore.mqh",
+        "sha256":  "7B506EF4A720BF8CB45F9411515EC023481752BD3EA2541C15AAACE513CCED59",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaExitPolicy.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaExitPolicy.mqh",
+        "sha256":  "C2718545CC60D61C74E8773C22015E103F21380D3F3471F71C64D3167A1CC501",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaHistoricalVisualCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaHistoricalVisualCache.mqh",
+        "sha256":  "F3072DA1E168B8A9B8DA03B686263B2EA0B2B1D11EBD9D444E261A5B685439D2",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaIndependentEntries.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaIndependentEntries.mqh",
+        "sha256":  "09BFC9627EDFA85FC89BFC1ECA5ED992909D3C14AB2925685F77343DC3F5A06A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaOrderFlowLeaderboard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaOrderFlowLeaderboard.mqh",
+        "sha256":  "1BFCD200D39EE44C4171C3A18716E9B83DA4A44E9EC788929855C64B6A3C12F0",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaOrderFlowLeaderboardData.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaOrderFlowLeaderboardData.mqh",
+        "sha256":  "99564D81FA5BD632717F26FFF89370436F92D7FA6765CC0B57D209008A5788E9",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaOrderFlowSettings.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaOrderFlowSettings.mqh",
+        "sha256":  "DED19E9A34D630CB516B3524DC4173C04AC11D0E0A5BFBBB45CFED6FD7421AC3",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\MaTrendFollowCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\MaTrendFollowCore.mqh",
+        "sha256":  "9A357A5FBE9AC8D605B7E05621E2C2C1EC3E7C9C404C18B6BB3485FA5C6DB2CB",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\NasUltimate_Core.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\NasUltimate_Core.mqh",
+        "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\NativeMarginPreview.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\NativeMarginPreview.mqh",
+        "sha256":  "B51A2A3BFB95DA7BB5684AAFB059A3A4CEF9BA7C2F18C967CC5517DD2246E694",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\NativeRiskBalance.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\NativeRiskBalance.mqh",
+        "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbAdvancedAuditEngine.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "231D6BAAA3F1565503B1DD95A2D0839F15EC95DE6B274BD8864D2814FD403FB2",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbAuditRamCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbAuditRamCache.mqh",
+        "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbCustomRPicker.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbCustomRPicker.mqh",
+        "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbReplayMemoEpoch.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbReplayMemoEpoch.mqh",
+        "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyCampaignModels.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyCampaignModels.mqh",
+        "sha256":  "ACF1F11D649E79AB838A9D886B96E4FEE78D7C7847BAD0F0082348B44E440140",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyCampaignRegistry.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyCampaignRegistry.mqh",
+        "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLConfig.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyMLConfig.mqh",
+        "sha256":  "AEE5555F43B7220A13E33FB1FCE3D7EB04F547414C0C13562DE7948C8CA78997",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyMLCore.mqh",
+        "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLHistory.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyMLHistory.mqh",
+        "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLJobs.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyMLJobs.mqh",
+        "sha256":  "4A1A769BFCCF5BF9DF707FBBF1964C117434AC75D39792F37DEE75234309D74D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyMLPipeline.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyMLPipeline.mqh",
+        "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyModelSlot.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyModelSlot.mqh",
+        "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyPresetLibrary.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyPresetLibrary.mqh",
+        "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyR7Core.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyR7Core.mqh",
+        "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyR7Runtime.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyR7Runtime.mqh",
+        "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserContract.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserContract.mqh",
+        "sha256":  "6CA978CF36D7106ED16E5F1A43C263895120497C5B52A09142D781E105E5E86E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserLibrary.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "66FD2F83AF686E9BB38392B6D472D5812069D02B472ED49A970F149896540FAE",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserMetrics.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "CFAB3F3197632730D0472AE62CA5F0AC7BD898144B7BD30FD461218B713FC13B",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbUltimate_ProfessionalPipeline.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbUltimate_ProfessionalPipeline.mqh",
+        "sha256":  "29C3C5011C71C0F2ACBCA688685FBAB6E9C1DD6BE0B0D3359167CD7A374C7F51",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbUltimate_RegimeMatrix.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbUltimate_RegimeMatrix.mqh",
+        "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\ResearchFiveYearData.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\ResearchFiveYearData.mqh",
+        "sha256":  "CEDB29779D4582676D412902890C36AEC3C8E5564F709FB467887D864391642A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\StrategyWindowMetrics.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\StrategyWindowMetrics.mqh",
+        "sha256":  "F31FA762B2C4C4F9E0A6534F494281C7F85E028651B13442CF510BF242F86537",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\TradeCalendarMatrix.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\TradeCalendarMatrix.mqh",
+        "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\TradeDayCalendarPublisher.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditKivancExport.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditKivancExport.mqh",
+        "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditKivancFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditKivancFeatures.mqh",
+        "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditMemoIndex.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditMemoIndex.mqh",
+        "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditQuantFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditQuantFeatures.mqh",
+        "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditSignalFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditSignalFeatures.mqh",
+        "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditTickReadGuard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditTickReadGuard.mqh",
+        "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditTradeCsv.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditTradeCsv.mqh",
+        "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\AuditTradeCsvAdapter.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\AuditTradeCsvAdapter.mqh",
+        "sha256":  "1D2CA06B6E1222C8E5060B48CD9C1B7806F72D19F4DC24ADB6B009BB67171EE5",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\DailyTradeQuota.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\DailyTradeQuota.mqh",
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\LiqNarrativeSol_RegimeV3.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossAuditCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossAuditCache.mqh",
+        "sha256":  "7F48A04E6D615518DC840AA59E6026EC5A9B2B6597442F106CCDBFC55DF7233C",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossEventAudit.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossEventAudit.mqh",
+        "sha256":  "1FA7A7D46CCC5321848AD94DA24F451E67B9E85537152895DAF0BD0D0ED62493",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOrderFlow.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOrderFlow.mqh",
+        "sha256":  "A83D41915C5653527F0924042450586A22D7E1B5D742A066F784A15757461940",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOrderFlowCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOrderFlowCore.mqh",
+        "sha256":  "8226A77F2D9B4ADCF778B4CB306F903B23CFB2EA5D072D1970C50F349C84465B",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossPineStream.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossPineStream.mqh",
+        "sha256":  "AC9A4F96D5276B34E1B00D6826993590CA28E6E3DE83BA96286D09D9D9ECE7BF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossSignalCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossSignalCore.mqh",
+        "sha256":  "B9275324D8E86EDF0C00E019577F2B8E42A09C17E4F4B6478E5E5D15FC07A000",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaExitPolicy.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaExitPolicy.mqh",
+        "sha256":  "129D835C74C6057921F6C40E56D4A8405A943C99716BD96BE644AB47B1E19618",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaHistoricalVisualCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaHistoricalVisualCache.mqh",
+        "sha256":  "F3072DA1E168B8A9B8DA03B686263B2EA0B2B1D11EBD9D444E261A5B685439D2",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaIndependentEntries.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaIndependentEntries.mqh",
+        "sha256":  "714B24965B31B50F24402A22922754F57E39C5195B7409C529464536B1987E45",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaOrderFlowLeaderboard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaOrderFlowLeaderboard.mqh",
+        "sha256":  "1BFCD200D39EE44C4171C3A18716E9B83DA4A44E9EC788929855C64B6A3C12F0",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaOrderFlowLeaderboardData.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaOrderFlowLeaderboardData.mqh",
+        "sha256":  "59C69653AED47A53F757E0146B8F5F72417FF6B661302B5475906E00CE0F0B59",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaOrderFlowSettings.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaOrderFlowSettings.mqh",
+        "sha256":  "DED19E9A34D630CB516B3524DC4173C04AC11D0E0A5BFBBB45CFED6FD7421AC3",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaTrendFollowCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaTrendFollowCore.mqh",
+        "sha256":  "9A357A5FBE9AC8D605B7E05621E2C2C1EC3E7C9C404C18B6BB3485FA5C6DB2CB",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\NasUltimate_Core.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\NasUltimate_Core.mqh",
+        "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\NativeRiskBalance.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\NativeRiskBalance.mqh",
+        "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbAdvancedAuditEngine.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "8B7A69001ADD4E72D4D55D3C501746D0640D655315939EB2AE15E24CBB72B29C",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbAuditRamCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbAuditRamCache.mqh",
+        "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbCustomRPicker.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbCustomRPicker.mqh",
+        "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbReplayMemoEpoch.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbReplayMemoEpoch.mqh",
+        "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyCampaignModels.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyCampaignModels.mqh",
+        "sha256":  "ACF1F11D649E79AB838A9D886B96E4FEE78D7C7847BAD0F0082348B44E440140",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyCampaignRegistry.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyCampaignRegistry.mqh",
+        "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLConfig.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLConfig.mqh",
+        "sha256":  "AEE5555F43B7220A13E33FB1FCE3D7EB04F547414C0C13562DE7948C8CA78997",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLCore.mqh",
+        "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLHistory.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLHistory.mqh",
+        "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLJobs.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLJobs.mqh",
+        "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyMLPipeline.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyMLPipeline.mqh",
+        "sha256":  "7CD2570E37F0A9BC43B28D88D56CFE551B1BEA72A18CED77F63A560144AA3ACD",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyModelSlot.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyModelSlot.mqh",
+        "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyPresetLibrary.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyPresetLibrary.mqh",
+        "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyR7Core.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyR7Core.mqh",
+        "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyR7Runtime.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyR7Runtime.mqh",
+        "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserContract.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserContract.mqh",
+        "sha256":  "125051DAE8E4FFAA4CF9864D6441E1E96CDF892F6B417A8C98D22C66DA3D979C",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserLibrary.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "CC55F11919A2DB894CC929767A76CCF68D3E56E83D9B0CEE7B38B985E253B9BF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserMetrics.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "8D726900C57DC275259A4429FC4DF1AC96A2FC478D908E86CE9FDBFC18DBC07A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbUltimate_ProfessionalPipeline.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbUltimate_ProfessionalPipeline.mqh",
+        "sha256":  "189FA2866DA294800E06A68D77838BDA88C1AFA975F75CB4B25C5A0A04D682B9",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbUltimate_RegimeMatrix.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbUltimate_RegimeMatrix.mqh",
+        "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\ResearchFiveYearData.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\ResearchFiveYearData.mqh",
+        "sha256":  "4261ADFC356D9794BCA3498343ABA38B94E62196139BBE82D220DC4ED8A9B575",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\StrategyWindowMetrics.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\StrategyWindowMetrics.mqh",
+        "sha256":  "F31FA762B2C4C4F9E0A6534F494281C7F85E028651B13442CF510BF242F86537",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\TradeCalendarMatrix.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\TradeCalendarMatrix.mqh",
+        "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\TradeDayCalendarPublisher.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\NativeMarginPreview.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\NativeMarginPreview.mqh",
+        "sha256":  "41ECE53A16DB6BA97D458D1621CE0E93652C1B5E42A1B796D56767CF553B2F96",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\NativeMarginQuote.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\NativeMarginQuote.mqh",
+        "sha256":  "98A299F13D6CE30B494F9B288E5EFE3BC930A2A930CA1416F3B84C35C2E01BE2",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditKivancExport.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditKivancExport.mqh",
+        "sha256":  "B57E52CE039FFDC104E45360DA4CB0FBD68A1660CCD4A27A0F3C113F14BD39F1",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditKivancFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditKivancFeatures.mqh",
+        "sha256":  "AE805512278A4897F5A50A2537FCDA0C447AA5B4228C8D1BE616FCF05C47DDDC",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditMemoIndex.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditMemoIndex.mqh",
+        "sha256":  "8FB52C93E4B16375324702BCE2AD807179460CD4EA3462420BDADE541C6319DA",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditQuantFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditQuantFeatures.mqh",
+        "sha256":  "327A11B91A0E9713D76D4ECCB1BF2B1B354FE0E795D61D5CBF771C0EA2873756",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditSignalFeatures.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditSignalFeatures.mqh",
+        "sha256":  "F6423ED0B7EAEEFD6DC0F6415AD6DEEE7BD1A37C4DF2C8A773DC58A6D52A8D2A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditTickReadGuard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditTickReadGuard.mqh",
+        "sha256":  "05EC20ADE99FFA425C6746CFFA7451370DBE0C6CB9A4629C987AC5729F5BC95D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditTradeCsv.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditTradeCsv.mqh",
+        "sha256":  "7CFD04CD4B7A29F6600200E2434CD74A3F818F10563ECA9FE4C8832E628C182D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\AuditTradeCsvAdapter.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\AuditTradeCsvAdapter.mqh",
+        "sha256":  "3B9EDB4FAF42305CFD98F27E6469BD3F81DEBFF2FE6301069F26642AD29E7FC4",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\DailyTradeQuota.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\DailyTradeQuota.mqh",
+        "sha256":  "B8987F09D6F626ACA60864A3D21F7274907B434A8F8C69CC7602C692F9679870",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\LiqNarrativeSol_RegimeV3.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\LiqNarrativeSol_RegimeV3.mqh",
+        "sha256":  "0069F3E872250F319CB6B1928C52EE88A9231E015D454706E1D8CB91CCFD11AF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\NasUltimate_Core.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\NasUltimate_Core.mqh",
+        "sha256":  "AF5FFAFCD131B1F5E7FAFBE0D6C02E1B36E871D102CD1680E810477B591CBB36",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\NativeRiskBalance.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\NativeRiskBalance.mqh",
+        "sha256":  "08789B2FD3D6D553A254BE517C0DB18146F7C3F2F8B1BB42D2DAB16F13BA9092",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbAdvancedAuditEngine.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "944DC0AAFC521113537A5424E4852911F1898F9222EF089A212FF6DDD24207CB",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbAuditRamCache.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbAuditRamCache.mqh",
+        "sha256":  "543EB65F93C15250D358B1AF291CF80921B36EB3929993B0ABAE02F2E200277F",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbBrokerClockProfiles.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbBrokerClockProfiles.mqh",
+        "sha256":  "617CF3B50D555E6F703F14BA8A34416774A67B7C039D3C1FF4CB6DD7F5F058CE",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbBrokerTimezone.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbBrokerTimezone.mqh",
+        "sha256":  "957A226AC54A2F8A92699C08CE2ED5C46887FC5A5282C1EC41AE589008C63D5D",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbClockDashboard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbClockDashboard.mqh",
+        "sha256":  "3BC455829E2609973CB96F921191C5F1FA17F32FBEB5F0C6CDE444B027158992",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbCustomRPicker.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbCustomRPicker.mqh",
+        "sha256":  "5727F63D943717F88540867E8EE7B90508CF041453E217E20EE629B780667972",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbMoneyRisk.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbMoneyRisk.mqh",
+        "sha256":  "ED736D13AC6D0E82161D11A237EFC625AAECE2C22DF81EA00D8A05AD9D2E8F4F",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbPositionPolicy.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbPositionPolicy.mqh",
+        "sha256":  "311CA73BA3169C00FB6A95EC91F4FD4DF035F4B7023414A40EBAE7C940804CC9",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbPositionRuntime.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbPositionRuntime.mqh",
+        "sha256":  "F9A11D687C5121D1F3257848DA32460A2B07654F1A188947A88367D4C17C5038",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbReplayMemoEpoch.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbReplayMemoEpoch.mqh",
+        "sha256":  "64EC3A7F9B127F6A18AB8F2082878251D40DB62CE51A77A7D68E887307F830FF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyCampaignModels.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyCampaignModels.mqh",
+        "sha256":  "CB7782DF62E25DEA1C31218A0794B7F85E577CD9FD0C953CA13CB89E9015A075",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyCampaignRegistry.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyCampaignRegistry.mqh",
+        "sha256":  "8D6C35AF9E796909F4FDE0021828F45FC68AF1F04D85A5BA58053E66478B2B31",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyLeaderboard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyLeaderboard.mqh",
+        "sha256":  "4A2150E3D695FDF61C7B15B848DCCDA18BA9CA8875D78BB2F4C95915B4DB41A9",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyLeaderboardData.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyLeaderboardData.mqh",
+        "sha256":  "D28D17B82E769604FE36A4640A2F6677D5754BE6A266822573FC68DC3B0D3133",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyLeaderboardFiveYear.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyLeaderboardFiveYear.mqh",
+        "sha256":  "72A43B364FC328AD7CF30C48EFC9653B7B43FABF41291F16393F316E5A6303A8",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyMLConfig.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLConfig.mqh",
+        "sha256":  "2A8A0445F6BFB461ECF19796DA98F207DE13A7C3D8D073DB041FA9857E19B2ED",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyMLCore.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLCore.mqh",
+        "sha256":  "089A0CBCC78FFC76B5E6055141BF4C04A118C1A14CDF9C873AA00DF9F490F887",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyMLHistory.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLHistory.mqh",
+        "sha256":  "6344AE045FF2A3E117DF1B528978F804030C74BB4FDC41D69373ECAD13872D28",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyMLJobs.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLJobs.mqh",
+        "sha256":  "1A8F28E2AEA161449DF33DB6CA44EA4E839FEC02D493A26667BDB656BAECC0D0",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyMLPipeline.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyMLPipeline.mqh",
+        "sha256":  "1D035BBA91FFE8304AAFB305C3BD93B154BAC5A853661F8E58334D301960768B",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyModelSlot.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyModelSlot.mqh",
+        "sha256":  "B852ED581AA605EA511C8996682B85E1F7630210059111FCAACE9B3F4DFCC7B5",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyPresetLibrary.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyPresetLibrary.mqh",
+        "sha256":  "DA82BFB016C7DDAD4F5DC061D6B05D85260AEBDD5216AFB7C0606117E034D4EA",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyR7Core.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyR7Core.mqh",
+        "sha256":  "390B8853673760EE78C75693A6796837D552C3D8A28D80D4922B1D30CFF05CE7",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyR7Runtime.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyR7Runtime.mqh",
+        "sha256":  "33BAC9EFE2EE2476F216C54CC1E461D299716E8412BF2E2482BD5F6DAE0EA13E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyRegimeLeaderboard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyRegimeLeaderboard.mqh",
+        "sha256":  "36EFCC535A2B5CE58E83F4C809E8F08D1373C66A6DA684D172C68732870CFBF7",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserContract.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserContract.mqh",
+        "sha256":  "BFB68DB44C8C98411FF94599BF16C4B6CC6F04855C188657D83C02BE7793E8FF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserLibrary.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "62F76805DABD7126D06887906606658731D1C697D38BE93F4BC619162EBFD200",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserMetrics.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "366E47527331721AA5E9F59F1C63B9A280731E17D65DFA62A1F93E645DB4C3F6",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimate_ProfessionalPipeline.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimate_ProfessionalPipeline.mqh",
+        "sha256":  "C20C93DFC63838388EA38B3418EBBC70C5B9E8DA3F5F21A696CA1400BFD61BBD",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimate_RegimeMatrix.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimate_RegimeMatrix.mqh",
+        "sha256":  "0ED4CC44CC6DBFC70EFD63DC57D7E336FB892F86A3062C596626F7BD3BA95BCF",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\ResearchFiveYearData.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\ResearchFiveYearData.mqh",
+        "sha256":  "C7821EC77E64D6496B802D8CFBF3A3EB23ADD4F2F5ED43786E086FF3265A5EB6",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\StrategyWindowMetrics.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\StrategyWindowMetrics.mqh",
+        "sha256":  "F31FA762B2C4C4F9E0A6534F494281C7F85E028651B13442CF510BF242F86537",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\TradeCalendarMatrix.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\TradeCalendarMatrix.mqh",
+        "sha256":  "0EDC87694A385BC4CA657E5D62699CDBD0867FD64B9BE14F80C2A4D5A686CE8A",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\TradeDayCalendarPublisher.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\TradeDayCalendarPublisher.mqh",
+        "sha256":  "6D54A928BC6BC5CCE3FAFC48AA3F296DA1053B206FA12B0D82C8FAAE7741791E",
+        "same":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\ResearchFiveYearLeaderboard.mqh",
+        "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\ResearchFiveYearLeaderboard.mqh",
+        "sha256":  "7415B9940E3F0B84BC379A5DA6A2003DE6FAAAFEB27B95415ABF61C7DC0CA40A",
+        "same":  true
+    }
+]

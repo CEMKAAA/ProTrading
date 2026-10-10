@@ -1,0 +1,18 @@
+﻿{
+    "scope":  "UI coordinates only",
+    "files":  [
+                  "IndicatorCodeExamples/macrossover_orb/MaCrossOverOrbEA.mq5",
+                  "IndicatorCodeExamples/entry_engine_lab/EntryEngineLabEA.mq5",
+                  "IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.mq5"
+              ],
+    "checks":  64,
+    "SolAdvanced":  "Already separated: source row 70, CSV row 181; no changes required",
+    "failures":  0,
+    "NativeRuntimeTest":  false,
+    "scales":  [
+                   1,
+                   0.85,
+                   0.65,
+                   0.45
+               ]
+}

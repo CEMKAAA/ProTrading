@@ -10,6 +10,8 @@ bool g_ucAuditPending=false,g_ucAuditStarted=false;
 datetime g_ucFromUtc=0,g_ucToUtc=0;
 int g_ucWeeks=2;
 ulong g_ucAuditUntil=0,g_ucNextRetry=0;
+ulong g_ucHistoryChangedAt=0;
+string g_ucHistoryFingerprint="";
 int g_ucLockHandle=INVALID_HANDLE;
 string g_ucRecoveredHash="",g_ucRecoveredFamily="";
 string g_ucVerifiedPacket="",g_ucVerifiedBody="",g_ucSequenceKey="";
@@ -236,6 +238,35 @@ datetime UcUtc(string family,datetime at)
    return at-sol_InpSolBrokerUtcOffsetMin*60;
 }
 string UcSafe(string s){StringReplace(s,"\n"," ");StringReplace(s,"\r"," ");StringReplace(s,"|","/");return s;}
+void UcAuditFailure(string code,string detail)
+{
+   g_ucError=code;g_ucAuditPending=false;
+   UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt
+      +"\nerror="+code+"\ndetail="+StringSubstr(UcSafe(detail),0,1024));
+}
+bool UcHistoryWait(string detail,bool blocked,ENUM_TIMEFRAMES nasTf,int nasRequested)
+{
+   long maxBars=TerminalInfoInteger(TERMINAL_MAXBARS);
+   if(nasRequested>0)detail+=" | NAS tf="+EnumToString(nasTf)+" requested="+(string)nasRequested+" max="+(string)maxBars;
+   if(blocked||(nasRequested>0&&maxBars>0&&nasRequested>maxBars))
+   {
+      UcAuditFailure(nasRequested>0&&maxBars>0&&nasRequested>maxBars?"AUDIT_MAX_BARS_LIMIT":"AUDIT_HISTORY_BLOCKED",detail);
+      return false;
+   }
+   // Only preparation is watched. Tick replay and its legitimate long trades
+   // are not timed out by this bar-series stagnation guard.
+   ENUM_TIMEFRAMES frames[]={PERIOD_M1,PERIOD_D1,PERIOD_H1,PERIOD_H2,PERIOD_H4,nasTf};
+   string fingerprint=detail;
+   for(int i=0;i<ArraySize(frames);i++)
+      fingerprint+="/"+(string)SeriesInfoInteger(_Symbol,frames[i],SERIES_FIRSTDATE)
+         +":"+(string)SeriesInfoInteger(_Symbol,frames[i],SERIES_SYNCHRONIZED);
+   ulong now=GetTickCount64();
+   if(fingerprint!=g_ucHistoryFingerprint||g_ucHistoryChangedAt==0)
+      {g_ucHistoryFingerprint=fingerprint;g_ucHistoryChangedAt=now;}
+   else if(now-g_ucHistoryChangedAt>=300000)
+      {UcAuditFailure("AUDIT_HISTORY_STALLED",detail);return false;}
+   return true;
+}
 #include "UniversalChart.mqh"
 string UcTradeRow(string family,datetime signal,datetime entry,datetime exit,int direction,double price,double sl,double tp,double exitPrice,double netR,bool valid,bool closed,string reason,double spread)
 {
@@ -251,7 +282,11 @@ void UcResult()
    if(g_ucAuditFamily=="entrylab"){count=ArraySize(entrylab_g_axTrades);for(int i=0;i<count;i++){entrylab_AxTrade t=entrylab_g_axTrades[i];rows+=UcTradeRow("entrylab",t.signalTime,t.entryTime,t.exitTime,t.direction,t.entry,t.sl,t.tp,t.exitPrice,t.netR,t.valid,t.closed,t.reason,t.entrySpreadPoints);}}
    if(g_ucAuditFamily=="sol"){count=ArraySize(sol_g_axTrades);for(int i=0;i<count;i++){sol_AxTrade t=sol_g_axTrades[i];rows+=UcTradeRow("sol",t.signalTime,t.entryTime,t.exitTime,t.direction,t.entry,t.sl,t.tp,t.exitPrice,t.netR,t.valid,t.closed,t.reason,t.entrySpreadPoints);}}
    if(count>10000){g_ucError="RESULT_ROW_LIMIT";UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nerror="+g_ucError);}
-   else UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nconfigurationHash="+g_ucConfig+"\nrequestHash="+g_ucRequest+"\nrows="+(string)count+"\nTRADES\n"+rows);
+   else
+   {
+      if(g_ucError=="AUDIT_AUTHORITY_EXPIRED")g_ucError="";
+      UcSignedWrite(g_ucFolder+"result.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nconfigurationHash="+g_ucConfig+"\nrequestHash="+g_ucRequest+"\nrows="+(string)count+"\nTRADES\n"+rows);
+   }
    g_ucAuditPending=false;
    g_ucChartPending=count>0&&count<=10000;
 }
@@ -260,7 +295,14 @@ void UcAuditStep()
    if(!g_ucAuditPending)return;
    g_ucLiveContext=false;g_ucRealm="A"+g_ucAuditFamily;
    if(GetTickCount64()>=g_ucAuditUntil){g_ucError="AUDIT_AUTHORITY_EXPIRED";return;}
-   string phase="replaying";int done=0,total=0;bool ready=false;
+   if(!g_ucAuditStarted)
+   {
+      UcSignedWrite(g_ucFolder+"progress.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt
+         +"\nphase=preparing\nprocessed=0\ntotal=0\ndetail=Preparing native engine and broker history");
+      UcStatus();
+   }
+   string phase="replaying",detail="";int done=0,total=0;bool ready=false,waiting=false,blocked=false;
+   ENUM_TIMEFRAMES nasTf=PERIOD_CURRENT;int nasRequested=0;
    if(g_ucAuditFamily=="sol")
    {
       if(!g_ucAuditStarted){sol_RecalculateHistoricalStats();g_ucAuditStarted=true;}
@@ -274,22 +316,39 @@ void UcAuditStep()
          if(!g_ucAuditStarted){orb_g_histNeedsRedraw=true;orb_g_lastHistBuild=0;orb_DrawHistoricalSignals();g_ucAuditStarted=true;}
          orb_ProcessHistoricalAuditStep();ready=orb_g_axReady&&!orb_g_histAuditRunning&&!orb_g_histCoveragePending;
          done=(int)orb_g_histAuditProgressPct;total=100;
-         if(orb_g_histCoveragePending){phase="downloading";done=0;total=0;if(GetTickCount64()>g_ucNextRetry){orb_g_histNeedsRedraw=true;orb_DrawHistoricalSignals();g_ucNextRetry=GetTickCount64()+5000;}}
+         if(orb_g_histCoveragePending){
+            waiting=true;detail=orb_g_histCoverageStatus+" | "+orb_g_histCoverageDetail;blocked=orb_g_histCoverageHardBlocked;
+            if(orb_g_histCoverageStatus=="NAS HISTORY WAIT"){
+               nasTf=orb_NasConfirmationTf();int sec=PeriodSeconds(nasTf);if(sec<=0)sec=60;
+               nasRequested=(int)MathMin((long)2147480000,MathMax((long)orb_NasHistoryBars(),
+                  (long)MathCeil((double)orb_RuntimeHistoricalDays()*86400.0/sec)+(long)orb_NasCalcWarmupBars()+300));
+            }
+         }
       }
       if(g_ucAuditFamily=="macross"){
          if(!g_ucAuditStarted){macross_g_histNeedsRedraw=true;macross_g_lastHistBuild=0;macross_DrawHistoricalSignals();g_ucAuditStarted=true;}
          macross_ProcessHistoricalAuditStep();ready=macross_g_axReady&&!macross_g_histAuditRunning&&!macross_g_histCoveragePending;
          done=(int)macross_g_histAuditProgressPct;total=100;
-         if(macross_g_histCoveragePending){phase="downloading";done=0;total=0;if(GetTickCount64()>g_ucNextRetry){macross_g_histNeedsRedraw=true;macross_DrawHistoricalSignals();g_ucNextRetry=GetTickCount64()+5000;}}
+         if(macross_g_histCoveragePending){waiting=true;detail=macross_g_histCoverageStatus+" | "+macross_g_histCoverageDetail;blocked=macross_g_histCoverageHardBlocked;}
       }
       if(g_ucAuditFamily=="entrylab"){
          if(!g_ucAuditStarted){entrylab_g_histNeedsRedraw=true;entrylab_g_lastHistBuild=0;entrylab_DrawHistoricalSignals();g_ucAuditStarted=true;}
          entrylab_ProcessHistoricalAuditStep();ready=entrylab_g_axReady&&!entrylab_g_histAuditRunning&&!entrylab_g_histCoveragePending;
          done=(int)entrylab_g_histAuditProgressPct;total=100;
-         if(entrylab_g_histCoveragePending){phase="downloading";done=0;total=0;if(GetTickCount64()>g_ucNextRetry){entrylab_g_histNeedsRedraw=true;entrylab_DrawHistoricalSignals();g_ucNextRetry=GetTickCount64()+5000;}}
+         if(entrylab_g_histCoveragePending){waiting=true;detail=entrylab_g_histCoverageStatus+" | "+entrylab_g_histCoverageDetail;blocked=entrylab_g_histCoverageHardBlocked;}
       }
    }
-   UcSignedWrite(g_ucFolder+"progress.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nphase="+phase+"\nprocessed="+(string)done+"\ntotal="+(string)total);
+   if(waiting){
+      if(!UcHistoryWait(detail,blocked,nasTf,nasRequested))return;
+      phase="downloading";done=0;total=0;
+      if(GetTickCount64()>g_ucNextRetry){
+         if(g_ucAuditFamily=="orb"){orb_g_histNeedsRedraw=true;orb_DrawHistoricalSignals();}
+         else if(g_ucAuditFamily=="macross"){macross_g_histNeedsRedraw=true;macross_DrawHistoricalSignals();}
+         else if(g_ucAuditFamily=="entrylab"){entrylab_g_histNeedsRedraw=true;entrylab_DrawHistoricalSignals();}
+         g_ucNextRetry=GetTickCount64()+5000;
+      }
+   }else{g_ucHistoryChangedAt=0;g_ucHistoryFingerprint="";}
+   UcSignedWrite(g_ucFolder+"progress.txt","jobId="+g_ucJob+"\nattemptId="+g_ucAttempt+"\nphase="+phase+"\nprocessed="+(string)done+"\ntotal="+(string)total+"\ndetail="+StringSubstr(UcSafe(detail),0,1024));
    if(ready)UcResult();
 }
 
@@ -351,10 +410,15 @@ void UcTimer()
    {
       string command=UcField(body,"command");
       g_ucAuditUntil=g_ucVerifiedUntil;
+      // Only a fresh server-signed renewal of this exact audit clears its pause.
+      if(command=="audit"&&UcField(body,"jobId")==g_ucJob&&UcField(body,"attemptId")==g_ucAttempt
+         &&UcField(body,"configurationHash")==g_ucConfig&&UcField(body,"requestHash")==g_ucRequest
+         &&g_ucError=="AUDIT_AUTHORITY_EXPIRED")g_ucError="";
       if(command=="audit"&&(UcField(body,"jobId")!=g_ucJob||UcField(body,"attemptId")!=g_ucAttempt))
       {
          g_ucTrading=false;g_ucJob=UcField(body,"jobId");g_ucAttempt=UcField(body,"attemptId");g_ucConfig=UcField(body,"configurationHash");g_ucRequest=UcField(body,"requestHash");
          UcChartClear();
+         g_ucNextRetry=0;g_ucHistoryChangedAt=0;g_ucHistoryFingerprint="";
          g_ucFromUtc=(datetime)StringToInteger(UcField(body,"from"));g_ucToUtc=(datetime)StringToInteger(UcField(body,"to"));g_ucWeeks=(int)StringToInteger(UcField(body,"weeks"));
          g_ucAuditAsOf=g_ucToUtc+(datetime)((long)TimeCurrent()-(long)TimeGMT());
          g_ucAuditStarted=false;g_ucAuditPending=UcApply(body,false);

@@ -88,6 +88,7 @@ export const progressSchema = z.object({
   jobId: identifier, attemptId: identifier,
   phase: z.enum(["preparing", "downloading", "replaying", "uploading"]),
   processed: integer, total: integer.nullable(),
+  detail: z.string().max(1024).refine(s => !/[\r\n\x00]/.test(s)).optional(),
 }).strict().refine(v => v.total === null || v.processed <= v.total, "Processed work exceeds total");
 export type Progress = z.infer<typeof progressSchema>;
 

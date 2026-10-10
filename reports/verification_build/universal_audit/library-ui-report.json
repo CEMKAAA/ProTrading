@@ -1,0 +1,14 @@
+{
+  "status": "PASS",
+  "mockApi": true,
+  "liveBrokerAuditClaimed": false,
+  "checks": [
+    "all nine windows",
+    "multi-sort priority",
+    "descending/ascending/off",
+    "selected-window metrics",
+    "missing-last",
+    "desktop/mobile controls",
+    "no runtime errors"
+  ]
+}

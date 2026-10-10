@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import {readFileSync,writeFileSync} from 'node:fs';
+import {readFileSync,writeFileSync as rawWriteFileSync,renameSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 
 const report=resolve(import.meta.dirname,'../../reports/web_publish_20261009');
+function writeFileSync(path,data){rawWriteFileSync(path+'.partial',data);renameSync(path+'.partial',path);}
 const manifest=JSON.parse(readFileSync(resolve(report,'release.json'),'utf8'));
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const checks=[];

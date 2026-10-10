@@ -95,20 +95,24 @@ export async function runAgent(argv=process.argv.slice(2)){
               if(!validation.success){console.error('Native result validation:',JSON.stringify(validation.error.issues.map(i=>({path:i.path,message:i.message}))));
                 writeFileSync(join(state,'last-invalid-result.txt'),resultText);throw new Error('LOCAL_RESULT_SCHEMA_INVALID');}
               await client.request("/v1/device/result",result);}
-            catch(error){if(!/STALE_JOB|LEASE|ENTITLEMENT/.test(error.message))await client.request("/v1/device/failure",{jobId:active.jobId,attemptId:active.attemptId,code:/^[A-Z0-9_]{1,80}$/.test(error.message)?error.message:"RESULT_VALIDATION_FAILED"});else throw error;}
+            catch(error){if(!/STALE_JOB|LEASE|ENTITLEMENT/.test(error.message)){
+              const failure=unpack(resultText,key).fields;
+              await client.request("/v1/device/failure",{jobId:active.jobId,attemptId:active.attemptId,code:/^[A-Z0-9_]{1,80}$/.test(error.message)?error.message:"RESULT_VALIDATION_FAILED",
+                ...(failure.jobId===active.jobId&&failure.attemptId===active.attemptId&&failure.detail?{detail:failure.detail}: {})});
+            }else throw error;}
             unlinkSync(resultFile);active=null;
           }else{
-            const progressFile=join(config.folder,"progress.txt");let phase="preparing",processed=0,total=null;
+            const progressFile=join(config.folder,"progress.txt");let phase="preparing",processed=0,total=null,detail;
             if(existsSync(progressFile)){
               const p=unpack(readFileSync(progressFile,"utf8"),key).fields;
-              if(p.jobId===active.jobId&&p.attemptId===active.attemptId){phase=p.phase;processed=Number(p.processed);total=Number(p.total)||null;}
+              if(p.jobId===active.jobId&&p.attemptId===active.attemptId){phase=p.phase;processed=Number(p.processed);total=Number(p.total)||null;detail=p.detail;}
             }
             // Download retries may return to a preparation stage; do not lie by
             // resetting monotonic replay progress or publishing a fake percentage.
             const order=["preparing","downloading","replaying","uploading"];
             if(order.indexOf(phase)<order.indexOf(lastPhase)){phase=lastPhase;processed=phaseDone;total=phase==="replaying"?100:null;}
             if(phase===lastPhase)processed=Math.max(processed,phaseDone);else phaseDone=0;
-            active=client.verified(await client.request("/v1/device/progress",{jobId:active.jobId,attemptId:active.attemptId,phase,processed,total}),"backtest_job");
+            active=client.verified(await client.request("/v1/device/progress",{jobId:active.jobId,attemptId:active.attemptId,phase,processed,total,...(detail?{detail}: {})}),"backtest_job");
             const command=client.verified(await client.request("/v1/device/command",{jobId:active.jobId,attemptId:active.attemptId}),"ea_command");
             atomic(join(config.folder,"command.txt"),command.command);
             lastPhase=phase;phaseDone=processed;lastProgress=phase;

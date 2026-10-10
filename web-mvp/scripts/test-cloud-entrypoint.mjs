@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { Buffer } from 'node:buffer';
 import * as crypto from 'node:crypto';
+import {signed,keyPair} from '../control-service/crypto.mjs';
 
 const source=readFileSync(new URL('../supabase/functions/stratum-control/index.mjs',import.meta.url),'utf8').replace(/^import .*;\r?\n/gm,'');
 const origin='https://cemkaaa.github.io',project='https://testproject.supabase.co',api=project+'/functions/v1/stratum-control';
@@ -77,4 +78,53 @@ test('corrupt or absent configuration cannot silently authorize or supply an EA 
  assert.equal((await f.call('/v1/ea/package','POST')).status,503);assert.equal(f.requests(),1);
  const missing=fixture({missing:true});assert.equal((await missing.call('/v1/auth/login','POST')).status,503);
  assert.equal(missing.requests(),0);
+});
+
+function releaseFixture({conflict=false}={}){
+ const keys=keyPair(),serviceKey='release-test',encryption=crypto.createHash('sha256').update('stratum-cloud-config-v1\0'+serviceKey).digest();
+ const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+ const priorBytes=Buffer.from('old artifact'),names=['connection.mjs','UniversalConnectionEA.ex5','MaCrossOrderFlowWorker.ex5'];
+ const original={artifacts:Object.fromEntries(names.map(name=>[name,digest(priorBytes)])),encryptionKey:'retain-me',signingKey:keys,eaSigningKey:{privateKey:'retain-native-key'}};
+ const seal=c=>{const iv=crypto.randomBytes(12),cipher=crypto.createCipheriv('aes-256-gcm',encryption,iv);cipher.setAAD(Buffer.from(api));const data=Buffer.concat([cipher.update(JSON.stringify(c)),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64');};
+ const open=s=>{const b=Buffer.from(s,'base64'),cipher=crypto.createDecipheriv('aes-256-gcm',encryption,b.subarray(0,12));cipher.setAAD(Buffer.from(api));cipher.setAuthTag(b.subarray(12,28));return JSON.parse(Buffer.concat([cipher.update(b.subarray(28)),cipher.final()]));};
+ let sealed=seal(original),handler;
+ const files=new Map(names.map(name=>[name,priorBytes]));
+ const database=async(strings,...values)=>{const sql=strings.join('');if(sql.includes('SELECT sealed'))return [{sealed}];
+  if(sql.includes('UPDATE stratum_runtime.deployment_configuration')){if(conflict||values[1]!==sealed)return [];sealed=values[0];return [{id:1}];}return [{count:1}];};
+ database.begin=work=>work(async()=>[]);
+ runInNewContext(source,{Buffer,process:{env:{}},...crypto,URL,Request,Response,AbortSignal,console:{error(){}},postgres:()=>database,operatorKey:keys.publicKey,
+  Deno:{env:{get:n=>({SUPABASE_URL:project,SUPABASE_SERVICE_ROLE_KEY:serviceKey,SUPABASE_DB_URL:'test'})[n]},serve:fn=>handler=fn},cloudRequest:async()=>new Response('{}'),
+  fetch:async(url,options={})=>{const path=String(url).split('stratum-private-builds/')[1];
+   if(options.method==='DELETE'){for(const name of JSON.parse(options.body).prefixes)files.delete(name);return new Response('{}');}
+   if(options.method==='POST'){files.set(path,Buffer.from(options.body));return new Response('{}');}
+   return files.has(path)?new Response(files.get(path)):new Response('{}',{status:404});},
+ });
+ const send=(kind,bytes,sha256=digest(bytes),signatureKey=keys.privateKey)=>{
+  const payload={apiUrl:api,issuedAt:Date.now(),expiresAt:Date.now()+60000,kind,name:names[1],sha256,index:0,count:1,chunkHash:digest(bytes)};
+  return handler(new Request(api+'/operator/artifact/'+names[1],{method:'POST',headers:{'X-Stratum-Proof':Buffer.from(JSON.stringify(signed(payload,signatureKey))).toString('base64url')},body:bytes}));
+ };
+ return {original,config:()=>open(sealed),files,digest,send,health:()=>handler(new Request(api+'/health'))};
+}
+
+test('owner-signed replacement publishes immutable bytes and preserves all license/encryption keys',async()=>{
+ const f=releaseFixture(),bytes=Buffer.from('new verified artifact'),sha=f.digest(bytes);
+ assert.equal((await f.send('artifact_chunk',bytes)).status,200);
+ assert.equal((await f.send('artifact_complete',Buffer.alloc(0),sha)).status,200);
+ const c=f.config();assert.equal(c.encryptionKey,f.original.encryptionKey);assert.deepEqual(c.signingKey,f.original.signingKey);assert.deepEqual(c.eaSigningKey,f.original.eaSigningKey);
+ assert.equal(c.artifacts['UniversalConnectionEA.ex5'],sha);assert.equal(c.artifactPaths['UniversalConnectionEA.ex5'],'UniversalConnectionEA.ex5.'+sha);
+ assert.equal(f.files.get('UniversalConnectionEA.ex5').toString(),'old artifact');assert.equal(f.files.get(c.artifactPaths['UniversalConnectionEA.ex5']).toString(),bytes.toString());
+ assert.equal((await f.health()).status,200);
+});
+
+test('forged owner signatures and mismatched assembled hashes cannot change the pinned release',async()=>{
+ const f=releaseFixture(),bytes=Buffer.from('replacement');
+ assert.equal((await f.send('artifact',bytes,f.digest(bytes),keyPair().privateKey)).status,503);
+ assert.deepEqual(f.config(),f.original);
+ assert.equal((await f.send('artifact',bytes,'a'.repeat(64))).status,503);assert.deepEqual(f.config(),f.original);
+});
+
+test('concurrent release conflict leaves old configuration and downloads intact',async()=>{
+ const f=releaseFixture({conflict:true}),bytes=Buffer.from('new candidate');
+ assert.equal((await f.send('artifact',bytes)).status,503);assert.deepEqual(f.config(),f.original);
+ assert.equal((await f.health()).status,200);assert.equal(f.files.get('UniversalConnectionEA.ex5').toString(),'old artifact');
 });

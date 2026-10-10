@@ -1,5 +1,6 @@
 import type { Control, Family, UniversalConfiguration } from './universal-contract';
 import { CLOUD_SESSION } from './control-endpoint.ts';
+import { auditHistoryFailureCode, maxBarsMessage } from './audit-history-diagnostic.ts';
 
 export type HelpTopic = { title: string; summary: string; example: string; caution: string; steps: string[]; diagram: 'workflow'|'risk'|'signal'|'clock'|'logic'|'connection'; unit?: string; technical?: string; defaultValue?: string; currentValue?: string|number|boolean };
 const topic=(title:string,summary:string,example:string,caution:string,diagram:HelpTopic['diagram']='workflow',steps:string[]=['Edit the draft','Run an MT5 audit','Review before trading']):HelpTopic=>({title,summary,example,caution,steps,diagram});
@@ -137,7 +138,8 @@ export function safeConfiguration(c:UniversalConfiguration):UniversalConfigurati
 }
 export const familySummary:Record<Family,string>={entrylab:'Built-in signals or your own BUY / SELL rules.',macross:'Moving-average, trend and reversal signal modes.',orb:'Signals from the configured market-opening range.',sol:'Liquidity sweeps and the existing narrative setup logic.'};
 
-export function friendlyError(code:string):string {
+export function friendlyError(code:string,detail?:string):string {
+ code=auditHistoryFailureCode(code,detail);
  const messages:Record<string,string>={
   UNAUTHORIZED:'Your sign-in session is unavailable. Sign in again.',
   SESSION_REVOKED:'This session was revoked. Sign in again before sending commands.',
@@ -164,6 +166,10 @@ export function friendlyError(code:string):string {
   INDEPENDENT_SETTINGS_INCOMPATIBLE:'These settings are incompatible with the existing Independent execution mode. Check Positions and Geometry, then run the audit again.',
   SOL_POSITION_SETTINGS_INCOMPATIBLE:'The current Liquidity Narrative position settings are incompatible. Check the position mode, exits and geometry, then retry.',
   ENGINE_INIT_REJECTED:'MT5 rejected the engine settings at initialization. Inspect the terminal Journal and check the draft values before retrying.',
+  AUDIT_MAX_BARS_LIMIT:maxBarsMessage,
+  AUDIT_HISTORY_BLOCKED:'MT5 could not supply the history required by this engine. The native diagnostic below identifies the missing series. No audit result was fabricated.',
+  AUDIT_HISTORY_STALLED:'History preparation made no progress for five minutes. Check MT5 Experts and the native diagnostic below, then retry. This is a stalled audit, not a completed download.',
+  AUDIT_AUTHORITY_EXPIRED:'MT5 paused research while waiting for renewed signed audit authority. Keep the helper open and check browser authorization. This status alone does not invalidate a completed audit result.',
  };
  if(messages[code])return messages[code];
  if(/RATE_LIMIT|TOO_MANY/.test(code))return 'Too many requests. Wait a moment before trying again.';

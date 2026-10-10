@@ -1,8 +1,8 @@
 {
-  "jobId": "58d9432c-c718-4659-9ea2-e12b38b336fa",
-  "attemptId": "a3c39a4f-9ca3-4957-9ecf-c3c79a954e20",
+  "jobId": "a8b1d95a-ec18-4f59-a624-07ab2254ef9a",
+  "attemptId": "ad972b95-4697-4979-b4b3-7209a9a0400c",
   "configurationHash": "43a425dfdca89b70a628bbb8e3ca56ca8eb916593b2435131113ebd3a04f9503",
-  "requestHash": "5cdc00ed5aa871e2e71f45cbfc02b72f2474a0195a5f5da37f4624be84217994",
+  "requestHash": "97c8f9b3549fab0fe3d9054cce4e9770cc0f2106efd812675724d3a98c51f18d",
   "engineRuntime": "universal-adapter/v2",
   "auditBuild": "canonical-bundle/v1",
   "brokerServer": "Exness-MT5Trial15",

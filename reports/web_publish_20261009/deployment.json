@@ -1,10 +1,10 @@
 {
-  "commit": "bfacdbf271fb28b8f3241d95a7de1031c8c72d4b",
+  "commit": "839afe5725881e6b7185334a21ba96a444ad0ffd",
   "repository": "https://github.com/CEMKAAA/CemkaCapital.git",
   "site": "https://cemkaaa.github.io/CemkaCapital/",
-  "publishedAt": "2026-10-09T13:25:04.3002172Z",
-  "legacyStudioRedirectCommit": "5523e1059333b56577937d66983db00ced302edc",
+  "publishedAt": "2026-10-10T22:16:41.0133741Z",
+  "legacyStudioRedirectCommit": null,
   "state": "live_verified",
-  "publicFiles": 57,
-  "verifiedAt": "2026-10-09T13:34:25.482Z"
+  "publicFiles": 74,
+  "verifiedAt": "2026-10-10T22:17:23.981Z"
 }

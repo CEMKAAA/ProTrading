@@ -251,7 +251,7 @@ export function controlHttp(plane, { origins = ["https://cemkaaa.github.io"], au
             if (method === "POST" && path === "/v1/device/result")
                 return reply(200, (await plane.finish((await device()), body)));
             if (method === "POST" && path === "/v1/device/failure") {
-                exact(["jobId", "attemptId", "code"]);
+                exact(["jobId", "attemptId", "code", ...(keys.includes("detail") ? ["detail"] : [])]);
                 return reply(200, (await plane.fail((await device()), body)));
             }
             if (method === "POST" && path === "/v1/device/status")

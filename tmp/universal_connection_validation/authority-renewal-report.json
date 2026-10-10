@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-10-10T21:57:24.379Z",
+  "status": "PASS",
+  "nativeTradingRequested": false,
+  "binarySha256": "c7435543b2e4285f4ae14711880184efffd4b5f18b3568c41e383450e63e6a7f",
+  "checks": [
+    "expired authority actually pauses the real native audit",
+    "fresh signed renewal clears the error on the same job and attempt",
+    "completed native result has no stale authority error"
+  ],
+  "summary": {
+    "wins": 956,
+    "losses": 1191,
+    "flat": 0,
+    "open": 1,
+    "data": 0,
+    "netR": -235,
+    "maxClosedDrawdownR": 241,
+    "winRate": 44.527247321844435,
+    "trust": "client_reported",
+    "coverageComplete": true
+  }
+}

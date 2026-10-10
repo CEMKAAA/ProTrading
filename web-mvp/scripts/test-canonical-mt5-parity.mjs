@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync,writeFileSync,existsSync,unlinkSync } from 'node:fs';
+import { readFileSync,writeFileSync as rawWriteFileSync,existsSync,unlinkSync, renameSync } from 'node:fs';
+function writeFileSync(path,data,options){rawWriteFileSync(path+'.partial',data,options);renameSync(path+'.partial',path);}
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

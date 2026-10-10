@@ -1,0 +1,64 @@
+﻿{
+    "SolAdvanced":  "No overlap; unchanged",
+    "files":  [
+                  {
+                      "name":  "MaCross",
+                      "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.mq5",
+                      "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.mq5",
+                      "binary":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.ex5",
+                      "compile":  "0 errors, 0 warnings",
+                      "sourceSha256":  "49A570A12CF49D7EFB0B9A6439BDAB6F755C7D11DE58D9E0717E5198EE81706C",
+                      "binarySha256":  "2AF9DC70999A919B630D09C25B6175421C76CD0D1E45B9D6F5745978ECBDB89D"
+                  },
+                  {
+                      "name":  "EntryLab",
+                      "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.mq5",
+                      "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.mq5",
+                      "binary":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.ex5",
+                      "compile":  "0 errors, 0 warnings",
+                      "sourceSha256":  "FAEAEBE7B97531BAA0F9A7BC9735A3B665C7274B8D4272AF017FABB20092A36D",
+                      "binarySha256":  "350B0DB51A8691C290F28C77B1BE3328652C0F1CEE5D941330C12BF0DD05696E"
+                  },
+                  {
+                      "name":  "ORB",
+                      "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+                      "target":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+                      "binary":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+                      "compile":  "0 errors, 0 warnings",
+                      "sourceSha256":  "0A30AE479F55D34EDBD417F0BB0E0758C31885E4D978C4C8E93A78EE7A7C478B",
+                      "binarySha256":  "4F077206B3DDE22602051AD95F395139C08E66C86B84765A1DD8A3309640C61D"
+                  }
+              ],
+    "tradingAndAuditLogicChanged":  false,
+    "compiledAt":  "2026-10-10T17:57:25.9927157Z",
+    "state":  "deployed_hash_verified",
+    "layoutChecks":  64,
+    "layoutFailures":  0,
+    "deployedAt":  "2026-10-10T18:07:19.2682849Z",
+    "publishedFiles":  [
+                           {
+                               "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.mq5",
+                               "sha256":  "49A570A12CF49D7EFB0B9A6439BDAB6F755C7D11DE58D9E0717E5198EE81706C"
+                           },
+                           {
+                               "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5",
+                               "sha256":  "2AF9DC70999A919B630D09C25B6175421C76CD0D1E45B9D6F5745978ECBDB89D"
+                           },
+                           {
+                               "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.mq5",
+                               "sha256":  "FAEAEBE7B97531BAA0F9A7BC9735A3B665C7274B8D4272AF017FABB20092A36D"
+                           },
+                           {
+                               "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.ex5",
+                               "sha256":  "350B0DB51A8691C290F28C77B1BE3328652C0F1CEE5D941330C12BF0DD05696E"
+                           },
+                           {
+                               "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+                               "sha256":  "0A30AE479F55D34EDBD417F0BB0E0758C31885E4D978C4C8E93A78EE7A7C478B"
+                           },
+                           {
+                               "path":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+                               "sha256":  "4F077206B3DDE22602051AD95F395139C08E66C86B84765A1DD8A3309640C61D"
+                           }
+                       ]
+}

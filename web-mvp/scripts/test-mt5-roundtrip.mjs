@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync as rawWriteFileSync, mkdirSync, unlinkSync, renameSync } from 'node:fs';
+function writeFileSync(path,data,options){rawWriteFileSync(path+'.partial',data,options);renameSync(path+'.partial',path);}
 import { spawn } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -70,6 +71,9 @@ try{
     activeJob=null;assert.ok(finished.result);assert.ok(finished.result.trades.length>0,family+' empty audit is not validation');
     assert.equal(finished.configurationHash,finished.result.configurationHash);
     assert.equal((await terminal()).trading,false,'Apply must never turn trading on');
+    const finishedNative=unpack(readFileSync(join(installation.folder,'status.txt'),'utf8'),key).fields;
+    assert.equal(finishedNative.error,'','Completed native audit must not retain a temporary authority error');
+    report.authorization.completedAuditStatusClean=true;
     const drawing=await until(async()=>{
       const s=unpack(readFileSync(join(installation.folder,'status.txt'),'utf8'),key).fields;
       return s.chartDone==='true'&&Number(s.chartDrawn)===finished.result.trades.length?s:null;
@@ -119,11 +123,12 @@ try{
   await api('/v1/installations/'+id+'/revoke',{});
   await assert.rejects(()=>client.heartbeat(),/INSTALLATION_REVOKED_OR_UNKNOWN/);report.authorization.revocationRejected=true;
   report.status='PASS';
-}catch(error){report.status='FAIL';report.error=error.message;throw error;}
+}catch(error){report.status='FAIL';report.error=error.message;console.error('Native roundtrip failed:',error.message);throw error;}
 finally{
   if(activeJob)await api('/v1/jobs/'+activeJob+'/cancel',{}).catch(()=>{});
   await api('/v1/trading',{installationId:id,enabled:false,jobId:null}).catch(()=>{});
-  agent.kill();writeFileSync(join(stage,'roundtrip-report.json'),JSON.stringify(report,null,2));
+  const reportFile=join(stage,'roundtrip-report.json');
+  agent.kill();writeFileSync(reportFile,JSON.stringify(report,null,2));
   await complete(child('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',join(root,'scripts/validate_universal_connection.ps1'),'-Mode','stop'],root));
-  console.log('Report:',join(stage,'roundtrip-report.json'));
+  console.log('Report:',reportFile);
 }
