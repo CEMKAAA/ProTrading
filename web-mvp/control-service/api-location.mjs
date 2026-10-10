@@ -1,5 +1,6 @@
 export const CLOUD_CONTROL = 'https://uvzhrrqzzdjqtmydpvwo.supabase.co/functions/v1/stratum-control';
 export const PUBLIC_STUDIO = 'https://cemkaaa.github.io';
+export const PUBLIC_STUDIO_BASE_PATH = '/CemkaCapital';
 
 export function controlLocation(value) {
   const url = new URL(value);

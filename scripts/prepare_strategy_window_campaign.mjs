@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { resolve, join, dirname, relative } from 'node:path';
 
 const root=resolve(import.meta.dirname,'..'),source=join(root,'IndicatorCodeExamples');
-const out=join(root,'reports/strategy_audit_20261008'),stage=join(out,'source');
+const option=name=>{const at=process.argv.indexOf(name);return at<0?undefined:process.argv[at+1];};
+const out=resolve(root,option('--out')??'reports/strategy_audit_20261008'),stage=join(out,'source');
 const catalog=JSON.parse(readFileSync(join(root,'reports/admin_catalog/catalog.private.json'),'utf8'));
 const profiles=JSON.parse(readFileSync(join(root,'reports/admin_catalog/audit-input-profiles.private.json'),'utf8'));
 const families={orb:['orb','OrbUltimateEA_StrategyLibrary.mq5','CAMPAIGN_ORB'],macross:['macrossover_orb','MaCrossOverOrbEA.mq5','CAMPAIGN_MA'],sol:['SolAdvanced','LiqNarrativeSol_Advanced.mq5','CAMPAIGN_SOL'],entrylab:['entry_engine_lab','EntryEngineLabEA.mq5','CAMPAIGN_LAB']};
@@ -41,17 +42,32 @@ function stripInitLiveSideEffects(text,family){
  }
  return text.slice(0,begin)+body+text.slice(end);
 }
+function researchPersistence(text,name,validation){
+ const at=text.indexOf('bool '+name+'(');if(at<0)throw Error('PERSISTENCE_FUNCTION_NOT_FOUND:'+name);
+ const begin=text.indexOf('{',at);let depth=1,end=begin+1;
+ for(;depth&&end<text.length;end++){if(text[end]==='{')depth++;else if(text[end]==='}')depth--;}
+ if(depth)throw Error('PERSISTENCE_BODY_UNBALANCED');
+ return text.slice(0,begin)+'{ /* Research: validate state without changing shared live settings. */ return '+validation+'; }'+text.slice(end);
+}
 const template=readFileSync(join(root,'tests/mql5/StrategyWindowCampaign.mq5.in'),'utf8');
 const compiles=[];
 for(const [family,[folder,main,define]] of Object.entries(families)){
  stageFile(join(source,folder,main));
  const staged=join(stage,folder,main),original=readFileSync(staged,'utf8');
  writeFileSync(staged,stripInitLiveSideEffects(original,family));
+ if(family==='entrylab'){
+  const path=join(stage,folder,'LabEntryBuilder.mqh');
+  writeFileSync(path,researchPersistence(readFileSync(path,'utf8'),'LabPersistActive','LabValidEngine(g_labEngine)'));
+ }
+ if(family==='sol'){
+  const path=join(stage,folder,'LiqSolAdvancedNas.mqh');
+  writeFileSync(path,researchPersistence(readFileSync(path,'utf8'),'LnNasSaveRuntime','LnNasValid(g_lnNas)'));
+ }
  const script='StrategyWindows_'+family,path=join(stage,folder,script+'.mq5');
  writeFileSync(path,template.replace('__FAMILY_DEFINE__','#define '+define).replace('__MAIN__',main));
  compiles.push({family,script,source:path});
 }
-const jobs=catalog.map(r=>{
+let jobs=catalog.map(r=>{
  const snap=r.native_snapshot,origin=snap.origin;
  const signature=snap.lines?(r.family==='sol'?snap.lines[4]:snap.inputSignature):'';
  const base=signature?profiles[r.family][signature]:Object.values(profiles[r.family])[0];
@@ -63,12 +79,22 @@ const jobs=catalog.map(r=>{
   nativeSourceHash:r.source_hash,profileSignature:signature,inputs:base,
   windows:[260,208,156,104,52,20,10,5,2]};
 });
+// Preserve the frozen identities/input profiles and explicitly approved symbol remaps.
+if(option('--from'))jobs=JSON.parse(readFileSync(resolve(root,option('--from')),'utf8')).jobs;
 // Smaller pilot runs remain resumable and cannot overwrite a completed full campaign.
 const fingerprints=sources.sort((a,b)=>a.file.localeCompare(b.file));
-const manifest={version:1,preparedAt:new Date().toISOString(),sourceHash:sha(JSON.stringify(fingerprints)),
+const manifest={version:2,preparedAt:new Date().toISOString(),sourceHash:sha(JSON.stringify(fingerprints)),templateHash:sha(template),
+ generatorHash:sha(readFileSync(import.meta.filename)),
+ researchOnlyAdaptations:['startup live side effects skipped','LabPersistActive validates without common state write','LnNasSaveRuntime validates without common state write'],
+ verification:{fullCalendar:true,runtimeMatches:true,pilotParityRequired:true},
  safety:{nativeTrading:false,publishing:false,orderSendGuard:true,originalSourceUnchanged:true},
  windows:[260,208,156,104,52,20,10,5,2],strategies:jobs.length,
  families:Object.fromEntries(Object.keys(families).map(f=>[f,jobs.filter(j=>j.family===f).length])),compiles,sources:fingerprints,jobs};
+for(const entry of compiles) {
+ const text=readFileSync(entry.source,'utf8').replace('__SOURCE_HASH__',manifest.sourceHash)
+  .replace('__TEMPLATE_HASH__',manifest.templateHash).replace('__GENERATOR_HASH__',manifest.generatorHash);
+ writeFileSync(entry.source,text);
+}
 const path=join(out,'manifest.private.json');
 if(existsSync(path)){
  const old=JSON.parse(readFileSync(path,'utf8'));

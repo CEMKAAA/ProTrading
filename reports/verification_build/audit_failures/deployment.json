@@ -1,0 +1,12 @@
+{
+    "deployedAt":  "2026-10-10T08:32:04.5273348+00:00",
+    "sourceHash":  "be6a04ce44dbed0ace9dc0f10f9aefe3aa643f2657efd24c45ce3424e6d5175a",
+    "changedFiles":  28,
+    "verifiedFiles":  185,
+    "binaries":  [
+                     "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.ex5",
+                     "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5",
+                     "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+                     "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5"
+                 ]
+}

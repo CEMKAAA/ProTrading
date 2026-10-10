@@ -25,6 +25,7 @@ ENUM_TIMEFRAMES g_maCrossAuditTf=PERIOD_CURRENT;
 int g_maCrossAuditFast=0,g_maCrossAuditMedium=0,g_maCrossAuditSlow=0;
 bool g_maCrossAuditReady=false;
 string g_maCrossAuditFailure="";
+bool g_maCrossAuditPending=false;
 
 void MaCrossAuditInvalidate()
 {
@@ -52,14 +53,27 @@ void MaCrossAuditSelect(const datetime from,const datetime end)
    if(count>0)ArrayCopy(g_maCrossAuditEvents,g_maCrossAuditStoredEvents,0,first,count);
 }
 
+bool MaCrossAuditOriginStable()
+{
+   return g_maCrossAuditReady&&g_maCrossAuditSeed==McHistorySeed(g_maCrossAuditSymbol,g_maCrossAuditTf)
+      &&SeriesInfoInteger(g_maCrossAuditSymbol,g_maCrossAuditTf,SERIES_SYNCHRONIZED)
+      &&(g_maCrossAuditMode!=MA_CROSS_ORIGINAL_MTF
+         ||(g_maCrossAuditHtfSeed==McHistorySeed(g_maCrossAuditSymbol,PERIOD_H4)
+            &&SeriesInfoInteger(g_maCrossAuditSymbol,PERIOD_H4,SERIES_SYNCHRONIZED)));
+}
+
 bool MaCrossAuditBuild(const string symbol,const ENUM_TIMEFRAMES tf,const datetime from,const datetime to,
                        const MA_CROSS_SIGNAL_MODE mode,const MA_CROSS_PAIR pair,
                        const int fastLen,const int mediumLen,const int slowLen)
 {
-   g_maCrossAuditFailure="";
+   g_maCrossAuditFailure="";g_maCrossAuditPending=false;
    datetime seed=McHistorySeed(symbol,tf),closed=iTime(symbol,tf,1);
    datetime hSeed=mode==MA_CROSS_ORIGINAL_MTF?McHistorySeed(symbol,PERIOD_H4):0;
    const int seconds=PeriodSeconds(tf);
+   bool blocked=false;
+   if(!McHistoryReady(symbol,tf,seed,g_maCrossAuditFailure,blocked)
+      ||(mode==MA_CROSS_ORIGINAL_MTF&&!McHistoryReady(symbol,PERIOD_H4,hSeed,g_maCrossAuditFailure,blocked)))
+   {g_maCrossAuditReady=false;g_maCrossAuditPending=!blocked;return false;}
    // Cache closed candles, not the advancing wall-clock second within a candle.
    datetime end=MathMin(closed,to-seconds);
    if(g_maCrossAuditReady&&SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED)
@@ -118,6 +132,8 @@ bool MaCrossAuditBuild(const string symbol,const ENUM_TIMEFRAMES tf,const dateti
       volumeSum+=(double)rates[i].tick_volume;
       if(i>=20)volumeSum-=(double)rates[i-20].tick_volume;
    }
+   if(seed!=McHistorySeed(symbol,tf)||(mode==MA_CROSS_ORIGINAL_MTF&&hSeed!=McHistorySeed(symbol,PERIOD_H4)))
+   {MaCrossAuditInvalidate();g_maCrossAuditPending=true;g_maCrossAuditFailure="signal origin changed during build";return false;}
    g_maCrossAuditSymbol=symbol;g_maCrossAuditSeed=seed;g_maCrossAuditHtfSeed=hSeed;g_maCrossAuditClosed=closed;
    g_maCrossAuditFrom=from;g_maCrossAuditTo=end;g_maCrossAuditMode=mode;g_maCrossAuditPair=pair;g_maCrossAuditTf=tf;
    g_maCrossAuditFast=fastLen;g_maCrossAuditMedium=mediumLen;g_maCrossAuditSlow=slowLen;g_maCrossAuditReady=true;

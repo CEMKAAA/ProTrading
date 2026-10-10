@@ -9,6 +9,14 @@ import { defaultConfiguration } from '../lib/universal-contract.ts';
 import { controlLocation,CLOUD_CONTROL } from '../control-service/api-location.mjs';
 import { postgresQuery,PostgresStore } from '../control-service/cloud/postgres-store.mjs';
 import { personalPackage } from '../control-service/cloud/generated/delivery.mjs';
+import { spawnSync } from 'node:child_process';
+
+test('deployable cloud bundle boots with a Deno window alias but no browser location',()=>{
+ const result=spawnSync(process.execPath,['--input-type=module','-e',"globalThis.window={}; await import('./supabase/functions/stratum-control/control-bundle.mjs');"],{
+  cwd:new URL('../',import.meta.url),encoding:'utf8',timeout:10000,
+ });
+ assert.equal(result.status,0,result.stderr);
+});
 
 function store(){
  const db=new DatabaseSync(':memory:');db.exec(readFileSync(new URL('../control-service/schema.sql',import.meta.url),'utf8'));let level=0;

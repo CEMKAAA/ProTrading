@@ -5947,6 +5947,7 @@ void RunValidationInternalAudit()
 
 int OnInit()
 {
+   SwRefreshRequest("sol");
    ErlTesterAudit_Init();
    PFX = LN_PREFIX + IntegerToString((int)ChartID()) + "_";
    if(!TCalInit()){Print("Invalid or damaged entry time matrix settings");return INIT_PARAMETERS_INCORRECT;}
@@ -6079,6 +6080,7 @@ void OnTick()
 void OnTimer()
 {
    AxTimer();
+   if(!IsTesterMode()&&SwRefreshPoll("sol")){if(g_liqLibraryOpen){LiqLibraryReadEdits();LiqLibraryScan();LiqLibraryDraw();}}
    if(IsTesterMode()) return;
    if(g_auditMacroPending && GetTickCount64()-g_auditMacroLastSliceAt >= 1000)
       ContinueHistoricalMacroAudit(g_auditGeneration, 250);

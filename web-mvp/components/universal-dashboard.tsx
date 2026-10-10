@@ -6,7 +6,7 @@ import { eaCatalog, defaultConfiguration, universalConfigurationSchema, type Con
 import type { BacktestResult, BacktestRequest } from "@/lib/control-contract";
 import LeverSwitch from "./lever-switch";
 import ConsoleWindow from "./console-window";
-import { CONTROL_API } from '@/lib/control-endpoint';
+import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS} from '@/lib/control-endpoint';
 import HelpButton from './studio-help';
 import TutorRobot from './tutor-robot';
 import { basicKeys, blockedReason, controlGroup, controlHelp, controlLabel, familySummary, helpTopics, safeConfiguration, friendlyError, starterRules, auditMatchesConnection } from '@/lib/studio-help';
@@ -43,7 +43,7 @@ type Session={accountId:string;displayName:string;email:string|null;subscription
 type Job={id:string;state:string;failureCode:string|null;request:BacktestRequest;configurationHash:string;
   progress:{phase:string;processed:number;total:number|null}|null;result:(BacktestResult&{summary:{wins:number;losses:number;flat:number;open:number;data:number;netR:number;winRate:number|null;maxClosedDrawdownR:number;coverageComplete:boolean}})|null};
 async function api<T=unknown>(path:string,token:string,body?:unknown):Promise<T>{
-  const res=await fetch(API+path,{method:body===undefined?"GET":"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000),redirect:"error",credentials:"include",cache:"no-store"});
+  const res=await fetch(API+path,{method:body===undefined?"GET":"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(CONTROL_TIMEOUT_MS),redirect:"error",credentials:CONTROL_CREDENTIALS,cache:"no-store"});
   const data=await res.json() as {error?:string};if(!res.ok)throw new Error(data.error??"SERVICE_UNAVAILABLE");return data as T;
 }
 const duration=(v:number|string|boolean)=>typeof v==="string"?v:`${String(Math.floor(Number(v)/60)).padStart(2,"0")}:${String(Number(v)%60).padStart(2,"0")}`;
@@ -139,10 +139,10 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
   const openPanel=(next:"library"|"controls"|"builder",trigger:HTMLButtonElement)=>{windowTrigger.current=trigger;setPanel(next);setWindowOpen(true);};
   const refresh=useCallback(async()=>{if(!credential)return;const data=await api<Session>("/v1/session",credential);setSessionRecord({credential,data});setClock(Date.now());setSelected(previous=>previous||data.lease?.installationId||data.installations.find((i:{state:string})=>i.state==="approved")?.id||"");},[credential]);
   const action=async(work:()=>Promise<void>)=>{if(busy)return;setBusy(true);setError("");try{await work();}catch(e){setError(e instanceof Error?e.message:"REQUEST_FAILED");}finally{setBusy(false);}};
-  useEffect(()=>{if(!credential)return;let alive=true;const poll=async()=>{try{await refresh();}catch(e){if(alive){const message=e instanceof Error?e.message:"CONNECTION_FAILED";setError(message);if(["UNAUTHORIZED","SESSION_REVOKED","SESSION_SCOPE_MISMATCH"].includes(message))onCredential("");}}};void poll();const id=setInterval(poll,3000);return()=>{alive=false;clearInterval(id);};},[credential,refresh,onCredential]);
+  useEffect(()=>{if(!credential)return;let alive=true,pending=false;const poll=async()=>{if(!alive||pending)return;pending=true;try{await refresh();}catch(e){if(alive){const message=e instanceof Error?e.message:"CONNECTION_FAILED";setError(message);if(["UNAUTHORIZED","SESSION_REVOKED","SESSION_SCOPE_MISMATCH"].includes(message))onCredential("");}}finally{pending=false;}};void poll();const id=setInterval(poll,3000);return()=>{alive=false;clearInterval(id);};},[credential,refresh,onCredential]);
   useEffect(()=>{if(!credential||!session?.subscriptionActive)return;let alive=true;void api<{strategies:UniversalConfiguration[]}>("/v1/strategies",credential).then(d=>{if(alive)setStrategies(d.strategies);}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[credential,session?.subscriptionActive,setStrategies]);
   const jobId=job?.id,jobState=job?.state;
-  useEffect(()=>{if(!credential||!jobId||!jobState||!["queued","running"].includes(jobState))return;let alive=true;const id=setInterval(()=>{void api<Job>(`/v1/jobs/${jobId}`,credential).then(data=>{if(alive)setJob(data);}).catch(e=>{if(alive)setError(e.message);});},1000);return()=>{alive=false;clearInterval(id);};},[credential,jobId,jobState,setJob]);
+  useEffect(()=>{if(!credential||!jobId||!jobState||!["queued","running"].includes(jobState))return;let alive=true,pending=false;const id=setInterval(()=>{if(!alive||pending)return;pending=true;void api<Job>(`/v1/jobs/${jobId}`,credential).then(data=>{if(alive)setJob(data);}).catch(e=>{if(alive)setError(e.message);}).finally(()=>{pending=false;});},1000);return()=>{alive=false;clearInterval(id);};},[credential,jobId,jobState,setJob]);
   const terminal=session?.terminalStatuses.find(t=>t.installationId===selected),online=!!terminal&&terminal.reportedAt>clock-15000&&clock>0;
   const running=job&&["queued","running"].includes(job.state),dirty=JSON.stringify(config)!==applied||auditWeeks!==appliedWeeks;
   const requestedOn=!!session?.trading.enabled, canStop=requestedOn||!!terminal?.trading;

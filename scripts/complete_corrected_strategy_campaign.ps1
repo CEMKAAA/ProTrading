@@ -1,0 +1,28 @@
+param([string]$ReportDir='reports/strategy_audit_20261009_rolling',[int]$HistoryMaxBars=3000000)
+$ErrorActionPreference='Stop'
+$root=Split-Path -Parent $PSScriptRoot
+$out=if([IO.Path]::IsPathRooted($ReportDir)){
+ [IO.Path]::GetFullPath($ReportDir)
+}else{
+ [IO.Path]::GetFullPath((Join-Path $root $ReportDir))
+}
+Set-Location -LiteralPath $root
+& node (Join-Path $PSScriptRoot 'watch_strategy_window_refresh.mjs') --report-dir $ReportDir --once --dry-run
+if($LASTEXITCODE-ne 0){throw 'Source/native verification failed; campaign was not started'}
+$manifest=Get-Content (Join-Path $out 'manifest.private.json') -Raw|ConvertFrom-Json
+$epochPath=Join-Path $out 'campaign-epoch.json'
+if(Test-Path -LiteralPath $epochPath){
+ $savedEpoch=Get-Content -LiteralPath $epochPath -Raw|ConvertFrom-Json
+ if($savedEpoch.sourceHash-ne $manifest.sourceHash){throw 'Campaign epoch belongs to another engine; reverify before resuming'}
+ $epoch=$savedEpoch.asOf
+}else{
+ $epoch=[DateTimeOffset]::UtcNow.ToString('yyyy.MM.dd HH:mm:ss')
+ @{asOf=$epoch;sourceHash=$manifest.sourceHash;createdUtc=[DateTimeOffset]::UtcNow.ToString('o')}|
+  ConvertTo-Json|Set-Content -LiteralPath $epochPath -Encoding UTF8
+}
+& (Join-Path $PSScriptRoot 'run_strategy_window_campaign.ps1') -Mode Run -ReportDir $ReportDir -PublishMetrics -AsOf $epoch -HistoryMaxBars $HistoryMaxBars
+& node (Join-Path $PSScriptRoot 'report_strategy_window_campaign.mjs') --report-dir $ReportDir --verify-common --write
+if($LASTEXITCODE-ne 0){throw 'Campaign integrity check failed; baseline not sealed'}
+& node (Join-Path $PSScriptRoot 'seal_strategy_window_campaign.mjs') $out
+if($LASTEXITCODE-ne 0){throw 'Immutable MEGA 2 baseline could not be sealed'}
+& (Join-Path $PSScriptRoot 'install_strategy_window_refresh.ps1') -ReportDir $ReportDir

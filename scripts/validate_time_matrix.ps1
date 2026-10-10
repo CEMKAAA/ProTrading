@@ -1,4 +1,5 @@
-param([string]$Editor='C:\MT5\DEMO\MetaEditor64.exe',[switch]$RunProbe,[switch]$ProbeOnly)
+param([string]$Editor='C:\MT5\DEMO\MetaEditor64.exe',[switch]$RunProbe,[switch]$ProbeOnly,
+ [string]$StageDir='reports/verification_build/time_matrix')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $source=Join-Path $root 'IndicatorCodeExamples'
@@ -8,7 +9,12 @@ if($calendarHashes.Count -ne 1){throw 'TradeCalendarMatrix copies differ; synchr
 foreach($retired in @('OrbUltimateEA_StrategyLibrary.mq5','LiqNarrativeSol_Advanced.mq5')){
  if(Test-Path -LiteralPath (Join-Path $source $retired)){throw "Retired root EA was reintroduced: $retired"}
 }
-$stage=Join-Path $root ('.tmp/time_matrix_compile_'+(Get-Date -Format yyyyMMdd_HHmmss))
+$stage=[IO.Path]::GetFullPath((Join-Path $root $StageDir))
+if(!$stage.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)){throw 'Verification stage must stay in the workspace'}
+if($RunProbe-or $ProbeOnly){
+ $terminal=Join-Path $root '.tmp/orb_jp225_full_worker/terminal64.exe'
+ if(Get-Process terminal64 -ErrorAction SilentlyContinue|Where-Object Path -eq $terminal){throw 'Research worker busy; no terminal was stopped'}
+}
 New-Item -ItemType Directory -Path $stage -Force|Out-Null
 $seen=@{}
 function StageSource([string]$path){
@@ -45,7 +51,7 @@ if($RunProbe){
  $sourceProbe=Join-Path $root 'tests/mql5/TradeCalendarMatrixProbe.mq5'
  $probe=Join-Path $stage 'tests/mql5/TradeCalendarMatrixProbe.mq5'
  New-Item -ItemType Directory -Path (Split-Path $probe) -Force|Out-Null
- $name='TradeCalendarMatrixProbe_'+(Get-Date -Format HHmmss)
+ $name='TradeCalendarMatrixProbe'
  $probeText=[IO.File]::ReadAllText($sourceProbe).Replace('TradeCalendarMatrixProbe.json',$name+'.json')
  [IO.File]::WriteAllText($probe,$probeText,(New-Object Text.UTF8Encoding($false)))
  Copy-Item -LiteralPath (Join-Path $source 'TradeCalendarMatrix.mqh') -Destination (Join-Path $stage 'TradeCalendarMatrix.mqh')
@@ -69,7 +75,7 @@ if($RunProbe){
   $sourceText=[IO.File]::ReadAllText((Join-Path $root ('tests/mql5/'+$probeName+'.mq5')))
   $sourceText=$sourceText.Replace('../../IndicatorCodeExamples/','../../')
   $sourceText=$sourceText.Replace('../../OrbUltimateEA_StrategyLibrary.mq5','../../orb/OrbUltimateEA_StrategyLibrary.mq5')
-  $unique=$probeName+'_'+(Get-Date -Format HHmmss)
+  $unique=$probeName
   $sourceText=$sourceText.Replace($probeName+'.json',$unique+'.json')
   $probePath=Join-Path $stage ('tests/mql5/'+$unique+'.mq5')
   [IO.File]::WriteAllText($probePath,$sourceText,(New-Object Text.UTF8Encoding($false)))

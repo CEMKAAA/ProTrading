@@ -79,7 +79,8 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
           const ticket=typeof body.enrollmentToken==='string'&&plane.get('SELECT account_id FROM enrollment_tickets WHERE token_hash=? AND used=0 AND expires_at>?',hash(body.enrollmentToken),plane.now());
           if(!ticket)throw new ControlError('ENROLLMENT_EXPIRED_OR_USED',403);
           await auth.forAccount(ticket.account_id);
-        }else if(!['/v1/pairings','/v1/subscription/webhook'].includes(path))await auth.forBrowser(browserToken());
+        // Reads reuse the server-verified three-second authority window; mutations always revalidate.
+        }else if(!['/v1/pairings','/v1/subscription/webhook'].includes(path))await auth.forBrowser(browserToken(),{force:method!=='GET'});
       }
       if(method==='GET'&&path==='/v1/auth/session'){plane.browser(browserToken());return reply(200,{accessToken:auth?'cookie-session':browserToken()});}
       if(path.startsWith('/v1/admin/')||path.startsWith('/v1/library/')){

@@ -2,10 +2,67 @@
 #define STRATEGY_WINDOW_METRICS_MQH
 struct SwMetric
 {
-   bool ready;int total,wins,losses,open,flat;double netR,minCum;datetime asOf;
+   bool ready,snapshotIndependent;int total,wins,losses,open,flat;double netR,minCum;datetime asOf;
 };
 int g_swWeeks=52,g_swSortCount=0;
+bool g_swFrozen=false;
+bool g_swLegacyArchive=false;
+void SwCycleSource()
+{
+   if(!g_swFrozen){g_swFrozen=true;g_swLegacyArchive=false;}
+   else if(!g_swLegacyArchive)g_swLegacyArchive=true;
+   else {g_swFrozen=false;g_swLegacyArchive=false;}
+}
+string SwSourceCaption(){return !g_swFrozen?"RESULTS: CURRENT":g_swLegacyArchive?"MEGA 1: LEGACY / 08 OCT":"MEGA 2: VERIFIED BASELINE";}
+string SwFrozenPath(string folder,string id,int weeks)
+{return "StrategyWindowArchive\\"+(g_swLegacyArchive?"20261008":"20261009")+"\\"+SwHash(folder+"|"+id)+"."+(string)weeks+".swm";}
 int g_swOrder[5],g_swDirection[5];
+string g_swRefreshFamily="",g_swRefreshStatus="",g_swRefreshSeen="";
+ulong g_swRefreshRequestAt=0,g_swRefreshPollAt=0;
+string SwRefreshStem(string family)
+{return "StrategyWindowRefresh\\"+family+"_"+SwHash(AccountInfoString(ACCOUNT_SERVER))+"_"+SwHash(_Symbol);}
+void SwRefreshRequest(string family)
+{
+   if(MQLInfoInteger(MQL_TESTER)||MQLInfoInteger(MQL_PROGRAM_TYPE)!=PROGRAM_EXPERT)return;
+   g_swRefreshFamily=family;ulong now=GetTickCount64();
+   if(g_swRefreshRequestAt>0&&now-g_swRefreshRequestAt<300000)return;
+   g_swRefreshRequestAt=now;
+   FolderCreate("StrategyWindowRefresh",FILE_COMMON);
+   string payload="SW_REFRESH_1\n"+family+"\n"+_Symbol+"\n"+AccountInfoString(ACCOUNT_SERVER)
+      +"\n"+(string)(long)TimeGMT()+"\n"+(string)(long)TimeCurrent();
+   payload+="\nSHA256="+SwHash(payload);
+   string path=SwRefreshStem(family)+".request",temp=path+"."+(string)ChartID()+".pending";
+   int f=FileOpen(temp,FILE_WRITE|FILE_BIN|FILE_COMMON);
+   if(f==INVALID_HANDLE)return;
+   uchar bytes[];int n=StringToCharArray(payload,bytes,0,WHOLE_ARRAY,CP_UTF8)-1;
+   bool ok=FileWriteArray(f,bytes,0,n)==(uint)n;FileFlush(f);FileClose(f);
+   if(ok)ok=FileMove(temp,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE);
+   if(!ok)FileDelete(temp,FILE_COMMON);
+   if(g_swRefreshStatus=="")g_swRefreshStatus="AUTO AUDIT: queued; worker required";
+}
+bool SwRefreshPoll(string family)
+{
+   SwRefreshRequest(family);ulong now=GetTickCount64();
+   if(g_swRefreshPollAt>0&&now-g_swRefreshPollAt<15000)return false;
+   g_swRefreshPollAt=now;
+   int f=FileOpen(SwRefreshStem(family)+".status",FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ);
+   if(f==INVALID_HANDLE)return false;
+   int n=(int)FileSize(f);if(n<1||n>2048){FileClose(f);return false;}
+   uchar bytes[];ArrayResize(bytes,n);bool ok=FileReadArray(f,bytes)==(uint)n;FileClose(f);if(!ok)return false;
+   string text=CharArrayToString(bytes,0,n,CP_UTF8);int end=StringFind(text,"\nSHA256=");
+   if(end<0||StringSubstr(text,end+8)!=SwHash(StringSubstr(text,0,end)))return false;
+   string v[];if(StringSplit(StringSubstr(text,0,end),'\n',v)!=4||v[0]!="SW_REFRESH_STATUS1")return false;
+   g_swRefreshStatus=TimeGMT()-(datetime)StringToInteger(v[2])>120?"AUTO AUDIT: worker offline; dated cache retained":"AUTO AUDIT: "+v[1]+" | "+v[3];
+   string revision=v[1]+"|"+v[3];
+   if(revision==g_swRefreshSeen)return false;
+   g_swRefreshSeen=revision;return v[1]=="CURRENT"||v[1]=="PARTIAL";
+}
+string SwAsOfCaption(string stamp)
+{
+   if(stamp=="")return "";
+   bool old=TimeCurrent()-StringToTime(stamp)>86400;
+   return " | "+(g_swFrozen?(g_swLegacyArchive?"LEGACY ":"FROZEN "):old?"OLD ":"ASOF ")+StringSubstr(stamp,5,11);
+}
 int SwWeeks(int i){int values[]={2,5,10,20,52,104,156,208,260};return i>=0&&i<9?values[i]:0;}
 string SwWindow(int weeks){return weeks<52?(string)weeks+"W":(string)(weeks/52)+"Y";}
 bool SwValidWindow(int weeks){for(int i=0;i<9;i++)if(SwWeeks(i)==weeks)return true;return false;}
@@ -15,6 +72,7 @@ string SwHash(string value)
    ArrayResize(bytes,n);if(CryptEncode(CRYPT_HASH_SHA256,bytes,key,digest)<=0)return "";
    string out="";for(int i=0;i<ArraySize(digest);i++)out+=StringFormat("%02x",digest[i]);return out;
 }
+string SwSettingsKey(string value){return SwHash("SW_WINDOW_2|"+AccountInfoString(ACCOUNT_SERVER)+"|"+value);}
 string SwPath(string folder,string id,int weeks){return folder+"\\"+SwHash(id)+"."+(string)weeks+".swm";}
 bool SwRead(string folder,string id,string settings,int weeks,SwMetric &m)
 {
@@ -25,21 +83,23 @@ bool SwRead(string folder,string id,string settings,int weeks,SwMetric &m)
    uchar b[];ArrayResize(b,n);bool ok=FileReadArray(f,b)==(uint)n;FileClose(f);if(!ok)return false;
    string text=CharArrayToString(b,0,n,CP_UTF8);int pos=StringFind(text,"\nSHA256=");
    if(pos<0||StringSubstr(text,pos+8)!=SwHash(StringSubstr(text,0,pos)))return false;
-   string v[];if(StringSplit(StringSubstr(text,0,pos),'\n',v)!=12||v[0]!="SW_METRICS_1"||v[1]!=id||v[2]!=settings||v[3]!=(string)weeks)return false;
+   string v[];if(StringSplit(StringSubstr(text,0,pos),'\n',v)!=12||v[0]!="SW_METRICS_2"||v[1]!=id||v[2]!=settings||v[3]!=(string)weeks)return false;
    double nums[8];for(int i=0;i<8;i++)
    {nums[i]=StringToDouble(v[i+4]);if(!MathIsValidNumber(nums[i])||DoubleToString(nums[i],12)!=v[i+4])return false;}
    for(int i=0;i<6;i++)if(nums[i]<0||nums[i]!=MathFloor(nums[i])||(nums[i]>2147483647&&i>0))return false;
-   if(nums[0]<=0||nums[2]+nums[3]+nums[4]+nums[5]>nums[1]||nums[7]>1e-8)return false;
+   if(nums[0]<=0||nums[2]+nums[3]+nums[4]+nums[5]!=nums[1]||nums[7]>1e-8)return false;
    m.asOf=(datetime)nums[0];m.total=(int)nums[1];m.wins=(int)nums[2];m.losses=(int)nums[3];
    m.open=(int)nums[4];m.flat=(int)nums[5];m.netR=nums[6];m.minCum=nums[7];m.ready=true;return true;
 }
 bool SwWrite(string folder,string id,string settings,int weeks,int total,int wins,int losses,int open,int flat,double netR,double minCum,datetime asOf)
 {
    if(!SwValidWindow(weeks)||asOf<=0||total<0||wins<0||losses<0||open<0||flat<0
-      ||wins+losses+open+flat>total||!MathIsValidNumber(netR)||!MathIsValidNumber(minCum)||minCum>1e-8)return false;
+      ||wins+losses+open+flat!=total||!MathIsValidNumber(netR)||!MathIsValidNumber(minCum)||minCum>1e-8)return false;
    FolderCreate(folder,FILE_COMMON);string path=SwPath(folder,id,weeks);
    int lock=FileOpen(path+".lock",FILE_READ|FILE_WRITE|FILE_BIN|FILE_COMMON);if(lock==INVALID_HANDLE)return false;
-   string text="SW_METRICS_1\n"+id+"\n"+settings+"\n"+(string)weeks;
+   SwMetric existing;
+   if(SwRead(folder,id,settings,weeks,existing)&&existing.asOf>asOf){FileClose(lock);return false;}
+   string text="SW_METRICS_2\n"+id+"\n"+settings+"\n"+(string)weeks;
    double values[8];values[0]=(double)asOf;values[1]=total;values[2]=wins;values[3]=losses;values[4]=open;values[5]=flat;values[6]=netR;values[7]=minCum;
    for(int i=0;i<8;i++)text+="\n"+DoubleToString(values[i],12);
    text+="\nSHA256="+SwHash(text);string temp=path+"."+(string)ChartID()+".pending";
@@ -48,6 +108,27 @@ bool SwWrite(string folder,string id,string settings,int weeks,int total,int win
       ok=FileWriteArray(f,bytes,0,n)==(uint)n;FileFlush(f);FileClose(f);
       if(ok)ok=FileMove(temp,FILE_COMMON,path,FILE_COMMON|FILE_REWRITE);if(!ok)FileDelete(temp,FILE_COMMON);}
    FileClose(lock);return ok;
+}
+bool SwReadView(string folder,string id,string settings,int weeks,SwMetric &m)
+{
+   if(!g_swFrozen)return SwRead(folder,id,settings,weeks,m);
+   ZeroMemory(m);if(!SwValidWindow(weeks))return false;
+   int f=FileOpen(SwFrozenPath(folder,id,weeks),FILE_READ|FILE_BIN|FILE_COMMON|FILE_SHARE_READ);
+   if(f==INVALID_HANDLE)return false;
+   int n=(int)FileSize(f);if(n<=0||n>8192){FileClose(f);return false;}
+   uchar bytes[];ArrayResize(bytes,n);bool ok=FileReadArray(f,bytes)==(uint)n;FileClose(f);if(!ok)return false;
+   string text=CharArrayToString(bytes,0,n,CP_UTF8);int end=StringFind(text,"\nSHA256=");
+   if(end<0||StringSubstr(text,end+8)!=SwHash(StringSubstr(text,0,end)))return false;
+   string v[];
+   if(StringSplit(StringSubstr(text,0,end),'\n',v)!=13||v[0]!=(g_swLegacyArchive?"SW_FROZEN_LEGACY_1":"SW_FROZEN_VERIFIED_1")||v[1]!=id||v[3]!=(string)weeks
+      ||(v[12]!="0"&&v[12]!="1"))return false;
+   double nums[8];for(int i=0;i<8;i++)
+   {nums[i]=StringToDouble(v[i+4]);if(!MathIsValidNumber(nums[i])||DoubleToString(nums[i],12)!=v[i+4])return false;}
+   for(int i=0;i<6;i++)if(nums[i]<0||nums[i]!=MathFloor(nums[i])||(i>0&&nums[i]>2147483647))return false;
+   if(nums[0]<=0||nums[2]+nums[3]+nums[4]+nums[5]!=nums[1]||nums[7]>1e-8)return false;
+   m.asOf=(datetime)nums[0];m.total=(int)nums[1];m.wins=(int)nums[2];m.losses=(int)nums[3];
+   m.open=(int)nums[4];m.flat=(int)nums[5];m.netR=nums[6];m.minCum=nums[7];m.snapshotIndependent=v[12]=="1";
+   m.ready=true;return true;
 }
 double SwWr(const SwMetric &m){return m.wins+m.losses>0?100.0*m.wins/(m.wins+m.losses):0.0;}
 string SwSortName(int key){string names[]={"WR","TRADES","WINS","NET R","MIN CUM"};return key>=0&&key<5?names[key]:"";}

@@ -3,11 +3,50 @@ param(
  [ValidateSet('all','orb','macross','sol','entrylab')][string]$Family='all',
  [int]$Limit=0,
  [int[]]$Weeks=@(),
- [int]$TimeoutSeconds=21600
+ [int]$TimeoutSeconds=21600,
+ [string]$ReportDir='reports\strategy_audit_20261009_rolling',
+ [string[]]$StrategyIds=@(),
+ [string]$ResultSet='',
+ [string]$AsOf='',
+ [ValidateRange(0,168)][double]$RefreshHours=24,
+ [switch]$Force,
+ [switch]$TraceTrades,
+ [switch]$DashboardLoad,
+ [switch]$PublishMetrics,
+ [string]$RequestedBroker='',
+ [int]$FreshnessOffsetSeconds=0,
+ [switch]$SkipChangedRecords,
+ [switch]$PairTraceOnly,
+ [ValidateSet('','M1','M5','M15','H1')][string]$ChartPeriodOverride='',
+ [ValidateRange(1000,100000000)][int]$HistoryMaxBars=3000000
 )
 $ErrorActionPreference='Stop'
+function Write-AtomicText([string]$path,[string]$text,[Text.Encoding]$encoding){
+ [IO.File]::WriteAllText($path+'.pending',$text,$encoding)
+ Move-Item -LiteralPath ($path+'.pending') -Destination $path -Force
+}
+function Write-AtomicCsv([string]$path,[object[]]$rows){
+ # ConvertTo-Csv otherwise drops properties absent from the first, older row.
+ $columns=@($rows|ForEach-Object {$_.PSObject.Properties.Name}|Select-Object -Unique)
+ $normalized=@($rows|ForEach-Object {
+  $values=[ordered]@{}
+  foreach($column in $columns){$values[$column]=$_.PSObject.Properties[$column].Value}
+  [pscustomobject]$values
+ })
+ $text=($normalized|ConvertTo-Csv -NoTypeInformation)-join "`r`n"
+ Write-AtomicText $path ($text+"`r`n") (New-Object Text.UTF8Encoding($false))
+}
 $root=Split-Path -Parent $PSScriptRoot
-$out=Join-Path $root 'reports\strategy_audit_20261008'
+$out=if([IO.Path]::IsPathRooted($ReportDir)){
+ [IO.Path]::GetFullPath($ReportDir)
+}else{
+ [IO.Path]::GetFullPath((Join-Path $root $ReportDir))
+}
+$resultRoot=$out
+if($ResultSet){
+ if($ResultSet-notmatch '^[a-zA-Z0-9_-]+$'){throw 'Invalid result set'}
+ $resultRoot=Join-Path $out $ResultSet
+}
 $manifest=Get-Content (Join-Path $out 'manifest.private.json') -Raw | ConvertFrom-Json
 $worker=Join-Path $root '.tmp\orb_jp225_full_worker'
 $terminal=Join-Path $worker 'terminal64.exe'
@@ -23,15 +62,46 @@ if($Mode -eq 'Compile'){
  }
  exit
 }
+if($PublishMetrics){
+ if($ChartPeriodOverride){throw 'Chart override is a parity test only; it cannot publish campaign metrics'}
+ $proofPath=Join-Path $out 'parity_verified.json'
+ if(!(Test-Path $proofPath)){throw 'Native dashboard/campaign pilot parity is required before publication'}
+ $proof=Get-Content $proofPath -Raw|ConvertFrom-Json
+ if(!$proof.passed-or $proof.sourceHash-ne $manifest.sourceHash-or $proof.templateHash-ne $manifest.templateHash-or $proof.generatorHash-ne $manifest.generatorHash){throw 'Parity proof does not match this source/template/generator'}
+}
 if(Get-Process terminal64 -ErrorAction SilentlyContinue | Where-Object {$_.Path-eq $terminal}){throw 'Research worker busy; user terminal will not be touched'}
-New-Item -ItemType Directory -Force (Join-Path $worker 'MQL5\Presets'),(Join-Path $out 'results') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $worker 'MQL5\Presets'),(Join-Path $resultRoot 'results') | Out-Null
 $selected=@($manifest.jobs | Where-Object {$Family-eq 'all'-or $_.family-eq $Family})
+if($StrategyIds.Count-gt 0){$selected=@($selected | Where-Object {$_.id-in $StrategyIds})}
 if($Mode-eq 'Pilot'){$selected=@($selected | Group-Object family | ForEach-Object {$_.Group[0]})}
 if($Limit-gt 0){$selected=@($selected | Select-Object -First $Limit)}
 $common=Join-Path $env:APPDATA 'MetaQuotes\Terminal\Common\Files'
-$progressPath=Join-Path $out 'progress.json'
+function Metric-Matches($row,$job){
+ if(!$PublishMetrics){return $true}
+ $folder=if($job.family-eq 'sol'){Join-Path (Split-Path $row.native_id) 'WindowMetrics'}else{
+  @{orb='OrbStrategyUserLibrary';macross='MaCrossOrbStrategyLibrary';entrylab='EntryEngineLabStrategyLibrary'}[$job.family]+'\WindowMetrics'
+ }
+ $hash=[Security.Cryptography.SHA256]::Create()
+ try{$idHash=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($row.native_id))).Replace('-','').ToLower()}finally{$hash.Dispose()}
+ $path=Join-Path $common ($folder+'\'+$idHash+'.'+$row.weeks+'.swm')
+ if(!(Test-Path $path)){return $false}
+ $text=[IO.File]::ReadAllText($path);$at=$text.IndexOf("`nSHA256=");if($at-lt 0){return $false}
+ $body=$text.Substring(0,$at);$hash=[Security.Cryptography.SHA256]::Create()
+ try{$digest=[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))).Replace('-','').ToLower()}finally{$hash.Dispose()}
+ if($digest-ne $text.Substring($at+8)){return $false}
+ $v=$body.Split("`n");if($v.Count-ne 12-or $v[0]-ne 'SW_METRICS_2'-or $v[1]-ne $row.native_id-or $v[2]-ne $row.settings_key-or $v[3]-ne $row.weeks){return $false}
+ $cols=@('as_of','total','wins','losses','open','flat','net_r','min_cum_r')
+ for($i=0;$i-lt 8;$i++){if([math]::Abs([double]$v[$i+4]-[double]$row.($cols[$i]))-gt 1e-8){return $false}}
+ return $true
+}
+$progressPath=Join-Path $resultRoot 'progress.json'
 $completed=0;$errors=0
+$backedUp=@{}
 foreach($job in $selected){
+ if($PublishMetrics){
+  & node (Join-Path $PSScriptRoot 'verify_strategy_campaign_snapshot.mjs') $out
+  if($LASTEXITCODE-ne 0){throw 'Source changed during campaign; no further publication'}
+ }
  $entry=$manifest.compiles | Where-Object family -eq $job.family
  $binary=[IO.Path]::ChangeExtension($entry.source,'.ex5')
  if(!(Test-Path $binary)){throw ('Compile required: '+$job.family)}
@@ -39,11 +109,21 @@ foreach($job in $selected){
  $log=Join-Path $out ($entry.script+'.compile.log')
  if((Get-Content $log -Raw)-notmatch 'Result: 0 errors, 0 warnings'){throw 'Clean compile required'}
  $requested=if($Weeks.Count-gt 0){$Weeks}else{@($job.windows)}
- $dest=Join-Path $out ('results\'+$job.id+'.csv')
+ $dest=Join-Path $resultRoot ('results\'+$job.id+'.csv')
  $pending=@($requested)
  if(Test-Path $dest){
   $existing=@(Import-Csv -LiteralPath $dest)
-  $ready=@($existing | Where-Object {$_.status -in @('AUDITED','AUDITED_OPEN') -and $_.metrics_saved-eq '1'} | ForEach-Object {[int]$_.weeks})
+  $fixedStamp=0
+  if($AsOf){
+   $date=[datetime]::ParseExact($AsOf,'yyyy.MM.dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture)
+   $fixedStamp=[long]([datetime]::SpecifyKind($date,[DateTimeKind]::Utc)-[datetime]::new(1970,1,1,0,0,0,[DateTimeKind]::Utc)).TotalSeconds
+  }
+  $now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()+$FreshnessOffsetSeconds
+  $ready=@($existing | Where-Object {
+   $age=$now-[long]$_.as_of
+   $fresh=if($fixedStamp-gt 0){[long]$_.as_of-eq $fixedStamp}else{$age-ge -300-and $age-le $RefreshHours*3600}
+   !$Force-and $fresh-and $_.engine_hash-eq $manifest.sourceHash-and $_.template_hash-eq $manifest.templateHash-and $_.generator_hash-eq $manifest.generatorHash-and $_.status -in @('AUDITED','AUDITED_OPEN') -and $_.settings_verified-eq '1' -and (!$PublishMetrics-or ($_.metrics_saved-eq '1'-and $_.native_parity_verified-eq '1'))-and (Metric-Matches $_ $job)
+  } | ForEach-Object {[int]$_.weeks})
   $pending=@($requested | Where-Object {$_-notin $ready})
  }
  if($pending.Count-eq 0){$completed++;continue}
@@ -55,24 +135,67 @@ foreach($job in $selected){
   if($job.family-eq 'sol'){$text=$text.Replace("`r`n","`n")}
   $sha=[Security.Cryptography.SHA256]::Create()
   try{$hash=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).Replace('-','').ToLower()}finally{$sha.Dispose()}
-  if($hash-ne $job.nativeSourceHash){throw ('Strategy changed after inventory: '+$job.name)}
+  if($hash-ne $job.nativeSourceHash){
+   if($SkipChangedRecords){Write-Warning ('Strategy profile changed; recapture required: '+$job.name);$errors++;continue}
+   throw ('Strategy changed after inventory: '+$job.name)
+  }
  }
- Copy-Item -LiteralPath $binary -Destination (Join-Path $worker ('MQL5\Scripts\'+$entry.script+'.ex5')) -Force
+ $workerBinary=Join-Path $worker ('MQL5\Scripts\'+$entry.script+'.ex5')
+ if(!(Test-Path -LiteralPath $workerBinary)-or (Get-FileHash -LiteralPath $binary).Hash-ne (Get-FileHash -LiteralPath $workerBinary).Hash){
+  # Avoid truncating a binary still memory-mapped by Windows after worker exit.
+  Copy-Item -LiteralPath $binary -Destination ($workerBinary+'.pending') -Force
+  Move-Item -LiteralPath ($workerBinary+'.pending') -Destination $workerBinary -Force
+ }
  $lines=@($job.inputs.PSObject.Properties | ForEach-Object {
   $v=if($_.Value-is [bool]){if($_.Value){'true'}else{'false'}}else{[string]$_.Value}
   $_.Name+'='+$v
  })
  $lines+=@("CampaignOrigin=$($job.origin)","CampaignId=$($job.id)","CampaignProfileSignature=$($job.profileSignature)","CampaignWeeks=$($pending-join ',')")
+ $lines+=@("CampaignDashboardLoad=$($DashboardLoad.IsPresent.ToString().ToLower())","CampaignPublishMetrics=false")
+ $lines+="CampaignTraceTrades=$(($TraceTrades.IsPresent-or $PublishMetrics.IsPresent).ToString().ToLower())"
+ if($RequestedBroker){$lines+="CampaignBroker=$RequestedBroker"}
+ if($PublishMetrics){
+  # Preserve the original published evidence before any corrected write.
+  $backup=Join-Path $out 'metrics_before';New-Item -ItemType Directory -Force $backup|Out-Null
+  $folder=if($job.family-eq 'sol'){
+   $h=[Security.Cryptography.SHA256]::Create()
+   try{$familyHash=[BitConverter]::ToString($h.ComputeHash([Text.Encoding]::UTF8.GetBytes('LiqNarrativeSol_Advanced|'+$job.symbol))).Replace('-','').ToLower()}finally{$h.Dispose()}
+   'LiqStrategies\'+$familyHash+'\WindowMetrics'
+  }else{
+   @{orb='OrbStrategyUserLibrary';macross='MaCrossOrbStrategyLibrary';entrylab='EntryEngineLabStrategyLibrary'}[$job.family]+'\WindowMetrics'
+  }
+  if(!$backedUp.ContainsKey($folder)-and (Test-Path (Join-Path $common $folder))){
+   $destFolder=Join-Path $backup $folder;New-Item -ItemType Directory -Force $destFolder|Out-Null
+   Get-ChildItem -LiteralPath (Join-Path $common $folder) -Filter '*.swm'|ForEach-Object{
+    $target=Join-Path $destFolder $_.Name;if(!(Test-Path $target)){Copy-Item -LiteralPath $_.FullName -Destination $target}
+   }
+   $backedUp[$folder]=$true
+  }
+ }
+ if($AsOf){
+  $clock=[datetime]::ParseExact($AsOf,'yyyy.MM.dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture)
+  $clock=[datetime]::SpecifyKind($clock,[DateTimeKind]::Utc)
+  $stamp=[long]($clock-[datetime]::new(1970,1,1,0,0,0,[DateTimeKind]::Utc)).TotalSeconds
+  if($stamp-le 0){throw 'Invalid fixed audit clock'}
+  $lines+="CampaignAsOf=$stamp"
+ }
+ if($PublishMetrics){
+  $pairedAsOf=if($AsOf){$AsOf}else{[DateTimeOffset]::UtcNow.AddSeconds($FreshnessOffsetSeconds).ToString('yyyy.MM.dd HH:mm:ss')}
+  $clock=[datetime]::ParseExact($pairedAsOf,'yyyy.MM.dd HH:mm:ss',[Globalization.CultureInfo]::InvariantCulture)
+  $stamp=[long]([datetime]::SpecifyKind($clock,[DateTimeKind]::Utc)-[datetime]::new(1970,1,1,0,0,0,[DateTimeKind]::Utc)).TotalSeconds
+  $lines=@($lines|Where-Object {$_-notlike 'CampaignAsOf=*'-and $_-notlike 'CampaignDashboardLoad=*'})
+  $lines+=@("CampaignAsOf=$stamp",'CampaignDashboardLoad=false')
+ }
  $preset='strategy-campaign.set'
- $lines | Set-Content -LiteralPath (Join-Path $worker ('MQL5\Presets\'+$preset)) -Encoding Unicode
+ Write-AtomicText (Join-Path $worker ('MQL5\Presets\'+$preset)) (($lines-join "`r`n")+"`r`n") ([Text.Encoding]::Unicode)
  $ini=Join-Path $out 'worker.ini'
- @('[Charts]','MaxBars=3000000','[Experts]','Enabled=0','AllowLiveTrading=0','AllowDllImport=0','[StartUp]',
-  ('Script='+$entry.script),('ScriptParameters='+$preset),('Symbol='+$job.symbol),('Period='+$job.period),'ShutdownTerminal=1') |
-  Set-Content -LiteralPath $ini -Encoding ASCII
+ $config=@('[Charts]',('MaxBars='+$HistoryMaxBars),'[Experts]','Enabled=0','AllowLiveTrading=0','AllowDllImport=0','[StartUp]',
+  ('Script='+$entry.script),('ScriptParameters='+$preset),('Symbol='+$job.symbol),('Period='+$(if($ChartPeriodOverride){$ChartPeriodOverride}else{$job.period})),'ShutdownTerminal=1')
+ Write-AtomicText $ini (($config-join "`r`n")+"`r`n") ([Text.Encoding]::ASCII)
  $begin=Get-Date
  @{state='running';pid=$PID;started=$begin.ToString('o');sourceHash=$manifest.sourceHash;current=$job.id;name=$job.name;family=$job.family;
   requestedWindows=$pending;strategies=$manifest.strategies;completedThisRun=$completed;errorsThisRun=$errors} |
-  ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $progressPath -Encoding UTF8
+  ConvertTo-Json -Depth 6 | ForEach-Object {Write-AtomicText $progressPath $_ (New-Object Text.UTF8Encoding($false))}
  Write-Host ('START '+$job.family+' '+$job.symbol+' '+$job.name+' ['+($pending-join ',')+']')
  $p=Start-Process $terminal -ArgumentList ('/portable /config:"'+$ini+'"') -WindowStyle Hidden -PassThru
  $timeOut=-not $p.WaitForExit($TimeoutSeconds*1000)
@@ -86,18 +209,36 @@ foreach($job in $selected){
   Write-Warning ('No fresh output '+$job.name);$errors++;continue
  }
  $rows=@(Import-Csv -LiteralPath $native)
+ if($rows.Count-eq 0){Write-Warning ('Empty/interrupted output '+$job.name);$errors++;continue}
  if(@($rows | Where-Object {$_.catalog_id-ne $job.id-or $_.symbol-ne $job.symbol}).Count-gt 0){throw 'Result identity mismatch'}
+ if($TraceTrades-and !$PairTraceOnly){
+  $traceDir=Join-Path $resultRoot 'trades';New-Item -ItemType Directory -Force $traceDir|Out-Null
+  foreach($row in $rows){
+   $trace=Join-Path $worker ('MQL5\Files\Trace_'+$job.id+'_'+$row.weeks+'_'+$(if($DashboardLoad){'dashboard'}else{'campaign'})+'.csv')
+   if((Test-Path $trace)-and (Get-Item $trace).LastWriteTime-ge $begin){Copy-Item -LiteralPath $trace -Destination $traceDir -Force}
+  }
+ }
+ if($PublishMetrics){
+  $check=Join-Path $out 'publication-check';New-Item -ItemType Directory -Force $check|Out-Null
+  Copy-Item -LiteralPath $native -Destination (Join-Path $check 'campaign.csv') -Force
+  & $PSCommandPath -Mode Run -ReportDir $ReportDir -StrategyIds @($job.id) -Weeks $pending -ResultSet publication-dashboard -AsOf $pairedAsOf -DashboardLoad -TraceTrades -PairTraceOnly -RequestedBroker $RequestedBroker -Force -TimeoutSeconds $TimeoutSeconds -HistoryMaxBars $HistoryMaxBars
+  if($LASTEXITCODE-ne 0){throw 'Dashboard verification invocation failed'}
+  & node (Join-Path $PSScriptRoot 'verify_strategy_window_pair.mjs') $out $worker $job.id
+  if($LASTEXITCODE-ne 0){throw 'Native pair verification failed'}
+  & (Join-Path $PSScriptRoot 'write_verified_strategy_windows.ps1') -Csv (Join-Path $check 'verified.csv') -Family $job.family
+  $rows=@(Import-Csv -LiteralPath (Join-Path $check 'verified.csv'))
+ }
  $prior=if(Test-Path $dest){@(Import-Csv -LiteralPath $dest | Where-Object {[int]$_.weeks-notin @($rows | ForEach-Object {[int]$_.weeks})})}else{@()}
- @($prior)+@($rows) | Export-Csv -LiteralPath $dest -NoTypeInformation -Encoding UTF8
+ Write-AtomicCsv $dest (@($prior)+@($rows))
  $completed++
  $bad=@($rows | Where-Object {$_.status-notin @('AUDITED','AUDITED_OPEN')})
  if($bad.Count-gt 0){$errors++;Write-Warning (($bad | ForEach-Object {$_.weeks+'W '+$_.status})-join '; ')}
  else{Write-Host ('SAVED '+$job.name+' windows='+$rows.Count)}
 }
-$all=@(Get-ChildItem (Join-Path $out 'results') -Filter '*.csv' | ForEach-Object {Import-Csv -LiteralPath $_.FullName})
-$all | Export-Csv -LiteralPath (Join-Path $out 'summary.csv') -NoTypeInformation -Encoding UTF8
+$all=@(Get-ChildItem (Join-Path $resultRoot 'results') -Filter '*.csv' | ForEach-Object {Import-Csv -LiteralPath $_.FullName})
+Write-AtomicCsv (Join-Path $resultRoot 'summary.csv') $all
 @{state='finished';finished=(Get-Date).ToString('o');sourceHash=$manifest.sourceHash;strategies=$manifest.strategies;
  resultRows=$all.Count;validWindows=@($all | Where-Object status -in @('AUDITED','AUDITED_OPEN')).Count;
  validFiveYear=@($all | Where-Object {[int]$_.weeks-eq 260-and $_.status-in @('AUDITED','AUDITED_OPEN')}).Count;
- completedThisRun=$completed;errorsThisRun=$errors} | ConvertTo-Json | Set-Content -LiteralPath $progressPath -Encoding UTF8
+ completedThisRun=$completed;errorsThisRun=$errors} | ConvertTo-Json | ForEach-Object {Write-AtomicText $progressPath $_ (New-Object Text.UTF8Encoding($false))}
 Get-Content $progressPath

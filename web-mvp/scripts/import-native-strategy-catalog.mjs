@@ -148,7 +148,9 @@ const images=readFileSync(join(base,'SolAdvanced/LiqImagePresets.mqh'),'utf8');f
  const n=m[3].split(',').map(Number),v=Array(42).fill(0);[v[0],v[1],v[3],v[15],v[16],v[20],v[21]]=n.slice(0,7);v[2]=5;v[7]=v[13]=v[19]=1;v[17]=100;v[18]=10;v[22]=n[7]??0;for(let i=23;i<41;i++)v[i]=1;for(let i=0;i<6;i++)if((n[8]??0)&(1<<i))v[23+i]=0;for(let i=0;i<12;i++)if((n[9]??0)&(1<<i))v[29+i]=0;v[41]=100;
  add('sol','image:'+m[1],m[0],{name:m[1],symbol:m[2],nativeId:'image_'+m[1],config:solConfig(m[1],v),verified:true,note:'Canonical screenshot-derived preset; hidden inputs use current canonical defaults. Not a claim of historical performance.',snapshot:{values:v}});
 }
-const output=join(root,'reports/admin_catalog');mkdirSync(output,{recursive:true});writeFileSync(join(output,'catalog.private.json'),JSON.stringify(records,null,2));
+const outputAt=process.argv.indexOf('--output');
+const output=outputAt<0?join(root,'reports/admin_catalog'):resolve(root,process.argv[outputAt+1]);
+mkdirSync(output,{recursive:true});writeFileSync(join(output,'catalog.private.json'),JSON.stringify(records,null,2));
 const report={counts:Object.fromEntries(Object.keys(dirs).map(f=>[f,{total:records.filter(r=>r.family===f).length,ready:records.filter(r=>r.family===f&&r.configuration).length}])),failures,baseSignatureCandidates:Object.fromEntries(Object.keys(dirs).map(f=>[f,contexts[f].profiles])),profileErrors:Object.fromEntries(Object.keys(dirs).map(f=>[f,contexts[f].profileErrors]))};
 writeFileSync(join(output,'import-report.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({counts:report.counts,failures,unresolved:records.filter(r=>!r.configuration).map(r=>({name:r.name,note:r.import_note}))},null,2));
 // Research workers need the original base inputs, not the runtime-overlaid web config.

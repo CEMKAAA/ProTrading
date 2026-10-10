@@ -41,3 +41,7 @@ reports/admin_catalog/upload-*.sql
 reports/admin_catalog/audit-input-profiles.private.json
 reports/strategy_audit_20261008/source/
 reports/strategy_audit_20261008/manifest.private.json
+reports/strategy_audit_20261009_parity/source/
+reports/strategy_audit_20261009_parity/manifest.private.json
+reports/strategy_audit_20261009_rolling/source/
+reports/strategy_audit_20261009_rolling/manifest.private.json

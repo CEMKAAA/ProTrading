@@ -1,0 +1,53 @@
+{
+  "applied": true,
+  "sourceHash": "be6a04ce44dbed0ace9dc0f10f9aefe3aa643f2657efd24c45ce3424e6d5175a",
+  "asOf": 1791575217,
+  "recoveredWindows": 15,
+  "evidence": [
+    {
+      "id": "orb_3e0172915b200d34c8536011e3f8",
+      "name": "0.33InvUltimateSetup",
+      "family": "orb",
+      "campaignSha256": "1817d896a23a09d901bad15736ca4246161449e184b034193ae025de8ab337b0",
+      "dashboardSha256": "2593c2dba8052851ee82e78079b3e30baf2ab34ba849508211d4c9100511e440",
+      "recovered": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "rejected": []
+    },
+    {
+      "id": "entrylab_a84bb31915d21f98c93621aefec9",
+      "name": "BollingerBandsMeanReversionScalper0.15RscalperVeryFrequent",
+      "family": "entrylab",
+      "campaignSha256": "980a3173a43739a5c3da26558658141c0eb85dd99bfed28756db7ed3161d870a",
+      "dashboardSha256": "09b457346c7e8d9345c97a16059fb4b4b012a1bfdd2d77151518c7e434f98f08",
+      "recovered": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "rejected": []
+    },
+    {
+      "id": "entrylab_c60359d5819d7663f71079cf72e6",
+      "name": "gbpusdfastemaRsi0.02RDay",
+      "family": "entrylab",
+      "campaignSha256": "6036088b0958a96541ee2a6de1bc95073fb778a1d34c5f630e3e6b94b7cb5c6f",
+      "dashboardSha256": "1a4e388b572a62cf5e53ad809a012ace1e76da25996a383ec85fd0842d955260",
+      "recovered": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "rejected": []
+    }
+  ]
+}

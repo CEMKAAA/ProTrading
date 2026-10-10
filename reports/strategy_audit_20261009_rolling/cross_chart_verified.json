@@ -1,0 +1,30 @@
+{
+  "sourceHash": "ed4b200116a1e24b69bfdc832f4c33b5be8f45d8db5a738e6a922d14fbac0e41",
+  "passed": true,
+  "cases": [
+    {
+      "weeks": 260,
+      "total": 1434,
+      "netR": 13.74413,
+      "chartTf": "5",
+      "savedTf": "1",
+      "issues": []
+    },
+    {
+      "weeks": 52,
+      "total": 713,
+      "netR": 7.075455,
+      "chartTf": "5",
+      "savedTf": "1",
+      "issues": []
+    },
+    {
+      "weeks": 2,
+      "total": 33,
+      "netR": 0.32,
+      "chartTf": "5",
+      "savedTf": "1",
+      "issues": []
+    }
+  ]
+}

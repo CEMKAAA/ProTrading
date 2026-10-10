@@ -15,7 +15,7 @@ const authority=z.object({accountId:z.string().uuid(),sessionId:z.string().uuid(
 
 // BFF boundary: Supabase access/refresh tokens never leave this server.
 export class SupabaseAuth {
-  constructor(plane,{url,publishableKey,encryptionKey,studioOrigin='http://127.0.0.1:4310',fetcher=fetch}={}) {
+  constructor(plane,{url,publishableKey,encryptionKey,studioOrigin='http://127.0.0.1:4310',studioBasePath='',fetcher=fetch}={}) {
     if(!/^https:\/\/[a-z0-9]+\.supabase\.co$/.test(url??'')||!publishableKey?.startsWith('sb_publishable_')
       ||!Buffer.isBuffer(encryptionKey)||encryptionKey.length!==32)throw new Error('SUPABASE_CONFIG_INVALID');
     this.plane=plane;this.url=url;this.key=publishableKey;this.encryptionKey=encryptionKey;this.fetcher=fetcher;
@@ -24,7 +24,8 @@ export class SupabaseAuth {
       ||!(studio.protocol==='https:'||(studio.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(studio.hostname))))
       throw new Error('STUDIO_ORIGIN_INVALID');
     // An operator-defined destination, never a redirect supplied in a signup body.
-    this.confirmationUrl=studio.origin+'/studio';
+    if(typeof studioBasePath!=='string'||! /^(?:\/[A-Za-z0-9_-]+)*$/.test(studioBasePath))throw new Error('STUDIO_BASE_PATH_INVALID');
+    this.confirmationUrl=studio.origin+studioBasePath+'/studio'+(studioBasePath?'/':'');
     this.pending=new Map();this.mode='supabase';
   }
   seal(value,sessionId) {

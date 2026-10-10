@@ -8,12 +8,12 @@ int g_userCompletedTotal=0,g_userCompletedW=0,g_userCompletedL=0;
 double g_userCompletedR=0,g_userCompletedMc=0;
 datetime g_userCompletedAt=0;
 
-string OrbUserMetricKey(const string symbol,int tf,const string inputs,const string runtime,const OrbStrategyPreset &p)
+string OrbUserMetricKey(const string symbol,int tf,const string inputs,const string runtime,const OrbStrategyPreset &p,bool currentSchema=true)
 {
    string switches=(p.rfMaster?"1":"0");
    for(int r=0;r<ORB_REGIME_COUNT;r++)switches+=OrbPresetRegimeAllowed(p,r)?"1":"0";
    for(int r=0;r<ORB_RF_COUNT;r++)switches+=OrbPresetRfBlocked(p,r)?"1":"0";
-   return OrbMlSha256(ORB_ML_SOURCE+symbol+(string)tf+inputs+runtime+switches+(p.invertMode?"|INV_ASK_PROOF_2":""));
+   return OrbMlSha256(ORB_ML_SOURCE+(currentSchema?"|AUDIT_FILL_HORIZON2|":"")+symbol+(string)tf+inputs+runtime+switches+(p.invertMode?"|INV_ASK_PROOF_2":""));
 }
 string OrbClockMetricMeta(double offset,int profile,int broker,int exchange,int session)
 {if(offset==0&&profile==0&&broker==0&&exchange==0&&session==0)return "";return "|CLOCK="+DoubleToString(offset,8)+","+(string)profile+","+(string)broker+","+(string)exchange+","+(string)session;}
@@ -22,31 +22,26 @@ string OrbUserRuntimeMetricKey()
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
    double saved=g_orbStrategyTimezone;g_orbStrategyTimezone=0;string signature=OrbCustomInputSignature();g_orbStrategyTimezone=saved;
    signature+=OrbClockMetricMeta(OrbBrokerOffsetHours(),(int)OrbClockProfile(),(int)OrbClockBrokerSeason(),(int)OrbClockExchangeSeason(),g_orbClockSession);
-   return OrbUserMetricKey(_Symbol,(int)_Period,signature+OrbPositionMetricMeta(g_orbPositions),OrbCustomRuntimeDump(),p);
+   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),signature+OrbPositionMetricMeta(g_orbPositions),OrbCustomRuntimeDump(),p);
+}
+string OrbUserWindowKey(const OrbUserRecord &r,bool currentSchema=true)
+{
+   return SwSettingsKey(OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature
+      +OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession)
+      +OrbPositionMetricMeta(r.positions),r.runtime,r.preset,currentSchema)+"|TCAL="+r.timeMatrix
+      +"|GAP="+DoubleToString(r.inverseMaxGapPct,8));
 }
 void OrbUserLoadMetrics(int slot)
 {
    if(slot<0||slot>=ArraySize(g_userStrategies))return;
-   OrbUserRecord r=g_userStrategies[slot];string v[];g_userStrategies[slot].preset.metric1yReady=false;
-   SwMetric m;string key=SwHash(OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession)+OrbPositionMetricMeta(r.positions),r.runtime,r.preset)+"|TCAL="+r.timeMatrix+"|GAP="+DoubleToString(r.inverseMaxGapPct,8));
-   if(SwRead("OrbStrategyUserLibrary\\WindowMetrics",r.preset.id,key,g_swWeeks,m))
+   OrbUserRecord r=g_userStrategies[slot];g_userStrategies[slot].preset.metric1yReady=false;
+   SwMetric m;string key=OrbUserWindowKey(r);
+   if(SwReadView("OrbStrategyUserLibrary\\WindowMetrics",r.preset.id,key,g_swWeeks,m)
+      ||(g_swFrozen&&SwReadView("OrbStrategyUserLibrary\\WindowMetrics",r.preset.id,OrbUserWindowKey(r,false),g_swWeeks,m)))
    {g_userStrategies[slot].preset.metric1yReady=true;g_userStrategies[slot].preset.metric1yAsOf=TimeToString(m.asOf,TIME_DATE|TIME_MINUTES);
     g_userStrategies[slot].preset.metric1yTotal=m.total;g_userStrategies[slot].preset.metric1yWins=m.wins;g_userStrategies[slot].preset.metric1yLosses=m.losses;
     g_userStrategies[slot].preset.metric1yNetR=m.netR;g_userStrategies[slot].preset.metric1yMinCumR=m.minCum;g_userStrategies[slot].preset.metric1yWr=SwWr(m);return;}
-   if(g_swWeeks!=52||r.timeMatrix!=TCalStrategyOffText())return;
-   if(!OrbMlReadLines("OrbStrategyUserLibrary\\"+r.preset.id+".metrics",v,12,true))return;
-   if(v[0]!="ORB_USER_METRICS1"||v[1]!=r.preset.id||v[2]!=OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature+OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession)+OrbPositionMetricMeta(r.positions),r.runtime,r.preset)||v[4]!="52")return;
-   double n[8];for(int i=3;i<=10;i++)if(!OrbMlNumber(v[i],n[i-3]))return;
-   if(n[0]<=0||n[2]<0||n[3]<0||n[4]<0||n[3]+n[4]>n[2]||n[7]<0||n[7]>100)return;
-   if(n[2]!=MathFloor(n[2])||n[3]!=MathFloor(n[3])||n[4]!=MathFloor(n[4]))return;
-   double expected=(n[3]+n[4]>0?100*n[3]/(n[3]+n[4]):0);
-   if(MathAbs(expected-n[7])>1e-5)return;
-   g_userStrategies[slot].preset.metric1yReady=true;
-   g_userStrategies[slot].preset.metric1yAsOf=TimeToString((datetime)n[0],TIME_DATE|TIME_MINUTES);
-   g_userStrategies[slot].preset.metric1yTotal=(int)n[2];
-   g_userStrategies[slot].preset.metric1yWins=(int)n[3];g_userStrategies[slot].preset.metric1yLosses=(int)n[4];
-   g_userStrategies[slot].preset.metric1yNetR=n[5];g_userStrategies[slot].preset.metric1yMinCumR=n[6];
-   g_userStrategies[slot].preset.metric1yWr=n[7];
+   // Legacy aggregate files remain archived, but are not verified window evidence.
 }
 bool OrbUserPersistCompletedMetrics()
 {
@@ -54,7 +49,8 @@ bool OrbUserPersistCompletedMetrics()
    if(!g_userCompletedReady||!OrbStrategyPresetLoad(g_strategyPresetIndex,p)||!OrbUserPreset(p)||!OrbUserMatches(p)
       ||g_userCompletedSettings!=OrbUserRuntimeMetricKey())return false;
    int savedSlot=OrbUserSlot(p.id);if(savedSlot<0)return false;
-   string windowKey=SwHash(g_userCompletedSettings+"|TCAL="+g_userStrategies[savedSlot].timeMatrix+"|GAP="+DoubleToString(g_userStrategies[savedSlot].inverseMaxGapPct,8));
+   // Runtime stability is checked above; persist under the same immutable identity SEARCH reads.
+   string windowKey=OrbUserWindowKey(g_userStrategies[savedSlot]);
    if(!SwWrite("OrbStrategyUserLibrary\\WindowMetrics",p.id,windowKey,g_userCompletedWeeks,g_userCompletedTotal,g_userCompletedW,g_userCompletedL,
       g_userCompletedOpen,g_userCompletedFlat,g_userCompletedR,g_userCompletedMc,g_userCompletedAt))return false;
    if(g_userCompletedWeeks!=52){OrbUserReload(true);OrbStrategyPresetBuildMatches(g_strategySearch);g_userStrategyNote="SAVED "+SwWindow(g_userCompletedWeeks)+": "+p.name;return true;}

@@ -93,13 +93,14 @@ void OrbUserReload(bool force=false)
    FileFindClose(find);
 }
 
-string OrbBuiltinWindowKey(const OrbStrategyPreset &p)
-{return SwHash("ORB_BUILTIN_WINDOW_1|"+_Symbol+"|"+OrbCustomInputSignature()+"|"+OrbCustomPresetDump(p));}
+string OrbBuiltinWindowKey(const OrbStrategyPreset &p,bool currentSchema=true)
+{return SwSettingsKey((currentSchema?"ORB_BUILTIN_WINDOW_2_FILL_HORIZON|":"ORB_BUILTIN_WINDOW_1|")+_Symbol+"|"+OrbCustomInputSignature()+"|"+OrbCustomPresetDump(p));}
 void OrbBuiltinLoadWindowMetrics(OrbStrategyPreset &p)
 {
    SwMetric m;
-   if(!SwRead("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p),g_swWeeks,m))
-   {if(g_swWeeks!=52)p.metric1yReady=false;return;}
+   if(!SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p),g_swWeeks,m)
+      &&(!g_swFrozen||!SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p,false),g_swWeeks,m)))
+   {p.metric1yReady=false;return;}
    p.metric1yReady=true;p.metric1yAsOf=TimeToString(m.asOf,TIME_DATE|TIME_MINUTES);
    p.metric1yTotal=m.total;p.metric1yWins=m.wins;p.metric1yLosses=m.losses;
    p.metric1yNetR=m.netR;p.metric1yMinCumR=m.minCum;p.metric1yWr=SwWr(m);
@@ -134,7 +135,7 @@ bool OrbUserValidate(const OrbStrategyPreset &p,string &reason)
 {
    int i=OrbUserSlot(p.id);reason="CUSTOM_RECORD_MISSING";if(i<0)return false;
    reason="CUSTOM_SYMBOL_MISMATCH";
-   // Saved chart TF is provenance, not a strategy application restriction.
+   // Saved TF is NAS sampling provenance, not a chart application restriction.
    if(g_userStrategies[i].symbol!=_Symbol)return false;
    reason="CUSTOM_EA_INPUTS_MISMATCH";
    double savedClock=g_orbStrategyTimezone;g_orbStrategyTimezone=0;
@@ -152,6 +153,8 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    g_orbStrategyTimezone=g_userStrategies[i].brokerOffset;
    OrbClockUseSaved(g_userStrategies[i].clockProfile,g_userStrategies[i].brokerSeason,g_userStrategies[i].exchangeSeason,g_userStrategies[i].clockSession);
    OrbCustomRuntimeRead(v,0,true);
+   // Keep saved NAS sampling independent of the display chart.
+   g_rtNasTf=(ENUM_TIMEFRAMES)g_userStrategies[i].chartTf;
    if(!SetRuntimeInverseMaxGapPct(g_userStrategies[i].inverseMaxGapPct))return false;
    g_orbPositions=g_userStrategies[i].positions;
    for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=OrbPresetRegimeAllowed(p,r);
@@ -163,6 +166,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);
+   if((int)NasConfirmationTf()!=g_userStrategies[i].chartTf)return false;
    if(MathAbs(OrbBrokerOffsetHours()-g_userStrategies[i].brokerOffset)>0.0000001)return false;
    if((int)OrbClockProfile()!=g_userStrategies[i].clockProfile||(int)OrbClockBrokerSeason()!=g_userStrategies[i].brokerSeason
       ||(int)OrbClockExchangeSeason()!=g_userStrategies[i].exchangeSeason||g_orbClockSession!=g_userStrategies[i].clockSession)return false;
@@ -223,7 +227,7 @@ bool OrbUserSaveLocked(string name)
    {
       if(updateSlot>=0&&slot!=updateSlot)continue;
       string path=OrbUserFile(slot);if(updateSlot<0&&FileIsExist(path,FILE_COMMON))continue;
-      string payload="ORB_USER_STRATEGY1\n"+string(ORB_CUSTOM_SCHEMA)+"\n"+(string)slot+"\n"+_Symbol+"\n"+(string)(int)_Period+"\n"+signature+"\n"
+      string payload="ORB_USER_STRATEGY1\n"+string(ORB_CUSTOM_SCHEMA)+"\n"+(string)slot+"\n"+_Symbol+"\n"+(string)(int)NasConfirmationTf()+"\n"+signature+"\n"
          +OrbCustomPresetDump(p)+runtime;
       string temp="OrbStrategyUserLibrary\\"+p.id+".tmp";
       int f=FileOpen(temp,FILE_WRITE|FILE_BIN|FILE_COMMON);
@@ -261,6 +265,6 @@ void OrbUserDraw()
    CreateButton("BTN_USER_TZ",x+390,y-3,202,18,"TIMEZONE SETTINGS",C'38,101,176');
    CreateEdit("EDIT_USER_NAME",x,y+19,380,22,"");
    CreateButton("BTN_USER_SAVE",x+390,y+19,202,22,"SAVE STRATEGY",C'38,101,176');
-   CreateLabel("DASH_USER_NOTE",x,y+48,StringSubstr(g_userStrategyNote,0,105),C'184,196,210',7);
+   CreateLabel("DASH_USER_NOTE",x,y+48,StringSubstr(g_userStrategyNote+" | "+g_swRefreshStatus,0,105),C'184,196,210',7);
 }
 #endif

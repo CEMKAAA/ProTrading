@@ -401,6 +401,7 @@ bool            g_rtInvertMode    = false;
 bool            g_rtAdvancedReverse = false;
 double          g_rtAdvancedReverseMaxCostPct = 10.0;
 bool            g_rtUtcMidnightSession = false;
+ENUM_TIMEFRAMES g_rtNasTf = PERIOD_CURRENT;
 bool            g_rtNasConfirmation = false;
 bool            g_rtNasStateGate = false;
 bool            g_rtNasExitOnOppositeSignal = false;
@@ -1390,11 +1391,11 @@ bool RestoreNasPending()
 }
 ENUM_TIMEFRAMES NasConfirmationTf()
 {
-   return (ENUM_TIMEFRAMES)_Period;
+   return g_rtNasTf==PERIOD_CURRENT?(ENUM_TIMEFRAMES)_Period:g_rtNasTf;
 }
 string NasTimeframeButtonLabel()
 {
-   return "TF CHART "+TfLabel(NasConfirmationTf());
+   return (g_rtNasTf==PERIOD_CURRENT?"TF CHART ":"TF SAVED ")+TfLabel(NasConfirmationTf());
 }
 NasSettings BuildOrbNasSettings()
 {
@@ -2657,6 +2658,7 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
    if(GlobalVariableSet(RuntimeAdvancedReverseKey(),0.0)<=0)return false;
    if(!SetRuntimeAdvancedReverseMaxCostPct(100.0))return false;
    if(!TCalStrategyApplyText(TCalStrategyOffText()))return false;
+   g_rtNasTf=PERIOD_CURRENT;
    g_rtCustomR=0.0;
    g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
    g_rtTargetLeg=ClampTargetLeg(p.targetLeg);g_rtInvertMode=p.invertMode;g_rtAdvancedReverse=false;
@@ -2851,10 +2853,14 @@ SwMetric OrbStrategyWindowMetric(int index)
 }
 string OrbStrategyWindowMode(const OrbStrategyPreset &p)
 {
+   if(g_swFrozen){SwMetric snapshot;if(SwReadView("MaCrossOrbStrategyLibrary\\WindowMetrics",p.id,"",g_swWeeks,snapshot))return snapshot.snapshotIndependent?"IND":"LEG";}
+
    int slot=OrbUserSlot(p.id);return slot>=0&&g_userStrategies[slot].independent?"IND":"LEG";
 }
 void OrbStrategyWindowControls(int x,int y)
 {
+   CreateButton("BTN_SW_SOURCE",x+138,y+5,240,20,SwSourceCaption(),g_swFrozen?C'184,103,22':C'38,101,176');
+   ObjectSetString(0,PREFIX+"BTN_SW_SOURCE",OBJPROP_TOOLTIP,"View only: CURRENT -> verified MEGA 2 -> original MEGA 1 (old calculation). Does not apply strategy settings. Compare identical profiles/endpoints; legacy corrections are not alpha decay.");
    for(int i=0;i<9;i++)CreateButton("BTN_SW_WINDOW_"+(string)i,x+12+i*65,y+102,61,20,SwWindow(SwWeeks(i)),g_swWeeks==SwWeeks(i)?C'184,103,22':C'38,101,176');
    for(int i=0;i<5;i++)CreateButton("BTN_SW_SORT_"+(string)i,x+12+i*118,y+126,114,20,SwSortCaption(i),g_swDirection[i]==0?C'80,80,80':C'30,150,95');
 }
@@ -2864,7 +2870,7 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
    if(!p.metric1yReady)return p.name+" | "+SwWindow(g_swWeeks)+" N/A | "+OrbStrategyWindowMode(p);
    string suffix=" | "+SwWindow(g_swWeeks)+" N "+(string)p.metric1yTotal+" "+OrbStrategyWindowMode(p)+" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
       +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
-      +" | WR "+DoubleToString(p.metric1yWr,1)+"%";
+      +" | WR "+DoubleToString(p.metric1yWr,1)+"%"+SwAsOfCaption(p.metric1yAsOf);
    int maxChars=66;
    int nameChars=MathMax(8,maxChars-StringLen(suffix));
    string shortName=p.name;
@@ -6006,7 +6012,9 @@ HistResult SimulateHistoricalLifecycle(datetime entryTime,datetime sessionEnd,da
    {
       // Fixed-target trades are not session-bound. Start with a compact exact
       // window; unresolved trades expand below without changing chronology.
-      datetime firstEnd=entryTime+ORB_HIST_TICK_PREFETCH_MINUTES*60;
+      datetime firstEnd=BarCloseTime(RuntimeEntryTf(),entryTime);
+      if(firstEnd<entryTime+sec)firstEnd=entryTime+sec;
+      firstEnd+=ORB_HIST_TICK_PREFETCH_MINUTES*60;
       horizon=firstEnd;
       if(forcedExitTime>entryTime&&forcedExitTime<horizon)horizon=forcedExitTime+sec;
       if(horizon>now)horizon=now;
@@ -6950,6 +6958,7 @@ void ProcessHistoricalCalcDay(const int back)
          g_maAuditHeldCandidates++;
          return;
       }
+      if(OrbSignalAvailableTime(entryT)>g_histRunNow)return;
       if(!DailyQuotaAuditAllows(OrbSignalAvailableTime(entryT))){g_histFiltered++;return;}
       RegimeV3Snapshot regimeSnapshot;
       int regimeBucket=OrbRegimeBucketAt(sigT,regimeSnapshot);
@@ -7338,6 +7347,15 @@ void FinalizeHistoricalAudit()
 void ProcessHistoricalAuditStep()
 {
    if(!g_histAuditRunning)return;
+   if(!MaCrossAuditOriginStable())
+   {
+      CancelHistoricalAuditBuild();MaCrossAuditInvalidate();MaVisualAbort();OrbResetHistoricalStats();
+      g_userCompletedReady=false;g_histCoveragePending=true;g_histCoverageHardBlocked=false;
+      g_histCoverageDetail="signal origin changed during audit";g_histCoverageStatus="MA SIGNAL HISTORY SYNC";
+      g_histStatLine=g_histCoverageStatus+" | "+g_histCoverageDetail;
+      g_histNeedsRedraw=InpAuditHistoryAutoRetry;g_histCoverageNextRetry=TimeLocal()+MathMax(2,InpAuditHistoryRetrySec);
+      UpdateDashboard();return;
+   }
    if(g_histAuditCancelRequested)return;
    // Keep callbacks short enough for MT5 to dispatch chart clicks between
    // chunks. A single day remains the smallest indivisible simulation unit.
@@ -7520,8 +7538,8 @@ void DrawHistoricalSignals()
       MathMax(1,InpMaFastLength),MathMax(1,InpMaMediumLength),MathMax(2,InpMaSlowLength)))
    {
       MaVisualAbort();
-      g_maCacheFailedAttempts++;
-      g_histCoverageHardBlocked=(g_maCacheFailedAttempts>=3);
+      if(g_maCrossAuditPending)g_maCacheFailedAttempts=0;else g_maCacheFailedAttempts++;
+      g_histCoverageHardBlocked=!g_maCrossAuditPending&&(g_maCacheFailedAttempts>=3);
       g_histCoverageDetail=g_maCrossAuditFailure;
       g_histStatLine=(g_histCoverageHardBlocked?"MA HISTORY BLOCKED: ":"MA HISTORY WAIT: ")+g_histCoverageDetail;
       g_histNeedsRedraw=!g_histCoverageHardBlocked&&InpAuditHistoryAutoRetry;
@@ -9811,6 +9829,7 @@ void TryOpenSignal()
 //=========================================================================
 int OnInit()
 {
+   SwRefreshRequest("macross");
    if(!TCalInit()){Print("Invalid or damaged entry time matrix settings");return INIT_PARAMETERS_INCORRECT;}
    if(!McOfInit())return INIT_PARAMETERS_INCORRECT;
    OrbTesterAudit_Init();
@@ -9974,6 +9993,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 void OnTimer()
 {
    AxTimer();
+   if(!IsTesterMode()&&SwRefreshPoll("macross")){OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
    ulong nowMs=GetTickCount64();
    bool coreDue=(g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
    bool dc=false;
@@ -10165,6 +10185,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;
    }
 
+   if(sparam==PREFIX+"BTN_SW_SOURCE"){SwCycleSource();OrbUserReload(true);g_strategySearchPage=0;OrbStrategyPresetBuildMatches(g_strategySearch);g_strategyPopupOpen=true;ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;}
    if(StringFind(sparam,PREFIX+"BTN_SW_WINDOW_")==0||StringFind(sparam,PREFIX+"BTN_SW_SORT_")==0)
    {
       bool window=StringFind(sparam,PREFIX+"BTN_SW_WINDOW_")==0;

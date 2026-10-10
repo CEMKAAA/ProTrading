@@ -1,7 +1,7 @@
 "use client";
 import {useEffect,useRef,useState} from 'react';
 import {ArrowUpRight,Library,RefreshCw,Search} from 'lucide-react';
-import {CONTROL_API} from '@/lib/control-endpoint';
+import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS} from '@/lib/control-endpoint';
 import {universalConfigurationSchema,type Family,type UniversalConfiguration} from '@/lib/universal-contract';
 import type {SharedLoad,SharedStrategy} from '@/lib/strategy-access';
 import {UiText,useLanguage} from './language-provider';
@@ -16,7 +16,7 @@ export default function SharedStrategyLibrary({credential,onLoad}:{credential:st
   const abort=new AbortController();setRecord({owner:'',items:[]});setError('');setLoading(true);
   let active=false;
   async function poll(){if(active||!credential)return;active=true;
-   try{const response=await fetch(CONTROL_API+'/v1/library/strategies',{headers:{Authorization:'Bearer '+credential},credentials:'include',cache:'no-store',redirect:'error',signal:abort.signal});
+   try{const response=await fetch(CONTROL_API+'/v1/library/strategies',{headers:{Authorization:'Bearer '+credential},credentials:CONTROL_CREDENTIALS,cache:'no-store',redirect:'error',signal:abort.signal});
     const data=await response.json() as {items:SharedStrategy[];error?:string};if(!response.ok)throw new Error(data.error??'REQUEST_FAILED');
     if(!abort.signal.aborted){setRecord({owner:credential,items:data.items});setError('');}
    }catch(e){if(!abort.signal.aborted){setRecord({owner:credential,items:[]});setError(e instanceof Error?e.message:'REQUEST_FAILED');}}
@@ -25,7 +25,7 @@ export default function SharedStrategyLibrary({credential,onLoad}:{credential:st
   void poll();const interval=setInterval(()=>void poll(),10000);return()=>{abort.abort();clearInterval(interval);};
  },[credential,refresh]);
  async function load(item:SharedStrategy){if(pending)return;const token=credential;setPending(item.id);setError('');
-  try{const response=await fetch(CONTROL_API+'/v1/library/load',{method:'POST',credentials:'include',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(15000),headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({strategyId:item.id})});
+  try{const response=await fetch(CONTROL_API+'/v1/library/load',{method:'POST',credentials:CONTROL_CREDENTIALS,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(CONTROL_TIMEOUT_MS),headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({strategyId:item.id})});
    const data=await response.json() as SharedLoad&{error?:string};if(!response.ok)throw new Error(data.error??'REQUEST_FAILED');
    const result=data as SharedLoad;const configuration=universalConfigurationSchema.parse(result.configuration);
    if(owner.current===token)onLoad(configuration,result.symbol);

@@ -1,0 +1,3666 @@
+{
+  "generatedAt": "2026-10-10T08:01:24.990Z",
+  "sourceHash": "be6a04ce44dbed0ace9dc0f10f9aefe3aa643f2657efd24c45ce3424e6d5175a",
+  "requestedStrategies": 188,
+  "requestedWindows": 1692,
+  "strategiesAttempted": 188,
+  "strategiesWithResults": 188,
+  "partialStrategies": 16,
+  "strategiesWithoutResults": 0,
+  "completeStrategies": 172,
+  "validWindows": 1616,
+  "validFiveYear": 172,
+  "profitableFiveYear": 70,
+  "incompleteWindows": 76,
+  "notAttemptedWindows": 0,
+  "statuses": {
+    "AUDITED_OPEN": 707,
+    "HISTORY_UNAVAILABLE": 46,
+    "AUDITED": 909,
+    "DATA_INCOMPLETE": 30
+  },
+  "byFamily": {
+    "orb": {
+      "strategies": 70,
+      "strategiesAttempted": 70,
+      "strategiesWithResults": 70,
+      "partialStrategies": 4,
+      "strategiesWithoutResults": 0,
+      "completeStrategies": 66,
+      "validWindows": 610,
+      "validFiveYear": 66,
+      "incompleteWindows": 20
+    },
+    "macross": {
+      "strategies": 81,
+      "strategiesAttempted": 81,
+      "strategiesWithResults": 81,
+      "partialStrategies": 3,
+      "strategiesWithoutResults": 0,
+      "completeStrategies": 78,
+      "validWindows": 718,
+      "validFiveYear": 78,
+      "incompleteWindows": 11
+    },
+    "sol": {
+      "strategies": 28,
+      "strategiesAttempted": 28,
+      "strategiesWithResults": 28,
+      "partialStrategies": 0,
+      "strategiesWithoutResults": 0,
+      "completeStrategies": 28,
+      "validWindows": 252,
+      "validFiveYear": 28,
+      "incompleteWindows": 0
+    },
+    "entrylab": {
+      "strategies": 9,
+      "strategiesAttempted": 9,
+      "strategiesWithResults": 9,
+      "partialStrategies": 9,
+      "strategiesWithoutResults": 0,
+      "completeStrategies": 0,
+      "validWindows": 36,
+      "validFiveYear": 0,
+      "incompleteWindows": 45
+    }
+  },
+  "commonFilesVerified": true,
+  "integrityErrors": [],
+  "coverage": [
+    {
+      "id": "orb_5a2ba5aca93a0f1d9b6835a08519",
+      "family": "orb",
+      "name": "Advanced0.25R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_3e0172915b200d34c8536011e3f8",
+      "family": "orb",
+      "name": "0.33InvUltimateSetup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "orb_3359a7a68e25ac80f57c4927e9f2",
+      "family": "orb",
+      "name": "ustec5000reverseMightWork",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_1ed56fd30b295a82aca7a084bd7a",
+      "family": "orb",
+      "name": "jp2250.15RSetup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_d589f6be06a17b9d872f69db12b6",
+      "family": "orb",
+      "name": "0.20RStarJp225Daily",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_c2cb82ac9dc2e05220340a29a12a",
+      "family": "orb",
+      "name": "gbpusdFirst",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_e2aaafa3afc470888ac70d204561",
+      "family": "orb",
+      "name": "xauusdOrb0.05R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_30c9dd5f9dc57538b0c677a9f4c1",
+      "family": "orb",
+      "name": "xauusdOrb0.01R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_e8f5a758a8f87fc61f93b5e745fc",
+      "family": "orb",
+      "name": "jp2250.02HighWR",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_9dd9599bda1936fcfdb39405bb73",
+      "family": "orb",
+      "name": "jp2250.02HighWRIndependentMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_e1c25af6fef2f4beeb50972e0403",
+      "family": "orb",
+      "name": "gbpjpy0.01RIndependentMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_d8d5f02d1790b5d61b0eaae1b17c",
+      "family": "orb",
+      "name": "eurusdHolyGrail",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_9a03c480111d434a8704f4570457",
+      "family": "orb",
+      "name": "8000pipsVolFilterIsSolid",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_bc7c75a4a938948d5e94e77f9ac2",
+      "family": "orb",
+      "name": "eurusdHolyGrail1000pip",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_b80449a00c9cd2e0f4bc6323fdf6",
+      "family": "orb",
+      "name": "usdjpy0.01800pipLegacy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_b4a56f0a78901ba532d1b6fbb47f",
+      "family": "orb",
+      "name": "usdjpyExtremeHighWrOrb",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_81dd5bd349958fc00a122af4ab38",
+      "family": "orb",
+      "name": "audusd0.01ROrbGrail",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_b30a0316bcfc8d2cbf19899958b4",
+      "family": "orb",
+      "name": "HighfreqHighWRusdjpy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_4edd68d68fe23bb28b0c0666b489",
+      "family": "orb",
+      "name": "HighfreqHighWRusdjpyV2",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_4cebfdf62991a65fecd0389faa1f",
+      "family": "orb",
+      "name": "usdjpy10RVeryHighWRsETUP",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_347596b93ed907c12d76b79a09da",
+      "family": "orb",
+      "name": "usdjpy10RVeryHighWRsETUPRetestOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_60ac466e7d7185b1a5491024043d",
+      "family": "orb",
+      "name": "usdjpy10RAtrOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_009fb1ebe2a82381325a028094ad",
+      "family": "orb",
+      "name": "0.65RMightBeIt",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_f8a77bfc14fdffef1735aa485a20",
+      "family": "orb",
+      "name": "usdjpy0.25RYeahBaby",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_87b5bd2eb472e1191c78dc72873b",
+      "family": "macross",
+      "name": "jp225Close/Reverse0.25R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_05a8274a35eb0ccc72a248537fa5",
+      "family": "macross",
+      "name": "xauusdMaMTF0.15R5000pip",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_471ca6e1147b9927ec7ad9ae32ed",
+      "family": "macross",
+      "name": "EMA50/200FiltersOn0.25RIndependentMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_d22eec8e9433900014c3995ec08f",
+      "family": "macross",
+      "name": "solfirst",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208
+      ],
+      "unavailableWeeks": [
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 208
+    },
+    {
+      "id": "macross_298b0e6c8aaa2b8fe9bb1f473299",
+      "family": "macross",
+      "name": "IndepententMaMTFModeXauusd0.20R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_c2c1b6ca43734503f7a1fc867ccd",
+      "family": "macross",
+      "name": "xauusd0.25RMightBeIt",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_06582f69af8a37e701131a05efbb",
+      "family": "macross",
+      "name": "xauusd0.25RTrendLineStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_61700e57bb8c4bfdec7dcab2a41f",
+      "family": "macross",
+      "name": "xauusd0.10RTrendLineStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_f0eeeb656b5dac165eed896fe8a3",
+      "family": "macross",
+      "name": "xauusd0.05RTrendLineStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_c3bdeac9116d5d27f8dbc4809d8e",
+      "family": "macross",
+      "name": "usdjpyMightBeEdge",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_b14b5c623ea6ba85e155160d0d80",
+      "family": "macross",
+      "name": "UsdJpyMaMtf0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_b0b56cec3e8689a160a27e2cbc15",
+      "family": "macross",
+      "name": "gbpjpyMaMtfStrategy0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_7a0d205c1b8b5bfba8a106b1a990",
+      "family": "macross",
+      "name": "Close/Revenge0.15RXAUUSD",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_55c2b17bfae98ca2d42708d91382",
+      "family": "macross",
+      "name": "gbpjpyMaMtfStrategy0.5R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_4d36a0e96ec80c1759a4c2185533",
+      "family": "macross",
+      "name": "us5000.05RClose/Reverse",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_020dc88c6622b522bf078a170e4c",
+      "family": "macross",
+      "name": "us5000.10RClose/Reverse",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_a61adfa56125bade0cb0fcccf14e",
+      "family": "macross",
+      "name": "TenderIq0.25RXauusd",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_bcfac8a638293456e93dca9821fb",
+      "family": "macross",
+      "name": "TenderIq0.10RXauusd",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_06f9659f2da70ac0442dcbb76133",
+      "family": "macross",
+      "name": "TenderIq0.10RXauusdGateOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_f6727de306f6a5ddf9a852139b83",
+      "family": "macross",
+      "name": "btcusd0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_af337d89d9832203ca1f25cd7e66",
+      "family": "macross",
+      "name": "xauusdTrendline0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_287f0c2614d3c12c19b0fbe2819b",
+      "family": "macross",
+      "name": "btcusd0.10R200000pip",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_57bcfb7ab7b2f33aebad0cefdab0",
+      "family": "macross",
+      "name": "DE30MaMTF0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_0e734cd238bc8d8ced9fc50c8aaf",
+      "family": "macross",
+      "name": "0.50RInversedBTCUSDStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "macross_8eeb05d13b81e46ed4f12907e0cb",
+      "family": "macross",
+      "name": "de30_0.03R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_e8220530da102c345c34d80808ae",
+      "family": "macross",
+      "name": "jp2250.25RGateStateOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_5a9fbdeb4b2d794922d55b2d52da",
+      "family": "macross",
+      "name": "tennderIq_0.06RDe30",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_cc2f43ea60a0fba079df96a8318a",
+      "family": "macross",
+      "name": "Xauusd_MaMtf_0.03R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_6729f9cc6bed57920bde3ee4898f",
+      "family": "macross",
+      "name": "Xauusd_MaMtf_0.04R_GateStateON",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_574efe2ce19792862872d7e50fde",
+      "family": "macross",
+      "name": "de30_0.02R_Time_Matrix",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_e06bb1badb3daff96e7e9c8a92be",
+      "family": "macross",
+      "name": "de30_TIME_MATRIX_Tender_Gate_On",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_d7486f647aa9cdcde252264f6f6f",
+      "family": "macross",
+      "name": "80000pipbtcTimeMatrixOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_3a8aca5c4ad867eb4c88b1d8fa80",
+      "family": "macross",
+      "name": "xauusd300pipreveersehavepotential",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_e34b275a17f3c3a45f850c4e426c",
+      "family": "macross",
+      "name": "xauusdMaMtf0.02R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_7caec10a284c6e07991c78e4521a",
+      "family": "macross",
+      "name": "BTCUSDGateStateOn0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_46acf429b5a7a25f5bc06e95c8b2",
+      "family": "macross",
+      "name": "xauusdTimeMatrix0.25R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_ee76f0ab7c0bf2eb6ab7c4906734",
+      "family": "macross",
+      "name": "jp225TenderIq0.25RTimeMatrix",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_73eef49ef7f7947b346ce78d9172",
+      "family": "macross",
+      "name": "BTCUSDGateStateOn0.10RTimeMatrix",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_a5b6926da7e1f23b36c1816b2cd1",
+      "family": "macross",
+      "name": "BTCUSDGateStateOn0.5RTimeMatrix",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_c8494b5ffaef950069a5c7b0ed0e",
+      "family": "macross",
+      "name": "usdjpyTimeMatrix0.02R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_b446022bcb61bd28c06c9a24f9b1",
+      "family": "macross",
+      "name": "ustecTimeMatrix",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_43c0c00ad1abe311c7b74a4b809d",
+      "family": "macross",
+      "name": "gbpjpy_0.02",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_cc006206fd760238baa95203593a",
+      "family": "macross",
+      "name": "gbpjpy_0.02RTimeMatrix",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_8248411aa1e46d076a6a7f82c6eb",
+      "family": "macross",
+      "name": "xauusd0.25RMaMtfDailyMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_1ef8479c51a551649c04e8d3c4e8",
+      "family": "macross",
+      "name": "xauusdtrendlineDailyStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_df6a307e1f3454f5052777e7ddbc",
+      "family": "macross",
+      "name": "usdjpyMAMTF0.10RGateStateOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_310f3fdadf2c65ea726e845f0987",
+      "family": "macross",
+      "name": "xauusdtrendlineDailyStrategy0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_fdc6a9bf32de040b0c0b8d78ff99",
+      "family": "macross",
+      "name": "xauusdtrendlineDailyStrategy2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_c17eb2786c5adac3e0d687df484c",
+      "family": "macross",
+      "name": "jp2250.5DailyMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_d843ded943415b092cb9445fb8c6",
+      "family": "macross",
+      "name": "jp225Master0.05",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_45dedcf5ea7c18aae78c3adb57f6",
+      "family": "macross",
+      "name": "usdjpy0.01Strategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_07b8b6571b544b072b84b9b3c9d4",
+      "family": "macross",
+      "name": "firsteurusd",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_5ecb783fc6c044ecf025f2dbbf90",
+      "family": "macross",
+      "name": "btcusdmyfavoritesofar",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_192bebfbd6564e1507041179f898",
+      "family": "macross",
+      "name": "usdjpy0.05TenderIq",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_efa9ad66e9bd221d1f4eb4c7f29b",
+      "family": "macross",
+      "name": "usdjpy0.02TenderIq",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_7585d44b453a52d75e5050f3b03d",
+      "family": "macross",
+      "name": "usdjpy0.10RMaMtf",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_3767de97ac860304ece6d65553b5",
+      "family": "macross",
+      "name": "usdjpy0.20R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_f7305cf65d05d93969048b467d47",
+      "family": "macross",
+      "name": "usdjpyM10.01Usefull",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_cfcc98c37a761e8c114aa6d5c4ee",
+      "family": "macross",
+      "name": "usdjpyInverse1R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "macross_bcfc6406789f7ecf56e2d837fb21",
+      "family": "macross",
+      "name": "usdjpyInverse1RCloseReverse",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_57c3247fbd472d37c1be5a4648c4",
+      "family": "macross",
+      "name": "usdjpy0.20RNewwestVersion",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_f97c4582bf9caa4963344c6f9c2b",
+      "family": "macross",
+      "name": "usdjpy0.20RM1Scalping",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_ec6798c767ab2b50ff4fb6e1d0ca",
+      "family": "macross",
+      "name": "usdjpyM50.01Model",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_9eace0a9ae6d3289575ce99a3a96",
+      "family": "macross",
+      "name": "usdjpyM50.01ModelIndependentMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_4bd002e4b863b8ae13e101919a21",
+      "family": "macross",
+      "name": "jp2250.01Hero",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_fe881756cf4a2c22a02aaf89aba2",
+      "family": "macross",
+      "name": "jp2250.05Hero",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_57b7974d32141d2c42b9ed669ab0",
+      "family": "macross",
+      "name": "jp2250.05HeroGateStateOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_9b6ce5088d14e0a1788127efc08b",
+      "family": "macross",
+      "name": "USOILADDEXITONMAMtf0.20R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_f3724280cab7429976af6dc0b995",
+      "family": "macross",
+      "name": "jp2250.05HeroGateStateOnTrendline",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "family": "macross",
+      "name": "jp2250.01TrendlineStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_9f7630fa9e3c4348413b84dcaf16",
+      "family": "macross",
+      "name": "jp2250.01TrendlineStrategyBuyOnly",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_18bb29980c43eb8da68c4fd79b24",
+      "family": "macross",
+      "name": "btcusd0.01MaMtf",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_00af267a2876594770944d051cee",
+      "family": "macross",
+      "name": "btcusd0.01MaMtfHighWR",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_d9473d539229826a2916a16909a8",
+      "family": "macross",
+      "name": "btcusd0.01MaMtfHighWRHighFreq",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_190bdf238e3bed648815c657d2b1",
+      "family": "macross",
+      "name": "xauusd0.02RMaMtfDailyMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_64173a77253a901fe1595546492f",
+      "family": "macross",
+      "name": "xauusdtrendlineDailyStrategy0.01R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_b512c42ea7d01d56ae8bff4caa6c",
+      "family": "macross",
+      "name": "btcusd0.01MaMtfHighWRHighFreqM1",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_7ad9e98396472c445b816df1236b",
+      "family": "macross",
+      "name": "gbpusdFirst",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_31421fe467980eef80cc3ffb3f47",
+      "family": "macross",
+      "name": "xauusdMaMtf0.15RIndependentMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_9fabc3a8d231b192085ad536fb75",
+      "family": "macross",
+      "name": "gbpusdFirstM15",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "macross_52832fc710289f43204fa586013f",
+      "family": "macross",
+      "name": "xauusdWithFiltersIndependentModeOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "entrylab_fd89d378f979ffd8c91d60eec7b2",
+      "family": "entrylab",
+      "name": "fastema0.01",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_25185571b70324724684c8a15212",
+      "family": "entrylab",
+      "name": "BollingerBandsMeanReversionScalper0.15Rscalper",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_a84bb31915d21f98c93621aefec9",
+      "family": "entrylab",
+      "name": "BollingerBandsMeanReversionScalper0.15RscalperVeryFrequent",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_d84c5ee95f6691fac316ce1d2d36",
+      "family": "entrylab",
+      "name": "BollingerBandsMeanReversionScalper0.15RscalperIndependent",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_b88faf2cc8af3e1ae674ef7f8f29",
+      "family": "entrylab",
+      "name": "FastEmaRsi0.01RIndependent",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_4fd516173f898268e3a4deb6e7fe",
+      "family": "entrylab",
+      "name": "gbpusdfastemaRsi0.02R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_c60359d5819d7663f71079cf72e6",
+      "family": "entrylab",
+      "name": "gbpusdfastemaRsi0.02RDay",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_af298edf7cf9aafb6517d700bc47",
+      "family": "entrylab",
+      "name": "usdjpyUltraFastMachine",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "entrylab_d06f56ca25098c6f17e3b177be87",
+      "family": "entrylab",
+      "name": "usdjpyDailyBollinger",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "sol_4fc36ef4138090ea2da2bb482416",
+      "family": "sol",
+      "name": "jp2250.15RStrategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_fa52f6863eef5f3bf6fb95c17483",
+      "family": "sol",
+      "name": "LiqNarrative0.10R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_648bdcf77d961e4fe4579ea4df20",
+      "family": "sol",
+      "name": "MightBeNewEdge",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_12bb35aef04955804571acaf1618",
+      "family": "sol",
+      "name": "LiqNarrative0.05RMightBeIt",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_10f2d4fcf8f6468ef9faf3045868",
+      "family": "sol",
+      "name": "xauusd0.02Strategy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_cdf9be981ce9ac6df43529c52d13",
+      "family": "sol",
+      "name": "us30_0.25R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_e31c2ac0ff24155517f15a0195ae",
+      "family": "orb",
+      "name": "0.5RsetupAdvanced",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_126ef163a8bc3ae0232144765e2d",
+      "family": "orb",
+      "name": "2RModeljp225",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_297c5bf4134dd65179d443415c4f",
+      "family": "orb",
+      "name": "jp2250.5RSetupV2",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_0f8fe2e36a1094b709295f5a8929",
+      "family": "orb",
+      "name": "jp2250.5RUltimateSetup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "orb_a78c37517b00db79a6a80d181865",
+      "family": "orb",
+      "name": "jp225HighProbaLongWait",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_439de3e6657526b6f5bcca009e0d",
+      "family": "orb",
+      "name": "jp225HolyGrail",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_d2474c9106e5fa474eb3943903b1",
+      "family": "orb",
+      "name": "JP225nOFilter1R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_be6fd32181960849a3c06ebddcaa",
+      "family": "orb",
+      "name": "0.25RFiltersNone",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_e78c807e81596163ba1c87747540",
+      "family": "orb",
+      "name": "jp2250.5Model",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_12473bfe56bd8a0d94b5eb15b0f2",
+      "family": "orb",
+      "name": "jp2250.5RHighFrequencyIfYouDontWannaWait",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_6896944f1a066f1b996c6bfbfe45",
+      "family": "orb",
+      "name": "jp225Nas0.25RNewMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_8e6346eb25ac3aa320433bd3e1de",
+      "family": "orb",
+      "name": "jp225Use8000pips",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_08b78ac3fcbff0eb75c49e1dc976",
+      "family": "orb",
+      "name": "jp225VeryHighWRWithGateState",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_0f980a731025cc000ce37b612f14",
+      "family": "orb",
+      "name": "jp225WithNas",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_cbf64cab06a203bae200746daa07",
+      "family": "orb",
+      "name": "veryHighWRjp225OrbNasNewMode",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_ec3ed49abab64df8c61580592ecd",
+      "family": "orb",
+      "name": "0.5RGoodUsdjpy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_442a8adaf87625d993a3e567e2ee",
+      "family": "orb",
+      "name": "40pipusdjpyMasterSystem",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_3ae50c45935baf1c3876a0c207e5",
+      "family": "orb",
+      "name": "goodPractice",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_762348bbf34be386c77140cf02f6",
+      "family": "orb",
+      "name": "HolyGrail [USDJPY]",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "orb_73e208cb7f14f17a6f50f4b34c74",
+      "family": "orb",
+      "name": "usdjpyOrbGM0Edge",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_a540a2028718bf3c70c0bbb3723f",
+      "family": "orb",
+      "name": "0.20R [USDJPY]",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_d88c331bacad67be841ddcfcbbb0",
+      "family": "orb",
+      "name": "0.25RUsdJpy",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_c23f2f00c0ed1145ec8654d38952",
+      "family": "orb",
+      "name": "0.10R_Setup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_2ab44f0405d90d64d7192f71cf45",
+      "family": "orb",
+      "name": "0.25RYildiz",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_989d9bfb2e747af2c0357ab2d3f8",
+      "family": "orb",
+      "name": "1RAlternatif",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_336a903eff4f28e996c179c47340",
+      "family": "orb",
+      "name": "1RYildiz",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_7dea3148604aaa758f17019d79c6",
+      "family": "orb",
+      "name": "usdjpyGateStateOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_ac0afd62b41b78386370d2bdd082",
+      "family": "orb",
+      "name": "ProUsdJpySetup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_53e1ad9bbde40dc3ebb2445b4814",
+      "family": "orb",
+      "name": "UsdJpyUse",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_efa955bba6afa90472faa9d50435",
+      "family": "orb",
+      "name": "usdjpyWorthTrying",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_9177b889acda0020b6cfdcde2d8d",
+      "family": "orb",
+      "name": "4Kaybetmeden4KazanmaChallengeModeli",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_7992772578c1b9c6240952334b95",
+      "family": "orb",
+      "name": "DISP1RModelIsSolid",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_b15833fdbdec971ea539b7ae14ab",
+      "family": "orb",
+      "name": "DISPONUsefullFirstTimeUstecOrb0.5R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20
+      ],
+      "unavailableWeeks": [
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 20
+    },
+    {
+      "id": "orb_ceb5f7cf7329bec28df44072d2df",
+      "family": "orb",
+      "name": "FirstTF5ChartJP225",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_ba404cffcbff039b4f33ebbbb228",
+      "family": "orb",
+      "name": "JP2251RSetup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_027601a9bc3bce4d35df249209c5",
+      "family": "orb",
+      "name": "JP225DISP_ON_IBM1_SETUP_Edge",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_d40351f23d99eedbc6b19ba03b6d",
+      "family": "orb",
+      "name": "LiqNarrative1.5RModel",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_c8d630b7415a1519ef1f79442767",
+      "family": "orb",
+      "name": "LiqNarrativeFvgONRetestVolOn1.5RSetup",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_19c7351685f9617c463ba10f4f01",
+      "family": "orb",
+      "name": "Muhtesem4lu #1",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_800a25a88d4829beb8882dbf2e5b",
+      "family": "orb",
+      "name": "Muhtesem4lu #2",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_e1ef3ab578e472c25b19ce6b333b",
+      "family": "orb",
+      "name": "Muhtesem4lu #3",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_a0596bbb9e6bb344220bb9ba4601",
+      "family": "orb",
+      "name": "Muhtesem4lu #4",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_62ed9aa03daba604ffb568086acf",
+      "family": "orb",
+      "name": "NikkeiOrbBestSoFar",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_a15e573f4fd2a337e48d89173e3f",
+      "family": "orb",
+      "name": "0.20RStarJp225",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_edae4929c5e8e291c43422f17782",
+      "family": "orb",
+      "name": "0.5RSetupJp225GateOn",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "orb_80cb4fa651970a9dbe4cd5eac3f0",
+      "family": "orb",
+      "name": "jp225O.5RStar",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_4deb29fd1857c6f4f7ec375e2c83",
+      "family": "sol",
+      "name": "SPX5001.5R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_276a504d659b64e28c073e5e1616",
+      "family": "sol",
+      "name": "spx500AdvancedModelLiquidity",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_e4eb2725fe9a978a8bab961ef9ca",
+      "family": "sol",
+      "name": "btcgoon",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_46bb46afc5a94e8a8f7faae36b38",
+      "family": "sol",
+      "name": "BTCUSDLiqNarrative",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_ab6086bc091e0c8f1557f06368a0",
+      "family": "sol",
+      "name": "MightBeNewEdge",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_8c67933c2da1c4d0d40a277ef710",
+      "family": "sol",
+      "name": "SolAdvanced_JP225_H2H1_2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_fe5e5e2cc988c46fc31a0bf76178",
+      "family": "sol",
+      "name": "SolVersion_JP225_H2H1_2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_845016e38abd3c5ad1b10aca129f",
+      "family": "sol",
+      "name": "Legacy_JP225_H2M30_2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_075493b65422ee9909236ea048f1",
+      "family": "sol",
+      "name": "Legacy_JP225_H2H1_2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_845e7909304d6db1bccb3a30c57e",
+      "family": "sol",
+      "name": "Legacy_US500_H2M15_1R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_2871d40185e9f0f1f86efa59035c",
+      "family": "sol",
+      "name": "Legacy_US500_H2M15_2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_5310412807afd2aa5f5c63d0abf3",
+      "family": "sol",
+      "name": "Legacy_US500_H2M15_05R_DUP",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_37476ef09d28a53c0dc15dfea064",
+      "family": "sol",
+      "name": "Legacy_US500_H2M15_2R_DUP_2500",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_eebb8e596dbc317c69ee66646000",
+      "family": "sol",
+      "name": "Legacy_US500_H2M15_1R_DUP",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_90ae833dbaac8260fde407dbfe10",
+      "family": "sol",
+      "name": "Legacy_USTEC_H2M15_1R_15000",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_8979514677f311f9c9d657035239",
+      "family": "sol",
+      "name": "Legacy_USTEC_H2M15_1R_30000",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_03dd2107c58c7eb3973bd261c5c7",
+      "family": "sol",
+      "name": "Legacy_USTEC_H2M15_1R_DUP",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_a1f60331848b9ff1be1a220c6ceb",
+      "family": "sol",
+      "name": "Legacy_USTEC_H2M15_2R_DUP",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_c51741740234337a5fd2dd860a76",
+      "family": "sol",
+      "name": "Legacy_USTEC_H2M30_2R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_69d94bb5bf2573304e695612c324",
+      "family": "sol",
+      "name": "Legacy_US30_H2M15_1R_DUP",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_52b8f4636219478b6bf77b32dbee",
+      "family": "sol",
+      "name": "Legacy_EURUSD_H2M30_05R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    },
+    {
+      "id": "sol_b385e40b91a47fcfa5c0fa73400e",
+      "family": "sol",
+      "name": "Legacy_UKOIL_H2H1_1R",
+      "availableWeeks": [
+        2,
+        5,
+        10,
+        20,
+        52,
+        104,
+        156,
+        208,
+        260
+      ],
+      "unavailableWeeks": [],
+      "pendingWeeks": [],
+      "maxAvailableWeeks": 260
+    }
+  ],
+  "targeted": true,
+  "exactTraceReuseWindows": 0,
+  "cachedPairWindows": 33,
+  "confirmedUnavailableWindows": 76,
+  "unconfirmedWindows": [],
+  "completed": true
+}

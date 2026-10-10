@@ -1,7 +1,7 @@
-import {CONTROL_API} from './control-endpoint.ts';
+import { CONTROL_API,CONTROL_CREDENTIALS} from './control-endpoint.ts';
 
 export async function requestEaPackage(credential:string,fetcher:typeof fetch=fetch){
- const response=await fetcher(CONTROL_API+'/v1/ea/package',{method:'POST',headers:{Authorization:`Bearer ${credential}`,'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(60000),cache:'no-store',redirect:'error',credentials:'include'});
+ const response=await fetcher(CONTROL_API+'/v1/ea/package',{method:'POST',headers:{Authorization:`Bearer ${credential}`,'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(60000),cache:'no-store',redirect:'error',credentials:CONTROL_CREDENTIALS});
  if(!response.ok){
   let data:unknown;try{data=await response.json();}catch{throw new Error('EA_DOWNLOAD_FAILED');}
   const code=data&&typeof data==='object'&&'error' in data?data.error:null;

@@ -4,6 +4,7 @@ import { controlHttp } from './generated/http.mjs';
 import { PostgresStore } from './postgres-store.mjs';
 import { hash } from '../crypto.mjs';
 import { createStudioAgent } from '../studio-agent.mjs';
+import { PUBLIC_STUDIO,PUBLIC_STUDIO_BASE_PATH } from '../api-location.mjs';
 
 async function routingBody(request) {
   const reader=request.clone().body?.getReader();if(!reader)return {};
@@ -36,9 +37,10 @@ export async function cloudRequest(tx,request,path,configuration,artifacts,remot
   if(owner)await tx`SELECT pg_advisory_xact_lock(hashtextextended(${owner},0))`;
   const plane=new ControlPlane({db,signingKey:configuration.signingKey,eaSigningKey:configuration.eaSigningKey});
   plane.apiUrl=configuration.apiUrl;plane.studioUrl=configuration.studioUrl;
-  plane.artifacts=artifacts;plane.helperFactory=async()=>artifacts.helper;
+  plane.artifacts=artifacts;plane.helperFactory=async()=>artifacts?.helper;
   const auth=new SupabaseAuth(plane,{url:configuration.supabaseUrl,publishableKey:configuration.publishableKey,
-    encryptionKey:Buffer.from(configuration.encryptionKey,'base64'),studioOrigin:configuration.studioUrl});
+    encryptionKey:Buffer.from(configuration.encryptionKey,'base64'),studioOrigin:configuration.studioUrl,
+    studioBasePath:configuration.studioUrl===PUBLIC_STUDIO?PUBLIC_STUDIO_BASE_PATH:''});
   const agent=createStudioAgent();
   return controlHttp(plane,{origins:[configuration.studioUrl],auth,agent}).fetch(request,path,remoteAddress);
 }

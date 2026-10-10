@@ -1,0 +1,8 @@
+project_id = "stratum"
+
+[functions.stratum-control]
+enabled = true
+# Public signup and signed-device requests use the function's own authorization.
+verify_jwt = false
+entrypoint = "./functions/stratum-control/index.mjs"
+import_map = "./functions/stratum-control/deno.json"

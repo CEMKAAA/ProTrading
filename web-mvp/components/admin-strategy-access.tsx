@@ -4,14 +4,14 @@ import {ShieldCheck,Search,Users,ArrowLeft,RefreshCw,LockKeyhole} from 'lucide-r
 import ConsoleWindow from './console-window';
 import LeverSwitch from './lever-switch';
 import {UiText,useLanguage} from './language-provider';
-import {CONTROL_API} from '@/lib/control-endpoint';
+import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS} from '@/lib/control-endpoint';
 import type {Family} from '@/lib/universal-contract';
 import type {AdminUser,CatalogPage,CatalogStrategy} from '@/lib/strategy-access';
 
 const families:Record<Family,string>={orb:'ORB',macross:'MA Crossover',sol:'Sol Advanced',entrylab:'Entry Lab'};
 async function request<T>(path:string,token:string,body?:unknown,signal?:AbortSignal):Promise<T>{
- const response=await fetch(CONTROL_API+path,{method:body===undefined?'GET':'POST',credentials:'include',cache:'no-store',redirect:'error',
-  headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:signal??AbortSignal.timeout(15000)});
+ const response=await fetch(CONTROL_API+path,{method:body===undefined?'GET':'POST',credentials:CONTROL_CREDENTIALS,cache:'no-store',redirect:'error',
+  headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:signal??AbortSignal.timeout(CONTROL_TIMEOUT_MS)});
  const data=await response.json() as T&{error?:string};if(!response.ok)throw new Error(data.error??'REQUEST_FAILED');return data;
 }
 export default function AdminStrategyAccess({credential}:{credential:string}){

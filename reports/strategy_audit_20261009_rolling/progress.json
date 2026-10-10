@@ -1,0 +1,26 @@
+{
+    "requestedWindows":  [
+                             260,
+                             208,
+                             156,
+                             104,
+                             52,
+                             20,
+                             10,
+                             5,
+                             2
+                         ],
+    "strategies":  188,
+    "errorsThisRun":  15,
+    "sourceHash":  "ed4b200116a1e24b69bfdc832f4c33b5be8f45d8db5a738e6a922d14fbac0e41",
+    "started":  "2026-10-10T01:33:06.9100046+03:00",
+    "state":  "stopped_by_user",
+    "name":  "usdjpyUltraFastMachine",
+    "completedThisRun":  112,
+    "pid":  23392,
+    "current":  "entrylab_af298edf7cf9aafb6517d700bc47",
+    "family":  "entrylab",
+    "stoppedUtc":  "2026-10-09T22:35:02.6399978+00:00",
+    "stopReason":  "User requested stopping full campaign; preserved existing results",
+    "processedResultFiles":  113
+}

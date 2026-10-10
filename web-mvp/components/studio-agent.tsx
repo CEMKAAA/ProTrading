@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
 import { Bot, Send, ShieldCheck, Undo2, ChevronRight, LoaderCircle, Mic, MicOff, Volume2, VolumeX, Save, History, Plus, Trash2 } from 'lucide-react';
-import { CONTROL_API } from '@/lib/control-endpoint';
+import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS} from '@/lib/control-endpoint';
 import { planAgentActions, type AgentAnswer, type AgentPlan } from '@/lib/studio-agent';
 import type { UniversalConfiguration } from '@/lib/universal-contract';
 import { controlLabel } from '@/lib/studio-help';
@@ -68,7 +68,7 @@ export default function StudioAgent(props:Props){
  useEffect(()=>{
   if(!open||!props.credential||!props.active)return;
   const controller=new AbortController();let alive=true;setStatus(null);setStatusLoading(true);setError('');
-  void fetch(CONTROL_API+'/v1/assistant/status',{headers:{Authorization:`Bearer ${props.credential}`},credentials:'include',cache:'no-store',redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(12000)])}).then(r=>assistantJson<Status>(r)).then(data=>{
+  void fetch(CONTROL_API+'/v1/assistant/status',{headers:{Authorization:`Bearer ${props.credential}`},credentials:CONTROL_CREDENTIALS,cache:'no-store',redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(CONTROL_TIMEOUT_MS)])}).then(r=>assistantJson<Status>(r)).then(data=>{
    if(!data?.providers||['local','openrouter'].some(key=>typeof data.providers[key as 'local'|'openrouter']?.configured!=='boolean'))throw new Error('AI_INVALID_RESPONSE');
    if(alive)setStatus(data);
   }).catch(e=>{if(alive&&!controller.signal.aborted)setError(assistantFailure(e));}).finally(()=>{if(alive)setStatusLoading(false);});
@@ -78,7 +78,7 @@ export default function StudioAgent(props:Props){
  const enabled=!blocker;
  async function historyFetch(path:string,body?:unknown){
   const controller=historyRequest.current??new AbortController();historyRequest.current=controller;
-  const response=await fetch(CONTROL_API+'/v1/assistant/conversations'+path,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${props.credential}`,...(body===undefined?{}:{'Content-Type':'application/json'})},credentials:'include',cache:'no-store',redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(20000)]),...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const response=await fetch(CONTROL_API+'/v1/assistant/conversations'+path,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${props.credential}`,...(body===undefined?{}:{'Content-Type':'application/json'})},credentials:CONTROL_CREDENTIALS,cache:'no-store',redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(CONTROL_TIMEOUT_MS)]),...(body===undefined?{}:{body:JSON.stringify(body)})});
   const data=await assistantJson<unknown>(response);
   if(controller.signal.aborted)throw new DOMException('Aborted','AbortError');
   return data;
@@ -144,7 +144,7 @@ export default function StudioAgent(props:Props){
   const controller=new AbortController(),base=current.current;request.current=controller;inFlight.current=true;setWaiting(true);setError('');setHistoryNotice('');setMessages(nextMessages);setInput('');
   try{
    const requestId=crypto.randomUUID();
-   const response=await fetch(CONTROL_API+'/v1/assistant/chat',{method:'POST',headers:{Authorization:`Bearer ${props.credential}`,'Content-Type':'application/json'},credentials:'include',cache:'no-store',redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(90000)]),body:JSON.stringify({provider,locale,cloudConsent:consent,requestId,conversation,context:{configuration:props.configuration,auditWeeks:props.auditWeeks,jobId:props.jobId,symbol:props.symbol,...(proposal?.base===base?{pendingCalls:proposal.plan.calls}:{})}})});
+   const response=await fetch(CONTROL_API+'/v1/assistant/chat',{method:'POST',headers:{Authorization:`Bearer ${props.credential}`,'Content-Type':'application/json'},credentials:CONTROL_CREDENTIALS,cache:'no-store',redirect:'error',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(90000)]),body:JSON.stringify({provider,locale,cloudConsent:consent,requestId,conversation,context:{configuration:props.configuration,auditWeeks:props.auditWeeks,jobId:props.jobId,symbol:props.symbol,...(proposal?.base===base?{pendingCalls:proposal.plan.calls}:{})}})});
    const answer=await assistantJson<AgentAnswer>(response);
    if(controller.signal.aborted)return;
    if(answer.requestId!==requestId||current.current!==base)throw new Error('STALE_PROPOSAL');

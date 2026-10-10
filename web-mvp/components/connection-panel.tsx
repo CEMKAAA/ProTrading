@@ -3,7 +3,7 @@ import { UiText, useLanguage } from './language-provider';
 import { useCallback, useEffect, useState } from "react";
 import { ShieldCheck, Link2, RefreshCw, Unplug, Terminal } from "lucide-react";
 import type { BacktestRequest, BacktestResult, Progress } from "@/lib/control-contract";
-import { CONTROL_API } from '@/lib/control-endpoint';
+import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS} from '@/lib/control-endpoint';
 import HelpButton from './studio-help';
 import { friendlyError } from '@/lib/studio-help';
 
@@ -15,7 +15,7 @@ type Job = { id: string; state: string; failureCode: string | null; request: Bac
 type Review = { installationId: string; label: string; fingerprint: string; expiresAt: number };
 
 async function api<T>(path: string, credential: string, body?: unknown): Promise<T> {
-  const response = await fetch(API + path, { method: body === undefined ? "GET" : "POST", headers: { Authorization: `Bearer ${credential}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000), redirect: "error", credentials: "include", cache: "no-store" });
+  const response = await fetch(API + path, { method: body === undefined ? "GET" : "POST", headers: { Authorization: `Bearer ${credential}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS), redirect: "error", credentials:CONTROL_CREDENTIALS, cache: "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error(data && typeof data === "object" && "error" in data && typeof data.error === "string" ? data.error : `HTTP_${response.status}`);
   return data as T;
@@ -41,15 +41,16 @@ export default function ConnectionPanel({ credential, onCredential }: { credenti
       if (!active) return;
       setSession(current); setSelected(current.installations.find(i => i.state === "approved")?.id ?? ""); setJob(history.jobs[0] ?? null);
     }).catch(e => { if (active) setError(errorText(e)); });
-    const timer = setInterval(() => { if (!document.hidden && active) void refresh().catch(e => { if (active) setError(errorText(e)); }); }, 10000);
+    let pending = false;
+    const timer = setInterval(() => { if (document.hidden || !active || pending) return; pending = true; void refresh().catch(e => { if (active) setError(errorText(e)); }).finally(() => { pending = false; }); }, 10000);
     return () => { active = false; clearInterval(timer); };
   }, [credential, refresh]);
   const activeJob = job?.state === "queued" || job?.state === "running";
   const jobId = job?.id;
   useEffect(() => {
     if (!activeJob || !jobId || !credential) return;
-    let active = true;
-    const timer = setInterval(() => { if (document.hidden) return; void api<Job>(`/v1/jobs/${jobId}`, credential).then(current => { if (active) setJob(current); }).catch(e => { if (active) setError(errorText(e)); }); }, 1500);
+    let active = true, pending = false;
+    const timer = setInterval(() => { if (document.hidden || !active || pending) return; pending = true; void api<Job>(`/v1/jobs/${jobId}`, credential).then(current => { if (active) setJob(current); }).catch(e => { if (active) setError(errorText(e)); }).finally(() => { pending = false; }); }, 1500);
     return () => { active = false; clearInterval(timer); };
   }, [jobId, activeJob, credential]);
   async function action(work: () => Promise<void>) {

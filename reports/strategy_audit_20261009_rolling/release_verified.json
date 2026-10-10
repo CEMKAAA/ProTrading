@@ -1,0 +1,848 @@
+{
+    "verifiedAt":  "2026-10-09T19:46:29.921Z",
+    "sourceHash":  "ed4b200116a1e24b69bfdc832f4c33b5be8f45d8db5a738e6a922d14fbac0e41",
+    "compile":  {
+                    "errors":  0,
+                    "warnings":  0,
+                    "families":  4
+                },
+    "binaries":  [
+                     {
+                         "family":  "orb",
+                         "relative":  "IndicatorCodeExamples/orb/OrbUltimateEA_StrategyLibrary.ex5",
+                         "sha256":  "ba9100e998956b11a9da0a3c8e647d3a36c753c11c507a9be0d28e0f2faded48"
+                     },
+                     {
+                         "family":  "macross",
+                         "relative":  "IndicatorCodeExamples/macrossover_orb/MaCrossOverOrbEA.ex5",
+                         "sha256":  "34e77f99947f0b9e6da8483d3bea2eff0c9a69f8a053bdfceca2eea4a7fac956"
+                     },
+                     {
+                         "family":  "entrylab",
+                         "relative":  "IndicatorCodeExamples/entry_engine_lab/EntryEngineLabEA.ex5",
+                         "sha256":  "7ee2703249ea30da114e928f6da600a28b1c0ca3ca8f877c619bcb83870603f8"
+                     },
+                     {
+                         "family":  "sol",
+                         "relative":  "IndicatorCodeExamples/SolAdvanced/LiqNarrativeSol_Advanced.ex5",
+                         "sha256":  "94a3519ef962a148dac72b469271c458b8cfd03dc2d7171d7c07264e3d33b9c8"
+                     }
+                 ],
+    "unitTests":  {
+                      "passed":  25,
+                      "failed":  0
+                  },
+    "nativeProbes":  [
+                         {
+                             "name":  "TradeCalendarMatrixProbe",
+                             "checks":  36,
+                             "failed":  0
+                         },
+                         {
+                             "name":  "OrbClockSaveProbe",
+                             "checks":  222,
+                             "failed":  0
+                         },
+                         {
+                             "name":  "MaTimeMatrixStrategyProbe",
+                             "checks":  16,
+                             "failed":  0
+                         },
+                         {
+                             "name":  "LiqTimeMatrixStrategyProbe",
+                             "checks":  11,
+                             "failed":  0
+                         },
+                         {
+                             "name":  "HoursApplyProbe",
+                             "checks":  23,
+                             "failed":  0
+                         },
+                         {
+                             "name":  "TimeMatrixActionsProbe",
+                             "checks":  35,
+                             "failed":  0
+                         }
+                     ],
+    "nativePilot":  {
+                        "strategies":  5,
+                        "windows":  17,
+                        "families":  [
+                                         "entrylab",
+                                         "macross",
+                                         "orb",
+                                         "sol"
+                                     ]
+                    },
+    "crossChart":  {
+                       "sourceHash":  "ed4b200116a1e24b69bfdc832f4c33b5be8f45d8db5a738e6a922d14fbac0e41",
+                       "passed":  true,
+                       "cases":  [
+                                     {
+                                         "weeks":  260,
+                                         "total":  1434,
+                                         "netR":  13.74413,
+                                         "chartTf":  "5",
+                                         "savedTf":  "1",
+                                         "issues":  [
+
+                                                    ]
+                                     },
+                                     {
+                                         "weeks":  52,
+                                         "total":  713,
+                                         "netR":  7.075455,
+                                         "chartTf":  "5",
+                                         "savedTf":  "1",
+                                         "issues":  [
+
+                                                    ]
+                                     },
+                                     {
+                                         "weeks":  2,
+                                         "total":  33,
+                                         "netR":  0.32,
+                                         "chartTf":  "5",
+                                         "savedTf":  "1",
+                                         "issues":  [
+
+                                                    ]
+                                     }
+                                 ]
+                   },
+    "files":  [
+                  {
+                      "file":  "entry_engine_lab\\AuditKivancExport.mqh",
+                      "sha256":  "b57e52ce039ffdc104e45360da4cb0fbd68a1660ccd4a27a0f3c113f14bd39f1"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditKivancFeatures.mqh",
+                      "sha256":  "ae805512278a4897f5a50a2537fcda0c447aa5b4228c8d1be616fcf05c47dddc"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditMemoIndex.mqh",
+                      "sha256":  "8fb52c93e4b16375324702bce2ad807179460cd4ea3462420bdade541c6319da"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditQuantFeatures.mqh",
+                      "sha256":  "327a11b91a0e9713d76d4eccb1bf2b1b354fe0e795d61d5cbf771c0ea2873756"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditSignalFeatures.mqh",
+                      "sha256":  "f6423ed0b7eaeefd6dc0f6415ad6deee7bd1a37c4df2c8a773dc58a6d52a8d2a"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditTickReadGuard.mqh",
+                      "sha256":  "05ec20ade99ffa425c6746cffa7451370dbe0c6cb9a4629c987ac5729f5bc95d"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditTradeCsv.mqh",
+                      "sha256":  "7cfd04cd4b7a29f6600200e2434cd74a3f818f10563eca9fe4c8832e628c182d"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\AuditTradeCsvAdapter.mqh",
+                      "sha256":  "dc0e5bae39a6d961737d4f6063eec9b2166ac741cdec2ca35d04e81a0891aec3"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\DailyTradeQuota.mqh",
+                      "sha256":  "b8987f09d6f626aca60864a3d21f7274907b434a8f8c69cc7602c692f9679870"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\EntryEngineLabEA.mq5",
+                      "sha256":  "b9f300b3ac6677da6d703cafdebe38dc7ca8b56ae8426c3ea1a0838b862d6916"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LabEntryBuilder.mqh",
+                      "sha256":  "0083fac0a5183afb60b1f55733e6668b08b41b983f144226dcaaeb609a38ddac"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LabEntryLogic.mqh",
+                      "sha256":  "28311ddb3e22e64bd5a0ee309cd3c6303fcc528efa3785c07667566d74e3df48"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LabNativeTradeVisuals.mqh",
+                      "sha256":  "9d7ccfae80dfe0bbc054c3a52a91c98186f2a195d8e1d80365f6758bc9dfcd85"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LabParameterizedFeatures.mqh",
+                      "sha256":  "4928221bb66c5cb55db661fde8635e1eebc711b1fa767cffe0b228cc224c4bf0"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LabPolicyRuntime.mqh",
+                      "sha256":  "bc6b3b2c3696ef252ce409bb64cee64680767a478ec21fa8fc31a63c2f89a0c0"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LabScalperPresets.mqh",
+                      "sha256":  "db949d32d9cf201507fa5c08ae864ec19bad74c970eb525af112e487677e3e76"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaCrossAuditCache.mqh",
+                      "sha256":  "010a59467a5f6c2618374056a9310612f9ec1e9f3cf909308c4468bd9a99385a"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaCrossEventAudit.mqh",
+                      "sha256":  "f39b8a6fe69972f278ad14beb6e68c38c7b133a6bc56d6f9f4c0c4973272b5c4"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaCrossOrderFlow.mqh",
+                      "sha256":  "a83d41915c5653527f0924042450586a22d7e1b5d742a066f784a15757461940"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaCrossOrderFlowCore.mqh",
+                      "sha256":  "8226a77f2d9b4adcf778b4cb306f903b23cfb2ea5d072d1970c50f349c84465b"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaCrossPineStream.mqh",
+                      "sha256":  "64c8995813f045227de399560ef5e9d0c848dfd03dd651dd6d5be8c62993aee7"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaCrossSignalCore.mqh",
+                      "sha256":  "a3a6ca755bb1137660a3698b15b286d630ab943f954dd5f6bc346d3f9a497c34"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaExitPolicy.mqh",
+                      "sha256":  "a89ed95c90e7028edabb199debdc3bd11c687ee78ec1d701c5b0cba20c7880de"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaHistoricalVisualCache.mqh",
+                      "sha256":  "f3072da1e168b8a9b8da03b686263b2ea0b2b1d11ebd9d444e261a5b685439d2"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaIndependentEntries.mqh",
+                      "sha256":  "09bfc9627edfa85fc89bfc1eca5ed992909d3c14ab2925685f77343dc3f5a06a"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaOrderFlowLeaderboard.mqh",
+                      "sha256":  "1bfcd200d39ee44c4171c3a18716e9b83da4a44e9ec788929855c64b6a3c12f0"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaOrderFlowLeaderboardData.mqh",
+                      "sha256":  "99564d81fa5bd632717f26fff89370436f92d7fa6765cc0b57d209008a5788e9"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaOrderFlowSettings.mqh",
+                      "sha256":  "ded19e9a34d630cb516b3524dc4173c04ac11d0e0a5bfbbb45cfed6fd7421ac3"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\MaTrendFollowCore.mqh",
+                      "sha256":  "9a357a5fbe9ac8d605b7e05621e2c2c1ec3e7c9c404c18b6bb3485fa5c6db2cb"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\NasUltimate_Core.mqh",
+                      "sha256":  "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\NativeMarginPreview.mqh",
+                      "sha256":  "b51a2a3bfb95da7bb5684aafb059a3a4cef9ba7c2f18c967cc5517dd2246e694"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\NativeRiskBalance.mqh",
+                      "sha256":  "08789b2fd3d6d553a254be517c0db18146f7c3f2f8b1bb42d2dab16f13ba9092"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbAdvancedAuditEngine.mqh",
+                      "sha256":  "231d6baaa3f1565503b1dd95a2d0839f15ec95de6b274bd8864d2814fd403fb2"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbAuditRamCache.mqh",
+                      "sha256":  "543eb65f93c15250d358b1af291cf80921b36eb3929993b0abae02f2e200277f"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbCustomRPicker.mqh",
+                      "sha256":  "5727f63d943717f88540867e8ee7b90508cf041453e217e20ee629b780667972"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbReplayMemoEpoch.mqh",
+                      "sha256":  "64ec3a7f9b127f6a18ab8f2082878251d40db62ce51a77a7d68e887307f830ff"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyCampaignModels.mqh",
+                      "sha256":  "acf1f11d649e79ab838a9d886b96e4fee78d7c7847bad0f0082348b44e440140"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyCampaignRegistry.mqh",
+                      "sha256":  "8d6c35af9e796909f4fde0021828f45fc68af1f04d85a5ba58053e66478b2b31"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyMLConfig.mqh",
+                      "sha256":  "aee5555f43b7220a13e33fb1fce3d7eb04f547414c0c13562de7948c8ca78997"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyMLCore.mqh",
+                      "sha256":  "089a0cbcc78ffc76b5e6055141bf4c04a118c1a14cdf9c873aa00df9f490f887"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyMLHistory.mqh",
+                      "sha256":  "6344ae045ff2a3e117df1b528978f804030c74bb4fdc41d69373ecad13872d28"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyMLJobs.mqh",
+                      "sha256":  "4a1a769bfccf5bf9df707fbbf1964c117434ac75d39792f37dee75234309d74d"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyMLPipeline.mqh",
+                      "sha256":  "7cd2570e37f0a9bc43b28d88d56cfe551b1bea72a18ced77f63a560144aa3acd"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyModelSlot.mqh",
+                      "sha256":  "b852ed581aa605ea511c8996682b85e1f7630210059111fcaace9b3f4dfcc7b5"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyPresetLibrary.mqh",
+                      "sha256":  "da82bfb016c7ddad4f5dc061d6b05d85260aebdd5216afb7c0606117e034d4ea"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyR7Core.mqh",
+                      "sha256":  "390b8853673760ee78c75693a6796837d552c3d8a28d80d4922b1d30cff05ce7"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyR7Runtime.mqh",
+                      "sha256":  "33bac9efe2ee2476f216c54cc1e461d299716e8412bf2e2482bd5f6dae0ea13e"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyUserContract.mqh",
+                      "sha256":  "6ca978cf36d7106ed16e5f1a43c263895120497c5b52a09142d781e105e5e86e"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyUserLibrary.mqh",
+                      "sha256":  "66fd2f83af686e9bb38392b6d472d5812069d02b472ed49a970f149896540fae"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbStrategyUserMetrics.mqh",
+                      "sha256":  "45870b9bd6b573a358d952b6ab3a94ac803d935dff0457ecd7cde1eefe638bc4"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbUltimate_ProfessionalPipeline.mqh",
+                      "sha256":  "29c3c5011c71c0f2acbca688685fbab6e9c1dd6be0b0d3359167cd7a374c7f51"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\OrbUltimate_RegimeMatrix.mqh",
+                      "sha256":  "0ed4cc44cc6dbfc70efd63dc57d7e336fb892f86a3062c596626f7bd3ba95bcf"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\ResearchFiveYearData.mqh",
+                      "sha256":  "cedb29779d4582676d412902890c36aec3c8e5564f709fb467887d864391642a"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\StrategyWindowMetrics.mqh",
+                      "sha256":  "f31fa762b2c4c4f9e0a6534f494281c7f85e028651b13442cf510bf242f86537"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\TradeCalendarMatrix.mqh",
+                      "sha256":  "0edc87694a385bc4ca657e5d62699cdbd0867fd64b9be14f80c2a4d5a686ce8a"
+                  },
+                  {
+                      "file":  "entry_engine_lab\\TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditKivancExport.mqh",
+                      "sha256":  "b57e52ce039ffdc104e45360da4cb0fbd68a1660ccd4a27a0f3c113f14bd39f1"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditKivancFeatures.mqh",
+                      "sha256":  "ae805512278a4897f5a50a2537fcda0c447aa5b4228c8d1be616fcf05c47dddc"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditMemoIndex.mqh",
+                      "sha256":  "8fb52c93e4b16375324702bce2ad807179460cd4ea3462420bdade541c6319da"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditQuantFeatures.mqh",
+                      "sha256":  "327a11b91a0e9713d76d4eccb1bf2b1b354fe0e795d61d5cbf771c0ea2873756"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditSignalFeatures.mqh",
+                      "sha256":  "f6423ed0b7eaeefd6dc0f6415ad6deee7bd1a37c4df2c8a773dc58a6d52a8d2a"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditTickReadGuard.mqh",
+                      "sha256":  "05ec20ade99ffa425c6746cffa7451370dbe0c6cb9a4629c987ac5729f5bc95d"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditTradeCsv.mqh",
+                      "sha256":  "7cfd04cd4b7a29f6600200e2434cd74a3f818f10563eca9fe4c8832e628c182d"
+                  },
+                  {
+                      "file":  "macrossover_orb\\AuditTradeCsvAdapter.mqh",
+                      "sha256":  "1d2ca06b6e1222c8e5060b48cd9c1b7806f72d19f4dc24adb6b009bb67171ee5"
+                  },
+                  {
+                      "file":  "macrossover_orb\\DailyTradeQuota.mqh",
+                      "sha256":  "b8987f09d6f626aca60864a3d21f7274907b434a8f8c69cc7602c692f9679870"
+                  },
+                  {
+                      "file":  "macrossover_orb\\LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossAuditCache.mqh",
+                      "sha256":  "7f5560bf2872c06d23f7170b265e8b032b394c18990054a37b7551ee651e5ad3"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossEventAudit.mqh",
+                      "sha256":  "1fa7a7d46ccc5321848ad94da24f451e67b9e85537152895daf0bd0d0ed62493"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossOrderFlow.mqh",
+                      "sha256":  "a83d41915c5653527f0924042450586a22d7e1b5d742a066f784a15757461940"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossOrderFlowCore.mqh",
+                      "sha256":  "8226a77f2d9b4adcf778b4cb306f903b23cfb2ea5d072d1970c50f349c84465b"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossOverOrbEA.mq5",
+                      "sha256":  "3ac346afd2c69e53b7473e3ecd1be6a8a73a7d16abfe4f748adb60486696c4fd"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossPineStream.mqh",
+                      "sha256":  "ad394e385098d8a3981c3a8fddb6f218cde621c428c06354859ae6a9b67b7b06"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaCrossSignalCore.mqh",
+                      "sha256":  "10476a951e7549a267a64215a445ba784228aa456a4bf4bece83939684465f4b"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaExitPolicy.mqh",
+                      "sha256":  "2021367c1f71fa9aebd9688f93acaedf6378bf7779cbafca06898e9d179f90ad"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaHistoricalVisualCache.mqh",
+                      "sha256":  "f3072da1e168b8a9b8da03b686263b2ea0b2b1d11ebd9d444e261a5b685439d2"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaIndependentEntries.mqh",
+                      "sha256":  "714b24965b31b50f24402a22922754f57e39c5195b7409c529464536b1987e45"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaOrderFlowLeaderboard.mqh",
+                      "sha256":  "1bfcd200d39ee44c4171c3a18716e9b83da4a44e9ec788929855c64b6a3c12f0"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaOrderFlowLeaderboardData.mqh",
+                      "sha256":  "59c69653aed47a53f757e0146b8f5f72417ff6b661302b5475906e00ce0f0b59"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaOrderFlowSettings.mqh",
+                      "sha256":  "ded19e9a34d630cb516b3524dc4173c04ac11d0e0a5bfbbb45cfed6fd7421ac3"
+                  },
+                  {
+                      "file":  "macrossover_orb\\MaTrendFollowCore.mqh",
+                      "sha256":  "9a357a5fbe9ac8d605b7e05621e2c2c1ec3e7c9c404c18b6bb3485fa5c6db2cb"
+                  },
+                  {
+                      "file":  "macrossover_orb\\NasUltimate_Core.mqh",
+                      "sha256":  "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36"
+                  },
+                  {
+                      "file":  "macrossover_orb\\NativeRiskBalance.mqh",
+                      "sha256":  "08789b2fd3d6d553a254be517c0db18146f7c3f2f8b1bb42d2dab16f13ba9092"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbAdvancedAuditEngine.mqh",
+                      "sha256":  "8b7a69001add4e72d4d55d3c501746d0640d655315939eb2ae15e24cbb72b29c"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbAuditRamCache.mqh",
+                      "sha256":  "543eb65f93c15250d358b1af291cf80921b36eb3929993b0abae02f2e200277f"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbCustomRPicker.mqh",
+                      "sha256":  "5727f63d943717f88540867e8ee7b90508cf041453e217e20ee629b780667972"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbReplayMemoEpoch.mqh",
+                      "sha256":  "64ec3a7f9b127f6a18ab8f2082878251d40db62ce51a77a7d68e887307f830ff"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyCampaignModels.mqh",
+                      "sha256":  "acf1f11d649e79ab838a9d886b96e4fee78d7c7847bad0f0082348b44e440140"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyCampaignRegistry.mqh",
+                      "sha256":  "8d6c35af9e796909f4fde0021828f45fc68af1f04d85a5ba58053e66478b2b31"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyMLConfig.mqh",
+                      "sha256":  "aee5555f43b7220a13e33fb1fce3d7eb04f547414c0c13562de7948c8ca78997"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyMLCore.mqh",
+                      "sha256":  "089a0cbcc78ffc76b5e6055141bf4c04a118c1a14cdf9c873aa00df9f490f887"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyMLHistory.mqh",
+                      "sha256":  "6344ae045ff2a3e117df1b528978f804030c74bb4fdc41d69373ecad13872d28"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyMLJobs.mqh",
+                      "sha256":  "1a8f28e2aea161449df33db6ca44ea4e839fec02d493a26667bdb656baecc0d0"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyMLPipeline.mqh",
+                      "sha256":  "7cd2570e37f0a9bc43b28d88d56cfe551b1bea72a18ced77f63a560144aa3acd"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyModelSlot.mqh",
+                      "sha256":  "b852ed581aa605ea511c8996682b85e1f7630210059111fcaace9b3f4dfcc7b5"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyPresetLibrary.mqh",
+                      "sha256":  "da82bfb016c7ddad4f5dc061d6b05d85260aebdd5216afb7c0606117e034d4ea"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyR7Core.mqh",
+                      "sha256":  "390b8853673760ee78c75693a6796837d552c3d8a28d80d4922b1d30cff05ce7"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyR7Runtime.mqh",
+                      "sha256":  "33bac9efe2ee2476f216c54cc1e461d299716e8412bf2e2482bd5f6dae0ea13e"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyUserContract.mqh",
+                      "sha256":  "125051dae8e4ffaa4cf9864d6441e1e96cdf892f6b417a8c98d22c66da3d979c"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyUserLibrary.mqh",
+                      "sha256":  "cc55f11919a2db894cc929767a76ccf68d3e56e83d9b0cee7b38b985e253b9bf"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbStrategyUserMetrics.mqh",
+                      "sha256":  "c09b6796674cd126775223ea68511ab7e6c8ef6e654c24c0c72cadd671883be4"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbUltimate_ProfessionalPipeline.mqh",
+                      "sha256":  "189fa2866da294800e06a68d77838bda88c1afa975f75cb4b25c5a0a04d682b9"
+                  },
+                  {
+                      "file":  "macrossover_orb\\OrbUltimate_RegimeMatrix.mqh",
+                      "sha256":  "0ed4cc44cc6dbfc70efd63dc57d7e336fb892f86a3062c596626f7bd3ba95bcf"
+                  },
+                  {
+                      "file":  "macrossover_orb\\ResearchFiveYearData.mqh",
+                      "sha256":  "4261adfc356d9794bca3498343aba38b94e62196139bbe82d220dc4ed8a9b575"
+                  },
+                  {
+                      "file":  "macrossover_orb\\StrategyWindowMetrics.mqh",
+                      "sha256":  "f31fa762b2c4c4f9e0a6534f494281c7f85e028651b13442cf510bf242f86537"
+                  },
+                  {
+                      "file":  "macrossover_orb\\TradeCalendarMatrix.mqh",
+                      "sha256":  "0edc87694a385bc4ca657e5d62699cdbd0867fd64b9be14f80c2a4d5a686ce8a"
+                  },
+                  {
+                      "file":  "macrossover_orb\\TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+                  },
+                  {
+                      "file":  "NativeMarginPreview.mqh",
+                      "sha256":  "41ece53a16db6ba97d458d1621ce0e93652c1b5e42a1b796d56767cf553b2f96"
+                  },
+                  {
+                      "file":  "NativeMarginQuote.mqh",
+                      "sha256":  "98a299f13d6ce30b494f9b288e5efe3bc930a2a930ca1416f3b84c35c2e01be2"
+                  },
+                  {
+                      "file":  "orb\\AuditKivancExport.mqh",
+                      "sha256":  "b57e52ce039ffdc104e45360da4cb0fbd68a1660ccd4a27a0f3c113f14bd39f1"
+                  },
+                  {
+                      "file":  "orb\\AuditKivancFeatures.mqh",
+                      "sha256":  "ae805512278a4897f5a50a2537fcda0c447aa5b4228c8d1be616fcf05c47dddc"
+                  },
+                  {
+                      "file":  "orb\\AuditMemoIndex.mqh",
+                      "sha256":  "8fb52c93e4b16375324702bce2ad807179460cd4ea3462420bdade541c6319da"
+                  },
+                  {
+                      "file":  "orb\\AuditQuantFeatures.mqh",
+                      "sha256":  "327a11b91a0e9713d76d4eccb1bf2b1b354fe0e795d61d5cbf771c0ea2873756"
+                  },
+                  {
+                      "file":  "orb\\AuditSignalFeatures.mqh",
+                      "sha256":  "f6423ed0b7eaeefd6dc0f6415ad6deee7bd1a37c4df2c8a773dc58a6d52a8d2a"
+                  },
+                  {
+                      "file":  "orb\\AuditTickReadGuard.mqh",
+                      "sha256":  "05ec20ade99ffa425c6746cffa7451370dbe0c6cb9a4629c987ac5729f5bc95d"
+                  },
+                  {
+                      "file":  "orb\\AuditTradeCsv.mqh",
+                      "sha256":  "7cfd04cd4b7a29f6600200e2434cd74a3f818f10563eca9fe4c8832e628c182d"
+                  },
+                  {
+                      "file":  "orb\\AuditTradeCsvAdapter.mqh",
+                      "sha256":  "3b9edb4faf42305cfd98f27e6469bd3f81debff2fe6301069f26642ad29e7fc4"
+                  },
+                  {
+                      "file":  "orb\\DailyTradeQuota.mqh",
+                      "sha256":  "b8987f09d6f626aca60864a3d21f7274907b434a8f8c69cc7602c692f9679870"
+                  },
+                  {
+                      "file":  "orb\\LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af"
+                  },
+                  {
+                      "file":  "orb\\NasUltimate_Core.mqh",
+                      "sha256":  "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36"
+                  },
+                  {
+                      "file":  "orb\\NativeRiskBalance.mqh",
+                      "sha256":  "08789b2fd3d6d553a254be517c0db18146f7c3f2f8b1bb42d2dab16f13ba9092"
+                  },
+                  {
+                      "file":  "orb\\OrbAdvancedAuditEngine.mqh",
+                      "sha256":  "944dc0aafc521113537a5424e4852911f1898f9222ef089a212ff6ddd24207cb"
+                  },
+                  {
+                      "file":  "orb\\OrbAuditRamCache.mqh",
+                      "sha256":  "543eb65f93c15250d358b1af291cf80921b36eb3929993b0abae02f2e200277f"
+                  },
+                  {
+                      "file":  "orb\\OrbBrokerClockProfiles.mqh",
+                      "sha256":  "617cf3b50d555e6f703f14ba8a34416774a67b7c039d3c1ff4cb6dd7f5f058ce"
+                  },
+                  {
+                      "file":  "orb\\OrbBrokerTimezone.mqh",
+                      "sha256":  "957a226ac54a2f8a92699c08ce2ed5c46887fc5a5282c1ec41ae589008c63d5d"
+                  },
+                  {
+                      "file":  "orb\\OrbClockDashboard.mqh",
+                      "sha256":  "3bc455829e2609973cb96f921191c5f1fa17f32fbeb5f0c6cde444b027158992"
+                  },
+                  {
+                      "file":  "orb\\OrbCustomRPicker.mqh",
+                      "sha256":  "5727f63d943717f88540867e8ee7b90508cf041453e217e20ee629b780667972"
+                  },
+                  {
+                      "file":  "orb\\OrbMoneyRisk.mqh",
+                      "sha256":  "ed736d13ac6d0e82161d11a237efc625aaece2c22df81ea00d8a05ad9d2e8f4f"
+                  },
+                  {
+                      "file":  "orb\\OrbPositionPolicy.mqh",
+                      "sha256":  "311ca73ba3169c00fb6a95ec91f4fd4df035f4b7023414a40ebae7c940804cc9"
+                  },
+                  {
+                      "file":  "orb\\OrbPositionRuntime.mqh",
+                      "sha256":  "f9a11d687c5121d1f3257848da32460a2b07654f1a188947a88367d4c17c5038"
+                  },
+                  {
+                      "file":  "orb\\OrbReplayMemoEpoch.mqh",
+                      "sha256":  "64ec3a7f9b127f6a18ab8f2082878251d40db62ce51a77a7d68e887307f830ff"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyCampaignModels.mqh",
+                      "sha256":  "cb7782df62e25dea1c31218a0794b7f85e577cd9fd0c953ca13cb89e9015a075"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyCampaignRegistry.mqh",
+                      "sha256":  "8d6c35af9e796909f4fde0021828f45fc68af1f04d85a5ba58053e66478b2b31"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyLeaderboard.mqh",
+                      "sha256":  "4a2150e3d695fdf61c7b15b848dccda18ba9ca8875d78bb2f4c95915b4db41a9"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyLeaderboardData.mqh",
+                      "sha256":  "d28d17b82e769604fe36a4640a2f6677d5754be6a266822573fc68dc3b0d3133"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyLeaderboardFiveYear.mqh",
+                      "sha256":  "72a43b364fc328ad7cf30c48efc9653b7b43fabf41291f16393f316e5a6303a8"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyMLConfig.mqh",
+                      "sha256":  "2a8a0445f6bfb461ecf19796da98f207de13a7c3d8d073db041fa9857e19b2ed"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyMLCore.mqh",
+                      "sha256":  "089a0cbcc78ffc76b5e6055141bf4c04a118c1a14cdf9c873aa00df9f490f887"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyMLHistory.mqh",
+                      "sha256":  "6344ae045ff2a3e117df1b528978f804030c74bb4fdc41d69373ecad13872d28"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyMLJobs.mqh",
+                      "sha256":  "1a8f28e2aea161449df33db6ca44ea4e839fec02d493a26667bdb656baecc0d0"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyMLPipeline.mqh",
+                      "sha256":  "1d035bba91ffe8304aafb305c3bd93b154bac5a853661f8e58334d301960768b"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyModelSlot.mqh",
+                      "sha256":  "b852ed581aa605ea511c8996682b85e1f7630210059111fcaace9b3f4dfcc7b5"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyPresetLibrary.mqh",
+                      "sha256":  "da82bfb016c7ddad4f5dc061d6b05d85260aebdd5216afb7c0606117e034d4ea"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyR7Core.mqh",
+                      "sha256":  "390b8853673760ee78c75693a6796837d552c3d8a28d80d4922b1d30cff05ce7"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyR7Runtime.mqh",
+                      "sha256":  "33bac9efe2ee2476f216c54cc1e461d299716e8412bf2e2482bd5f6dae0ea13e"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyRegimeLeaderboard.mqh",
+                      "sha256":  "36efcc535a2b5ce58e83f4c809e8f08d1373c66a6da684d172c68732870cfbf7"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyUserContract.mqh",
+                      "sha256":  "bfb68db44c8c98411ff94599bf16c4b6cc6f04855c188657d83c02be7793e8ff"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyUserLibrary.mqh",
+                      "sha256":  "4331a99c30be39348c6be3ab0b9fe0763a7e9df6e8855db6c99331ef6842f94b"
+                  },
+                  {
+                      "file":  "orb\\OrbStrategyUserMetrics.mqh",
+                      "sha256":  "3662e7d5f94403364e1420cf1f41362469d358b5daed389bce50cc2d66bb3e6b"
+                  },
+                  {
+                      "file":  "orb\\OrbUltimate_ProfessionalPipeline.mqh",
+                      "sha256":  "c20c93dfc63838388ea38b3418ebbc70c5b9e8da3f5f21a696ca1400bfd61bbd"
+                  },
+                  {
+                      "file":  "orb\\OrbUltimate_RegimeMatrix.mqh",
+                      "sha256":  "0ed4cc44cc6dbfc70efd63dc57d7e336fb892f86a3062c596626f7bd3ba95bcf"
+                  },
+                  {
+                      "file":  "orb\\OrbUltimateEA_StrategyLibrary.mq5",
+                      "sha256":  "ccd5454401047343e27558e33e65ffc2801a7eae8bcc538b9092745e95cb8a2a"
+                  },
+                  {
+                      "file":  "orb\\ResearchFiveYearData.mqh",
+                      "sha256":  "c7821ec77e64d6496b802d8cfbf3a3eb23add4f2f5ed43786e086ff3265a5eb6"
+                  },
+                  {
+                      "file":  "orb\\StrategyWindowMetrics.mqh",
+                      "sha256":  "f31fa762b2c4c4f9e0a6534f494281c7f85e028651b13442cf510bf242f86537"
+                  },
+                  {
+                      "file":  "orb\\TradeCalendarMatrix.mqh",
+                      "sha256":  "0edc87694a385bc4ca657e5d62699cdbd0867fd64b9be14f80c2a4d5a686ce8a"
+                  },
+                  {
+                      "file":  "orb\\TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+                  },
+                  {
+                      "file":  "ResearchFiveYearLeaderboard.mqh",
+                      "sha256":  "7415b9940e3f0b84bc379a5da6a2003de6faaafeb27b95415abf61c7dc0ca40a"
+                  },
+                  {
+                      "file":  "SolAdvanced\\AuditKivancExport.mqh",
+                      "sha256":  "b57e52ce039ffdc104e45360da4cb0fbd68a1660ccd4a27a0f3c113f14bd39f1"
+                  },
+                  {
+                      "file":  "SolAdvanced\\AuditKivancFeatures.mqh",
+                      "sha256":  "ae805512278a4897f5a50a2537fcda0c447aa5b4228c8d1be616fcf05c47dddc"
+                  },
+                  {
+                      "file":  "SolAdvanced\\AuditQuantFeatures.mqh",
+                      "sha256":  "327a11b91a0e9713d76d4eccb1bf2b1b354fe0e795d61d5cbf771c0ea2873756"
+                  },
+                  {
+                      "file":  "SolAdvanced\\AuditSignalFeatures.mqh",
+                      "sha256":  "f6423ed0b7eaeefd6dc0f6415ad6deee7bd1a37c4df2c8a773dc58a6d52a8d2a"
+                  },
+                  {
+                      "file":  "SolAdvanced\\AuditTradeCsv.mqh",
+                      "sha256":  "7cfd04cd4b7a29f6600200e2434cd74a3f818f10563eca9fe4c8832e628c182d"
+                  },
+                  {
+                      "file":  "SolAdvanced\\AuditTradeCsvAdapter.mqh",
+                      "sha256":  "9df4a7b3ece00a3da0f5c49ce1512a429dee90f26854295bdf07a8921a5b8240"
+                  },
+                  {
+                      "file":  "SolAdvanced\\DailyTradeQuota.mqh",
+                      "sha256":  "b8987f09d6f626aca60864a3d21f7274907b434a8f8c69cc7602c692f9679870"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqAuditQuoteCache.mqh",
+                      "sha256":  "0f4305ffef0e43bcceef29956e9f48d6e36b9b8c29f6422f31548568424784f7"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqDashboardFit.mqh",
+                      "sha256":  "26bf8c6a375b56b65ef6297ed7451543f6df0eb89c97d962cf2f3b7dce99301f"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqImagePresets.mqh",
+                      "sha256":  "60650230a1a91fab37e01d00b139d56dd9a3bbb6b87117a9663f3b20549e5b3b"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqNarrativeMacroRegime.mqh",
+                      "sha256":  "8139f4896a0c37dc0467bb69b78d2b8b588decac82ff953bf25f3c415019d44e"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqNarrativeMacroRegimeFilter.mqh",
+                      "sha256":  "fc4656c522b991a367add4f401bc90e47f845ece0c70ab47f37951449b81386b"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+                      "sha256":  "dea9103b2632ae430d03a22148d20601aa07d67476a0e2bd634bdcccd44eae5e"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqNarrativeSol_RegimeV3.mqh",
+                      "sha256":  "0069f3e872250f319cb6b1928c52ee88a9231e015d454706e1d8cb91ccfd11af"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqROptions.mqh",
+                      "sha256":  "8ad32908d817778510f89e69ec023261aae45fbb1651356ff71755245a070bdf"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqSolAdvancedNas.mqh",
+                      "sha256":  "979c93008a13deee1701668877325006164c188f25c9c07ceb834adc23239974"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqStrategyLibrary.mqh",
+                      "sha256":  "d0468c69477f5719f64c20e04090a57cf1938073ac2e5098dc7ba049e66a6390"
+                  },
+                  {
+                      "file":  "SolAdvanced\\LiqStrategyWindowMetrics.mqh",
+                      "sha256":  "8e2e6028b3f406173f5fa7e6f379320670ed352ce103d99b46965b0d1fb17d0b"
+                  },
+                  {
+                      "file":  "SolAdvanced\\NasUltimate_Core.mqh",
+                      "sha256":  "af5ffafcd131b1f5e7fafbe0d6c02e1b36e871d102cd1680e810477b591cbb36"
+                  },
+                  {
+                      "file":  "SolAdvanced\\NativeRiskBalance.mqh",
+                      "sha256":  "08789b2fd3d6d553a254be517c0db18146f7c3f2f8b1bb42d2dab16f13ba9092"
+                  },
+                  {
+                      "file":  "SolAdvanced\\ResearchFiveYearData.mqh",
+                      "sha256":  "64d3cded9d3d73a0568da8dba97c76b10868f328d3cd43e83ca66fab20fe1827"
+                  },
+                  {
+                      "file":  "SolAdvanced\\StrategyWindowMetrics.mqh",
+                      "sha256":  "f31fa762b2c4c4f9e0a6534f494281c7f85e028651b13442cf510bf242f86537"
+                  },
+                  {
+                      "file":  "SolAdvanced\\TradeCalendarMatrix.mqh",
+                      "sha256":  "0edc87694a385bc4ca657e5d62699cdbd0867fd64b9be14f80c2a4d5a686ce8a"
+                  },
+                  {
+                      "file":  "SolAdvanced\\TradeDayCalendarPublisher.mqh",
+                      "sha256":  "6d54a928bc6bc5cce3fafc48aa3f296da1053b206fa12b0d82c8faae7741791e"
+                  }
+              ],
+    "metricWriterTests":  {
+                              "passed":  5,
+                              "failed":  0
+                          },
+    "publicationSmoke":  {
+                             "passed":  true,
+                             "families":  4,
+                             "windows":  5
+                         }
+}

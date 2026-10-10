@@ -1,0 +1,44 @@
+﻿[
+    {
+        "sha256":  "CC6525163D1AE7C9E55D3CA2CB9FB2A7AB11ECE5FE47AC3E1B8BD00BEB9BFF1C",
+        "file":  "OrbUltimateEA_StrategyLibrary.mq5",
+        "binary":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production\\OrbUltimateEA_StrategyLibrary.ex5",
+        "result":  {
+                       "value":  "Result: 0 errors, 0 warnings, 40784 ms elapsed, cpu=\u0027X64 Regular\u0027",
+                       "PSPath":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production\\OrbUltimateEA_StrategyLibrary.mq5.log",
+                       "PSParentPath":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production",
+                       "PSChildName":  "OrbUltimateEA_StrategyLibrary.mq5.log",
+                       "PSDrive":  "C",
+                       "PSProvider":  "Microsoft.PowerShell.Core\\FileSystem",
+                       "ReadCount":  1
+                   }
+    },
+    {
+        "sha256":  "75E259CDEF7960A10795A1B83BFB071CF230D5CD024887874585CB1BC4D6FB2C",
+        "file":  "MaCrossOverOrbEA.mq5",
+        "binary":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production\\MaCrossOverOrbEA.ex5",
+        "result":  {
+                       "value":  "Result: 0 errors, 0 warnings, 30502 ms elapsed, cpu=\u0027X64 Regular\u0027",
+                       "PSPath":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production\\MaCrossOverOrbEA.mq5.log",
+                       "PSParentPath":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production",
+                       "PSChildName":  "MaCrossOverOrbEA.mq5.log",
+                       "PSDrive":  "C",
+                       "PSProvider":  "Microsoft.PowerShell.Core\\FileSystem",
+                       "ReadCount":  1
+                   }
+    },
+    {
+        "sha256":  "7C628BE9120DD0184EBB5F1380A87C4B6AD78625B944E44A7F80BAA28EDCC14F",
+        "file":  "EntryEngineLabEA.mq5",
+        "binary":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production\\EntryEngineLabEA.ex5",
+        "result":  {
+                       "value":  "Result: 0 errors, 0 warnings, 56052 ms elapsed, cpu=\u0027X64 Regular\u0027",
+                       "PSPath":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production\\EntryEngineLabEA.mq5.log",
+                       "PSParentPath":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\production",
+                       "PSChildName":  "EntryEngineLabEA.mq5.log",
+                       "PSDrive":  "C",
+                       "PSProvider":  "Microsoft.PowerShell.Core\\FileSystem",
+                       "ReadCount":  1
+                   }
+    }
+]

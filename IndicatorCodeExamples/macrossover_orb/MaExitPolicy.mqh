@@ -77,6 +77,10 @@ bool MaExitAcceptedEvent(const MqlRates &bar,double priorVolume,datetime now,dat
 bool MaExitLoadKernel(datetime from)
 {
    datetime closed=iTime(_Symbol,g_rtSignalTf,1),seed=McHistorySeed(_Symbol,g_rtSignalTf);
+   string historyDetail="";bool historyBlocked=false;
+   if(!McHistoryReady(_Symbol,g_rtSignalTf,seed,historyDetail,historyBlocked))return false;
+   if(g_rtMaCrossMode==MA_CROSS_ORIGINAL_MTF
+      &&!McHistoryReady(_Symbol,PERIOD_H4,McHistorySeed(_Symbol,PERIOD_H4),historyDetail,historyBlocked))return false;
    string key=(string)g_rtSignalTf+"|"+(string)g_rtMaCrossMode+"|"+(string)g_rtMaCrossPair+"|"+(string)seed
       +"|"+(string)McHistorySeed(_Symbol,PERIOD_H4)+"|"+(string)g_maIndependent;
    if(!g_maIndependent)key+="|"+OrbUserRuntimeMetricKey();
@@ -131,6 +135,7 @@ bool MaExitLoadKernel(datetime from)
          {MaCrossAuditEvent tmp=g_maLiveExitEvents[j-1];g_maLiveExitEvents[j-1]=g_maLiveExitEvents[j];g_maLiveExitEvents[j]=tmp;}
       }
    }
+   if(seed!=McHistorySeed(_Symbol,g_rtSignalTf))return false;
    g_maLiveExitClosed=closed;g_maLiveExitFrom=from;g_maLiveExitKey=key;return true;
 }
 

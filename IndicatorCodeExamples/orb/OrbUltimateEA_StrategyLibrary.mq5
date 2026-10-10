@@ -388,6 +388,7 @@ bool            g_riskLotOnlyMode = false;
 bool            g_rtInvertMode    = false;
 double          g_rtInverseMaxGapPct = 10.0;
 bool            g_rtUtcMidnightSession = false;
+ENUM_TIMEFRAMES g_rtNasTf = PERIOD_CURRENT;
 bool            g_rtNasConfirmation = false;
 bool            g_rtNasStateGate = false;
 bool            g_rtNasExitOnOppositeSignal = false;
@@ -1315,11 +1316,11 @@ bool RestoreNasPending()
 }
 ENUM_TIMEFRAMES NasConfirmationTf()
 {
-   return (ENUM_TIMEFRAMES)_Period;
+   return g_rtNasTf==PERIOD_CURRENT?(ENUM_TIMEFRAMES)_Period:g_rtNasTf;
 }
 string NasTimeframeButtonLabel()
 {
-   return "TF CHART "+TfLabel(NasConfirmationTf());
+   return (g_rtNasTf==PERIOD_CURRENT?"TF CHART ":"TF SAVED ")+TfLabel(NasConfirmationTf());
 }
 NasSettings BuildOrbNasSettings()
 {
@@ -2588,6 +2589,7 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
       OrbStrategyPresetSyncEdits();return true;
    }
    if(!TCalStrategyApplyText(TCalStrategyOffText()))return false;
+   g_rtNasTf=PERIOD_CURRENT;
    OrbPositionDefaults(g_orbPositions);
    if(!SetRuntimeInverseMaxGapPct(100.0))return false;
    g_rtCustomR=0.0;
@@ -2786,10 +2788,14 @@ SwMetric OrbStrategyWindowMetric(int index)
 }
 string OrbStrategyWindowMode(const OrbStrategyPreset &p)
 {
+   if(g_swFrozen){SwMetric snapshot;if(SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,"",g_swWeeks,snapshot))return snapshot.snapshotIndependent?"IND":"LEG";}
+
    int slot=OrbUserSlot(p.id);return slot>=0&&g_userStrategies[slot].positions.independent?"IND":"LEG";
 }
 void OrbStrategyWindowControls(int x,int y)
 {
+   CreateButton("BTN_SW_SOURCE",x+138,y+5,240,20,SwSourceCaption(),g_swFrozen?C'184,103,22':C'38,101,176');
+   ObjectSetString(0,PREFIX+"BTN_SW_SOURCE",OBJPROP_TOOLTIP,"View only: CURRENT -> verified MEGA 2 -> original MEGA 1 (old calculation). Does not apply strategy settings. Compare identical profiles/endpoints; legacy corrections are not alpha decay.");
    for(int i=0;i<9;i++)CreateButton("BTN_SW_WINDOW_"+(string)i,x+12+i*65,y+102,61,20,SwWindow(SwWeeks(i)),g_swWeeks==SwWeeks(i)?C'184,103,22':C'38,101,176');
    for(int i=0;i<5;i++)CreateButton("BTN_SW_SORT_"+(string)i,x+12+i*118,y+126,114,20,SwSortCaption(i),g_swDirection[i]==0?C'80,80,80':C'30,150,95');
 }
@@ -2799,7 +2805,7 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
    if(!p.metric1yReady)return p.name+" | "+SwWindow(g_swWeeks)+" N/A | "+OrbStrategyWindowMode(p);
    string suffix=" | "+SwWindow(g_swWeeks)+" N "+(string)p.metric1yTotal+" "+OrbStrategyWindowMode(p)+" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
       +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
-      +" | WR "+DoubleToString(p.metric1yWr,1)+"%";
+      +" | WR "+DoubleToString(p.metric1yWr,1)+"%"+SwAsOfCaption(p.metric1yAsOf);
    int maxChars=66;
    int nameChars=MathMax(8,maxChars-StringLen(suffix));
    string shortName=p.name;
@@ -5891,7 +5897,9 @@ HistResult SimulateHistoricalLifecycle(datetime entryTime,datetime sessionEnd,da
    {
       // Fixed-target trades are not session-bound. Start with a compact exact
       // window; unresolved trades expand below without changing chronology.
-      datetime firstEnd=entryTime+ORB_HIST_TICK_PREFETCH_MINUTES*60;
+      datetime firstEnd=BarCloseTime(RuntimeEntryTf(),entryTime);
+      if(firstEnd<entryTime+sec)firstEnd=entryTime+sec;
+      firstEnd+=ORB_HIST_TICK_PREFETCH_MINUTES*60;
       horizon=firstEnd;
       if(forcedExitTime>entryTime&&forcedExitTime<horizon)horizon=forcedExitTime+sec;
       if(horizon>now)horizon=now;
@@ -6824,6 +6832,8 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
          if(InpHistoricalAuditVerboseLog)Print("ORB15v3 HIST day ",daySt.year,".",daySt.mon,".",daySt.day," FILTERED ",entryDetail);
          return;
       }
+      // A fixed audit endpoint can precede bars already present in the terminal.
+      if(OrbSignalAvailableTime(entryT)>g_histRunNow)return;
       if(!DailyQuotaAuditAllows(OrbSignalAvailableTime(entryT))){g_histFiltered++;return;}
 
       RegimeV3Snapshot regimeSnapshot;
@@ -9581,6 +9591,7 @@ void TryOpenSignal()
 //=========================================================================
 int OnInit()
 {
+   SwRefreshRequest("orb");
    if(!TCalInit()){Print("Invalid or damaged entry time matrix settings");return INIT_PARAMETERS_INCORRECT;}
    if(!OrbBrokerClockInputsValid()){Print("Invalid broker clock settings");return INIT_PARAMETERS_INCORRECT;}
    OrbTesterAudit_Init();
@@ -9731,6 +9742,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 void OnTimer()
 {
    AxTimer();
+   if(!IsTesterMode()&&SwRefreshPoll("orb")){OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
    ulong nowMs=GetTickCount64();
    bool auditBusy=(g_histAuditRunning||g_histRedrawQueued);
    bool coreDue=(!auditBusy||g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
@@ -9855,6 +9867,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    }
    if(OrbMlUiEvent(sparam)){UpdateDashboard();ChartRedraw(0);return;}
 
+   if(sparam==PREFIX+"BTN_SW_SOURCE"){SwCycleSource();OrbUserReload(true);g_strategySearchPage=0;OrbStrategyPresetBuildMatches(g_strategySearch);g_strategyPopupOpen=true;ObjectSetInteger(0,sparam,OBJPROP_STATE,false);UpdateDashboard();ChartRedraw(0);return;}
    if(StringFind(sparam,PREFIX+"BTN_SW_WINDOW_")==0||StringFind(sparam,PREFIX+"BTN_SW_SORT_")==0)
    {
       bool window=StringFind(sparam,PREFIX+"BTN_SW_WINDOW_")==0;

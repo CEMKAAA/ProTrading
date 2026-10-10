@@ -1,0 +1,5 @@
+& "C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\scripts\run_audit_failure_regression.ps1" -OriginOnly
+if(!$?){throw 'Origin/boundary tests failed'}
+& "C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\scripts\run_audit_failure_regression.ps1"
+if(!$?){throw 'Four-family regressions failed'}
+& "C:\Users\Cem\Desktop\projeler\YapayZekaUygulamalari\ProTradingSystem\scripts\validate_time_matrix.ps1" -RunProbe -ProbeOnly

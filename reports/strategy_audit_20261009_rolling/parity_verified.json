@@ -1,0 +1,205 @@
+{
+  "verifiedAt": "2026-10-09T19:40:20.470Z",
+  "sourceHash": "ed4b200116a1e24b69bfdc832f4c33b5be8f45d8db5a738e6a922d14fbac0e41",
+  "templateHash": "069e9c0577c6d9c7d01e4954795a248ed828ae248ba2ebcf93f20c99255fb388",
+  "generatorHash": "9bf354fdc6b14ac845c002942f3aa62e96206a3b12a95d2f7cb774196da771ff",
+  "passed": true,
+  "strategies": 5,
+  "windows": 17,
+  "families": [
+    "entrylab",
+    "macross",
+    "orb",
+    "sol"
+  ],
+  "missingFamilies": [],
+  "cases": [
+    {
+      "id": "entrylab_c60359d5819d7663f71079cf72e6",
+      "weeks": 5,
+      "family": "entrylab",
+      "total": 4,
+      "traceRows": 4,
+      "netR": 0.06,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "entrylab_c60359d5819d7663f71079cf72e6",
+      "weeks": 2,
+      "family": "entrylab",
+      "total": 10,
+      "traceRows": 10,
+      "netR": 0.18,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 260,
+      "family": "macross",
+      "total": 1434,
+      "traceRows": 1434,
+      "netR": 13.74413,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 208,
+      "family": "macross",
+      "total": 1497,
+      "traceRows": 1497,
+      "netR": 14.32907,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 156,
+      "family": "macross",
+      "total": 1372,
+      "traceRows": 1372,
+      "netR": 13.161885,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 104,
+      "family": "macross",
+      "total": 1170,
+      "traceRows": 1170,
+      "netR": 11.30631,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 52,
+      "family": "macross",
+      "total": 713,
+      "traceRows": 713,
+      "netR": 7.075455,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 20,
+      "family": "macross",
+      "total": 233,
+      "traceRows": 233,
+      "netR": 2.32,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 10,
+      "family": "macross",
+      "total": 130,
+      "traceRows": 130,
+      "netR": 1.29,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 5,
+      "family": "macross",
+      "total": 71,
+      "traceRows": 71,
+      "netR": 0.7,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 2,
+      "family": "macross",
+      "total": 33,
+      "traceRows": 33,
+      "netR": 0.32,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_87b5bd2eb472e1191c78dc72873b",
+      "weeks": 5,
+      "family": "macross",
+      "total": 109,
+      "traceRows": 109,
+      "netR": 6.141166666667,
+      "minCumR": -0.539,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_87b5bd2eb472e1191c78dc72873b",
+      "weeks": 2,
+      "family": "macross",
+      "total": 42,
+      "traceRows": 42,
+      "netR": -0.091333333333,
+      "minCumR": -0.748666666667,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "orb_5a2ba5aca93a0f1d9b6835a08519",
+      "weeks": 5,
+      "family": "orb",
+      "total": 17,
+      "traceRows": 17,
+      "netR": 1.75,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "orb_5a2ba5aca93a0f1d9b6835a08519",
+      "weeks": 2,
+      "family": "orb",
+      "total": 8,
+      "traceRows": 8,
+      "netR": 0.75,
+      "minCumR": -0.75,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "sol_b385e40b91a47fcfa5c0fa73400e",
+      "weeks": 5,
+      "family": "sol",
+      "total": 7,
+      "traceRows": 7,
+      "netR": 0.379333333333,
+      "minCumR": -0.620666666667,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "sol_b385e40b91a47fcfa5c0fa73400e",
+      "weeks": 2,
+      "family": "sol",
+      "total": 4,
+      "traceRows": 4,
+      "netR": 2,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    }
+  ]
+}

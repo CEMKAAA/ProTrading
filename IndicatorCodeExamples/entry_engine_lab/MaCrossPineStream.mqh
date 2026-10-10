@@ -1,7 +1,7 @@
 // Causal streaming primitives shared by live and historical signals.
 #ifndef MA_CROSS_PINE_STREAM_MQH
 #define MA_CROSS_PINE_STREAM_MQH
-#define MC_KERNEL_REVISION "pine-stream-3-trender"
+#define MC_KERNEL_REVISION "pine-stream-4-fixed-origin"
 class McRollingWma
 {
    double ring[],sum,weighted;int length,count,head;

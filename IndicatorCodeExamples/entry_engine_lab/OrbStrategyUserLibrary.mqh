@@ -144,7 +144,7 @@ bool OrbUserValidate(const OrbStrategyPreset &p,string &reason)
 {
    int i=OrbUserSlot(p.id);reason="CUSTOM_RECORD_MISSING";if(i<0)return false;
    reason="CUSTOM_SYMBOL_MISMATCH";
-   // Saved chart TF is provenance, not a strategy application restriction.
+   // Saved TF is NAS sampling provenance, not a chart application restriction.
    if(g_userStrategies[i].symbol!=_Symbol)return false;
    reason="CUSTOM_EA_INPUTS_MISMATCH";
    if(g_userStrategies[i].inputSignature!=OrbCustomInputSignature())return false;
@@ -161,6 +161,8 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    if(!TCalStrategyApplyText(g_userStrategies[i].timeMatrix))return false;
    string oldTokens[];StringSplit(OrbCustomRuntimeDump(),'\n',oldTokens);
    OrbCustomRuntimeRead(v,0,true);
+   // Keep saved NAS sampling independent of the display chart.
+   g_rtNasTf=(ENUM_TIMEFRAMES)g_userStrategies[i].chartTf;
    if(g_maRestoringPreset){g_maIndependent=g_userStrategies[i].independent;g_maMaxConsecutive=g_userStrategies[i].maxSeries;g_maPresetModeRestored=true;}
    else if(!MaIndependentApply(g_userStrategies[i].independent,g_userStrategies[i].maxSeries))
    {OrbCustomRuntimeRead(oldTokens,0,true);TCalStrategyApplyText(previousTimeMatrix);return false;}
@@ -186,6 +188,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
 {
    string reason="";if(!OrbUserValidate(p,reason))return false;
    int i=OrbUserSlot(p.id);
+   if((int)NasConfirmationTf()!=g_userStrategies[i].chartTf)return false;
    if(g_maIndependent!=g_userStrategies[i].independent||g_maMaxConsecutive!=g_userStrategies[i].maxSeries)return false;
    if(g_maReverseExit!=g_userStrategies[i].reverseExit||g_maReverseWait!=g_userStrategies[i].reverseWait)return false;
    if(g_rtAdvancedReverse!=g_userStrategies[i].advancedReverse)return false;
@@ -249,7 +252,7 @@ bool OrbUserSaveLocked(string name)
    {
       if(updateSlot>=0&&slot!=updateSlot)continue;
       string path=OrbUserFile(slot);if(updateSlot<0&&FileIsExist(path,FILE_COMMON))continue;
-      string payload="ENTRY_ENGINE_LAB_USER_STRATEGY1\n"+string(ORB_CUSTOM_SCHEMA)+"\n"+(string)slot+"\n"+_Symbol+"\n"+(string)(int)_Period+"\n"+signature+"\n"
+      string payload="ENTRY_ENGINE_LAB_USER_STRATEGY1\n"+string(ORB_CUSTOM_SCHEMA)+"\n"+(string)slot+"\n"+_Symbol+"\n"+(string)(int)NasConfirmationTf()+"\n"+signature+"\n"
          +OrbCustomPresetDump(p)+runtime;
       string temp="EntryEngineLabStrategyLibrary\\"+p.id+".tmp";
       int f=FileOpen(temp,FILE_WRITE|FILE_BIN|FILE_COMMON);
@@ -286,6 +289,6 @@ void OrbUserDraw()
    CreateLabel("DASH_USER_TITLE",x,y,"SAVE CURRENT STRATEGY (APPLY parameter edits first)",C'255,187,92',8);
    CreateEdit("EDIT_USER_NAME",x,y+19,380,22,"");
    CreateButton("BTN_USER_SAVE",x+390,y+19,202,22,"SAVE STRATEGY",C'38,101,176');
-   CreateLabel("DASH_USER_NOTE",x,y+48,StringSubstr(g_userStrategyNote,0,105),C'184,196,210',7);
+   CreateLabel("DASH_USER_NOTE",x,y+48,StringSubstr(g_userStrategyNote+" | "+g_swRefreshStatus,0,105),C'184,196,210',7);
 }
 #endif

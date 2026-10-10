@@ -54,9 +54,54 @@ bool MaCrossSignalAt(const MqlRates &rates[],int at,MA_CROSS_SIGNAL_MODE mode,MA
    return direction!=0;
 }
 
-// Audit and live use the same broker-history origin, not rolling warmup seeds.
+// SERIES_FIRSTDATE is only the currently loaded suffix and can move backwards
+// during asynchronous downloads. Recursive Pine state needs a fixed origin.
 datetime McHistorySeed(string symbol,ENUM_TIMEFRAMES tf)
-{return (datetime)SeriesInfoInteger(symbol,tf,SERIES_FIRSTDATE);}
+{
+   static string keys[16];static datetime servers[16],origins[16];static int next=0;
+   datetime server=(datetime)SeriesInfoInteger(symbol,PERIOD_M1,SERIES_SERVER_FIRSTDATE);
+   if(server<=0)return 0;
+   int seconds=PeriodSeconds(tf);if(seconds<=0)return 0;
+   MqlDateTime date;TimeToStruct(server,date);
+   datetime begin=(datetime)(((long)server/seconds)*seconds);
+   if(tf==PERIOD_MN1){date.day=1;date.hour=0;date.min=0;date.sec=0;begin=StructToTime(date);}
+   else if(tf==PERIOD_W1)
+   {date.hour=0;date.min=0;date.sec=0;begin=StructToTime(date)-(datetime)(((date.day_of_week+6)%7)*86400);}
+   string key=symbol+"|"+(string)tf;int slot=-1;
+   datetime first=(datetime)SeriesInfoInteger(symbol,tf,SERIES_FIRSTDATE);
+   for(int i=0;i<16;i++)if(keys[i]==key){slot=i;break;}
+   if(slot>=0&&servers[slot]==server&&origins[slot]>0
+      &&!(first>=begin&&first<origins[slot]))return origins[slot];
+   // Brokers can report the first DAY at midnight even when the first actual
+   // minute is later (BTCUSD starts at 10:00). Resolve that day's real first
+   // bar once; do not demand nonexistent midnight candles or use today's suffix.
+   datetime times[];ResetLastError();
+   int copied=CopyTime(symbol,tf,begin,(datetime)(((long)server/86400+1)*86400-1),times);
+   datetime terminal=(datetime)SeriesInfoInteger(symbol,PERIOD_M1,SERIES_TERMINAL_FIRSTDATE);
+   if(copied<1||GetLastError()!=0||terminal<=0||terminal>server
+      ||!SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED))return 0;
+   if(slot<0){slot=next;next=(next+1)%16;keys[slot]=key;}
+   servers[slot]=server;origins[slot]=times[0];return origins[slot];
+}
+
+bool McHistoryReady(const string symbol,const ENUM_TIMEFRAMES tf,const datetime seed,string &detail,bool &hardBlocked)
+{
+   hardBlocked=false;detail="";
+   datetime first=(datetime)SeriesInfoInteger(symbol,tf,SERIES_FIRSTDATE);
+   if(seed>0&&first>0&&first<=seed&&SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED))return true;
+   datetime times[];
+   // A small request starts/rebuilds the missing prefix without allocating a
+   // second full-history array or treating a partial copy as complete history.
+   if(seed>0)CopyTime(symbol,tf,seed+PeriodSeconds(tf),1,times);
+   else CopyTime(symbol,tf,0,1,times);
+   first=(datetime)SeriesInfoInteger(symbol,tf,SERIES_FIRSTDATE);
+   if(seed>0&&first>0&&first<=seed&&SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED))return true;
+   hardBlocked=seed>0&&first>seed&&SeriesInfoInteger(symbol,tf,SERIES_BARS_COUNT)>=TerminalInfoInteger(TERMINAL_MAXBARS);
+   detail=hardBlocked?"signal origin exceeds Max bars in chart":"signal origin history pending";
+   detail+=" tf="+(string)tf+" origin="+TimeToString(seed,TIME_DATE|TIME_MINUTES)
+      +" loaded="+TimeToString(first,TIME_DATE|TIME_MINUTES);
+   return false;
+}
 
 bool MaCrossComputeSignal(const string symbol,const ENUM_TIMEFRAMES tf,const MA_CROSS_SIGNAL_MODE mode,
                           const MA_CROSS_PAIR pair,const int fastLen,const int mediumLen,const int slowLen,MaCrossSignal &out)
@@ -68,6 +113,9 @@ bool MaCrossComputeSignal(const string symbol,const ENUM_TIMEFRAMES tf,const MA_
    datetime closed=iTime(symbol,tf,1),first=McHistorySeed(symbol,tf);
    datetime hf=mode==MA_CROSS_ORIGINAL_MTF?McHistorySeed(symbol,PERIOD_H4):0;
    string key=LabEngineIdentity()+symbol+"|"+(string)tf+"|"+(string)mode+"|"+(string)pair+"|"+(string)fastLen+"|"+(string)mediumLen+"|"+(string)slowLen;
+   string historyDetail="";bool historyBlocked=false;
+   if(!McHistoryReady(symbol,tf,first,historyDetail,historyBlocked))return false;
+   if(mode==MA_CROSS_ORIGINAL_MTF&&!McHistoryReady(symbol,PERIOD_H4,hf,historyDetail,historyBlocked))return false;
    if(closed<=0||first<=0||!SeriesInfoInteger(symbol,tf,SERIES_SYNCHRONIZED))return false;
    if(mode==MA_CROSS_ORIGINAL_MTF&&(hf<=0||!SeriesInfoInteger(symbol,PERIOD_H4,SERIES_SYNCHRONIZED)))return false;
    bool reset=key!=owner||first!=seed||hf!=hSeed||closed<last;
@@ -92,6 +140,8 @@ bool MaCrossComputeSignal(const string symbol,const ENUM_TIMEFRAMES tf,const MA_
       if(mode==MA_CROSS_ORIGINAL_MTF)McFeedHtf(higher,h,rates[i].time+PeriodSeconds(tf),hma,hv);
       dir=kernel.Push(rates[i],hv);
    }
+   if(first!=McHistorySeed(symbol,tf)||(mode==MA_CROSS_ORIGINAL_MTF&&hf!=McHistorySeed(symbol,PERIOD_H4)))
+   {owner="";last=0;return false;}
    if(h>0)hLast=higher[h-1].time;
    owner=key;last=closed;seed=first;hSeed=hf;
    saved.valid=dir!=0;saved.direction=dir;saved.barTime=closed;saved.price=rates[n-1].close;saved.markerPrice=kernel.MarkerPrice();

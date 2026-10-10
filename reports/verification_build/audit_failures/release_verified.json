@@ -1,0 +1,30 @@
+{
+    "compiledUtc":  "2026-10-10T08:07:13.1481959+00:00",
+    "sourceHash":  "be6a04ce44dbed0ace9dc0f10f9aefe3aa643f2657efd24c45ce3424e6d5175a",
+    "compile":  {
+                    "errors":  0,
+                    "warnings":  0
+                },
+    "binaries":  [
+                     {
+                         "sha256":  "9f9dab23331f0227e00652c3be811c5d4da04e76788a1267bbae5f8c18023484",
+                         "relative":  "IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.ex5",
+                         "log":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\EntryEngineLabEA.mq5.closure-clean.production.compile.log"
+                     },
+                     {
+                         "sha256":  "278e421eee2bcd04999bcecb94bd89f7dca6edec249b6dc55fee42ca4350edbb",
+                         "relative":  "IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.ex5",
+                         "log":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\MaCrossOverOrbEA.mq5.closure-clean.production.compile.log"
+                     },
+                     {
+                         "sha256":  "f87c3ffa1f25de9dc8db52495c5b904e803297367b9bee985d208d841a3123de",
+                         "relative":  "IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+                         "log":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\OrbUltimateEA_StrategyLibrary.mq5.closure-clean.production.compile.log"
+                     },
+                     {
+                         "sha256":  "a2b1307c6de4283921d9deeb07875168be4910ea3c67cc658c9f2303f720e887",
+                         "relative":  "IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+                         "log":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\LiqNarrativeSol_Advanced.mq5.closure-clean.production.compile.log"
+                     }
+                 ]
+}

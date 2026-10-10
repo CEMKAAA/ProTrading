@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -52,9 +52,9 @@ export function checkMetric(text, row) {
   const at = text.indexOf('\nSHA256=');
   if (at < 0 || sha(text.slice(0, at)) !== text.slice(at + 8)) return ['CHECKSUM'];
   const values = text.slice(0, at).split('\n');
-  if (values.length !== 12 || values[0] !== 'SW_METRICS_1' || values[1] !== row.native_id || values[3] !== row.weeks)
+  if (values.length !== 12 || !['SW_METRICS_1','SW_METRICS_2'].includes(values[0]) || values[1] !== row.native_id || values[3] !== row.weeks)
     return ['METRIC_IDENTITY'];
-  if (!/^[a-f0-9]{64}$/.test(values[2])) return ['SETTINGS_KEY'];
+  if (!/^[a-f0-9]{64}$/.test(values[2]) || (row.settings_key && values[2] !== row.settings_key)) return ['SETTINGS_KEY'];
   const columns = ['as_of', 'total', 'wins', 'losses', 'open', 'flat', 'net_r', 'min_cum_r'];
   return columns.filter((key, i) => !Number.isFinite(Number(values[i + 4])) || Math.abs(Number(values[i + 4]) - Number(row[key])) > 1e-8);
 }
@@ -81,8 +81,8 @@ export function strategyCoverage(job, rows) {
   };
 }
 
-export function reportCampaign(root, verifyCommon = false) {
-  const out = join(root, 'reports/strategy_audit_20261008');
+export function reportCampaign(root, verifyCommon = false, reportDir = 'reports/strategy_audit_20261008') {
+  const out = resolve(root, reportDir);
   const manifest = JSON.parse(readFileSync(join(out, 'manifest.private.json'), 'utf8'));
   const jobs = new Map(manifest.jobs.map(job => [job.id, job]));
   const rows = readdirSync(join(out, 'results')).filter(name => name.endsWith('.csv'))
@@ -93,12 +93,23 @@ export function reportCampaign(root, verifyCommon = false) {
   for (const row of rows) {
     const job = jobs.get(row.catalog_id), key = `${row.catalog_id}:${row.weeks}`;
     const issues = checkRow(row, job);
+    if (manifest.version >= 2 && ['PARITY_MISMATCH', 'SETTINGS_MISMATCH', 'SAFETY_GUARD_TRIGGERED',
+      'METRIC_WRITE_FAILED', 'APPLY_FAILED', 'AUDIT_TIMEOUT'].includes(row.status)) issues.push(row.status);
+    if(manifest.version>=2&&ready(row)) {
+      if(row.settings_verified!=='1')issues.push('SETTINGS_NOT_VERIFIED');
+      if(row.native_parity_verified!=='1')issues.push('NATIVE_PARITY_NOT_VERIFIED');
+      if(row.engine_hash!==manifest.sourceHash||row.template_hash!==manifest.templateHash||row.generator_hash!==manifest.generatorHash)issues.push('SOURCE_VERSION');
+    }
     if (seen.has(key)) issues.push('DUPLICATE_WINDOW');
     seen.add(key);
     if (verifyCommon && ready(row) && job) {
       const path = metricPath(common, row, job.family);
       if (!existsSync(path)) issues.push('METRIC_MISSING');
-      else issues.push(...checkMetric(readFileSync(path, 'utf8'), row));
+      else {
+        const text = readFileSync(path, 'utf8');
+        if (manifest.version >= 2 && !text.startsWith('SW_METRICS_2\n')) issues.push('OLD_SCHEMA');
+        issues.push(...checkMetric(text, row));
+      }
     }
     if (issues.length) errors.push({ id: row.catalog_id, weeks: Number(row.weeks), issues });
   }
@@ -138,12 +149,17 @@ export function reportCampaign(root, verifyCommon = false) {
 
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const at=process.argv.indexOf('--report-dir');
+  const reportDir=at<0?'reports/strategy_audit_20261008':process.argv[at+1];
+  const out=resolve(root,reportDir);
   const watch = process.argv.includes('--watch');
   do {
-    const report = reportCampaign(root, process.argv.includes('--verify-common'));
+    const report = reportCampaign(root, process.argv.includes('--verify-common'),reportDir);
     if (process.argv.includes('--write')) {
-      writeFileSync(join(root, 'reports/strategy_audit_20261008/verification.json'), JSON.stringify(report, null, 2));
-      writeFileSync(join(root, 'reports/strategy_audit_20261008/coverage.json'), JSON.stringify({ generatedAt: report.generatedAt, strategies: report.coverage }, null, 2));
+      writeFileSync(join(out, 'verification.json.pending'), JSON.stringify(report, null, 2));
+      renameSync(join(out, 'verification.json.pending'), join(out, 'verification.json'));
+      writeFileSync(join(out, 'coverage.json.pending'), JSON.stringify({ generatedAt: report.generatedAt, strategies: report.coverage }, null, 2));
+      renameSync(join(out, 'coverage.json.pending'), join(out, 'coverage.json'));
     }
     const { coverage, ...summary } = report;
     console.log(JSON.stringify(watch ? {
@@ -154,7 +170,7 @@ if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
     if (!watch) break;
     // Retry a partially written progress JSON without confusing it with completion.
     let progress;
-    try { progress = JSON.parse(readFileSync(join(root, 'reports/strategy_audit_20261008/progress.json'), 'utf8').replace(/^\uFEFF/, '')); }
+    try { progress = JSON.parse(readFileSync(join(out, 'progress.json'), 'utf8').replace(/^\uFEFF/, '')); }
     catch { progress = { state: 'running' }; }
     if (progress.state === 'finished') break;
     await new Promise(resolve => setTimeout(resolve, 30000));

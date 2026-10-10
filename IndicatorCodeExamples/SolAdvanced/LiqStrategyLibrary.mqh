@@ -234,6 +234,7 @@ bool LiqLibraryApply(string path)
 #include "LiqStrategyWindowMetrics.mqh"
 void LiqLibraryScan()
 {
+   SwRefreshRequest("sol");
    ArrayResize(g_liqLibraryFiles,0);ArrayResize(g_liqLibraryNames,0);
    string found="";long h=FileFindFirst(LiqLibraryFolder()+"\\*.lns",found,FILE_COMMON);
    if(h!=INVALID_HANDLE)do
@@ -410,7 +411,7 @@ void LiqLibraryDraw()
    LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+303+marginSpace,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
    LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+330+marginSpace,w-190,24,g_liqLibraryName,C'38,46,60');
    LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+330+marginSpace,158,24,"SAVE STRATEGY",button);
-   LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+368+marginSpace,w-24,20,StringSubstr(g_liqLibraryStatus,0,75),bg);
+   LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+368+marginSpace,w-24,20,StringSubstr(g_liqLibraryStatus+" | "+g_swRefreshStatus,0,75),bg);
    if(g_liqLibraryOpen)
    {
       int py=y+180;
@@ -518,6 +519,8 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
       if(close){g_liqLibraryRPicker=false;DeleteByPrefix(LiqLibraryObject(""));LiqLibraryRedrawPreserve();}
       else {LiqLibraryDraw();ChartRedraw(0);}return true;
    }
+   if(action=="SW_SOURCE")
+   {SwCycleSource();g_liqLibraryPage=0;LiqLibraryScan();LiqLibraryDraw();ChartRedraw(0);return true;}
    if(StringFind(action,"SW_WINDOW_")==0||StringFind(action,"SW_SORT_")==0)
    {bool window=StringFind(action,"SW_WINDOW_")==0;int key=(int)StringToInteger(StringSubstr(action,window?10:8));
     if(window&&key>=0&&key<9)g_swWeeks=SwWeeks(key);else if(!window)SwSortCycle(key);

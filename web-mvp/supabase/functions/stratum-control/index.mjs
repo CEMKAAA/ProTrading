@@ -18,24 +18,31 @@ function encrypt(value){const iv=randomBytes(12),cipher=createCipheriv('aes-256-
  const bytes=Buffer.concat([cipher.update(JSON.stringify(value),'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),bytes]).toString('base64');}
 function decrypt(value){const b=Buffer.from(value,'base64'),cipher=createDecipheriv('aes-256-gcm',encryption,b.subarray(0,12));cipher.setAAD(Buffer.from(apiUrl));cipher.setAuthTag(b.subarray(12,28));
  return JSON.parse(Buffer.concat([cipher.update(b.subarray(28)),cipher.final()]).toString());}
-const response=(status,error,origin)=>new Response(JSON.stringify(error),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...(origin===studio?{'Access-Control-Allow-Origin':studio,'Vary':'Origin'}:{})}});
+const response=(status,error,origin)=>new Response(JSON.stringify(error),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store',...(origin===studio?{'Access-Control-Allow-Origin':studio,'Access-Control-Allow-Credentials':'true','Vary':'Origin'}:{})}});
 function operatorProof(payload,signature){
  if(payload.apiUrl!==apiUrl||payload.expiresAt<=Date.now()||payload.expiresAt>Date.now()+300000||payload.issuedAt>Date.now()+30000
    ||!verify(null,Buffer.from(canonical(payload)),operatorKey,Buffer.from(signature??'','base64url')))throw new Error('OPERATOR_PROOF_INVALID');
 }
 async function storage(path,options={}){const r=await fetch(url+'/storage/v1/'+path,{...options,headers:{Authorization:'Bearer '+serviceKey,apikey:serviceKey,...options.headers},redirect:'error',signal:AbortSignal.timeout(20000)});
  if(!r.ok)throw new Error('PRIVATE_ARTIFACT_STORAGE_UNAVAILABLE');return r;}
-async function configuration(){
- if(cached&&cached.until>Date.now())return cached;
+async function configuration(requireArtifacts=false){
+ if(!cached||cached.until<=Date.now()){
  const rows=await database`SELECT sealed FROM stratum_runtime.deployment_configuration WHERE id=1`;
  if(!rows.length)throw new Error('CLOUD_SETUP_REQUIRED');
- const c=decrypt(rows[0].sealed),artifacts={};
- for(const [name,expected]of Object.entries(c.artifacts)){
+ cached={config:decrypt(rows[0].sealed),artifacts:null,until:Date.now()+60000};
+ }
+ const state=cached;
+ // Authentication must not download megabytes of unrelated private EA binaries.
+ if(requireArtifacts&&!state.artifacts){
+ const artifacts={};
+ for(const [name,expected]of Object.entries(state.config.artifacts)){
   const bytes=Buffer.from(await (await storage('object/authenticated/stratum-private-builds/'+name)).arrayBuffer());
   if(digest(bytes)!==expected)throw new Error('VERIFIED_EA_BUILD_UNAVAILABLE');
   artifacts[name==='connection.mjs'?'helper':name==='UniversalConnectionEA.ex5'?'binary':'worker']=bytes;
  }
- cached={config:c,artifacts,until:Date.now()+60000};return cached;
+ state.artifacts=artifacts;
+ }
+ return state;
 }
 
 Deno.serve(async request=>{
@@ -45,7 +52,7 @@ Deno.serve(async request=>{
  if(!uri.pathname.startsWith(base+'/')||uri.search||uri.hash||uri.pathname.includes('%'))return response(400,{error:'INVALID_PATH'},origin);
  const path=uri.pathname.slice(base.length);
  if(origin&&origin!==studio)return response(403,{error:'ORIGIN_DENIED'},origin);
- if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{'Access-Control-Allow-Origin':studio,'Access-Control-Allow-Methods':'GET, POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type, Authorization, X-Stratum-Proof','Access-Control-Max-Age':'600','Vary':'Origin'}});
+ if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{'Access-Control-Allow-Origin':studio,'Access-Control-Allow-Credentials':'true','Access-Control-Allow-Methods':'GET, POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type, Authorization, X-Stratum-Proof','Access-Control-Max-Age':'600','Vary':'Origin'}});
  const ip=request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()??'unknown';
  try{
   // Rate limits are persisted, not per-isolate maps; no credentials are retained in the key.
@@ -99,7 +106,7 @@ Deno.serve(async request=>{
    await storage('object/stratum-private-builds/'+name,{method:'POST',headers:{'Content-Type':'application/octet-stream','x-upsert':'true'},body:bytes});cached=null;
    return response(200,{uploaded:true,name,sha256:c.artifacts[name]},origin);
   }
-  const state=await configuration();
+  const state=await configuration(['/health','/v1/ea/package','/v1/ea/download'].includes(path));
   if(path==='/health')return response(200,{service:'stratum-control',authMode:'supabase',protocolVersion:2,ready:true,liveTradingDefault:false,billingConfigured:false},origin);
   for(const k of ['STRATUM_AI_OPENROUTER_KEY','STRATUM_AI_OPENROUTER_MODEL'])if(Deno.env.get(k))process.env[k]=Deno.env.get(k);
   return await database.begin(async tx=>{
@@ -109,6 +116,7 @@ Deno.serve(async request=>{
    return cloudRequest(tx,request,path,state.config,state.artifacts,ip);
   });
  }catch(error){
+  console.error('stratum-request-failed',JSON.stringify({path,code:/^[A-Z0-9_]{1,64}$/.test(error.code??'')?error.code:'INTERNAL_ERROR'}));
   const allowed=['CLOUD_SETUP_REQUIRED','PRIVATE_ARTIFACT_STORAGE_UNAVAILABLE','VERIFIED_EA_BUILD_UNAVAILABLE','OPERATOR_PROOF_INVALID','BOOTSTRAP_CONFIG_INVALID','ARTIFACT_SCOPE_INVALID','ARTIFACT_HASH_INVALID'];
   return response(allowed.includes(error.message)?503:500,{error:allowed.includes(error.message)?error.message:'CLOUD_SERVICE_UNAVAILABLE'},origin);
  }

@@ -29,7 +29,7 @@ function load(path){
   }
   return require(id);
  };
- runInNewContext(result,{module,exports:module.exports,require:local,process,structuredClone,console});
+ runInNewContext(result,{module,exports:module.exports,require:local,process,structuredClone,console,URL});
  cache.set(file,module.exports);return module.exports;
 }
 const ready={signedIn:true,active:true,selected:true,online:true,controller:true,dirty:false,running:false,complete:true,hasData:false,acknowledged:true};

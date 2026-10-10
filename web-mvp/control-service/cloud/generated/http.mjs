@@ -113,9 +113,10 @@ export function controlHttp(plane, { origins = ["https://cemkaaa.github.io"], au
                     if (!ticket)
                         throw new ControlError('ENROLLMENT_EXPIRED_OR_USED', 403);
                     await auth.forAccount(ticket.account_id);
+                    // Reads reuse the server-verified three-second authority window; mutations always revalidate.
                 }
                 else if (!['/v1/pairings', '/v1/subscription/webhook'].includes(path))
-                    await auth.forBrowser(browserToken());
+                    await auth.forBrowser(browserToken(), { force: method !== 'GET' });
             }
             if (method === 'GET' && path === '/v1/auth/session') {
                 (await plane.browser(browserToken()));

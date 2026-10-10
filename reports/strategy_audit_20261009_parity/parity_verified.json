@@ -1,0 +1,210 @@
+{
+  "verifiedAt": "2026-10-09T18:26:56.201Z",
+  "sourceHash": "9d64c253f095d83c9928a8f3e73377126e95efee4f7b5d923846b73791e91736",
+  "templateHash": "36d6e77cb4e9575e1715957b99129c52c0d18e0fcee5af40d748a413b661feac",
+  "passed": false,
+  "strategies": 5,
+  "windows": 17,
+  "families": [
+    "macross"
+  ],
+  "missingFamilies": [
+    "orb",
+    "sol",
+    "entrylab"
+  ],
+  "cases": [
+    {
+      "id": "entrylab_c60359d5819d7663f71079cf72e6",
+      "weeks": 2,
+      "family": "entrylab",
+      "total": 10,
+      "netR": 0.18,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": [
+        "MISSING_PAIR"
+      ]
+    },
+    {
+      "id": "entrylab_c60359d5819d7663f71079cf72e6",
+      "weeks": 5,
+      "family": "entrylab",
+      "total": 4,
+      "netR": 0.06,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": [
+        "MISSING_PAIR"
+      ]
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 260,
+      "family": "macross",
+      "total": 1428,
+      "netR": 13.687495,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": [
+        "total",
+        "wins",
+        "net_r"
+      ]
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 208,
+      "family": "macross",
+      "total": 1497,
+      "netR": 14.32907,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 156,
+      "family": "macross",
+      "total": 1372,
+      "netR": 13.161885,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 104,
+      "family": "macross",
+      "total": 1170,
+      "netR": 11.30631,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 52,
+      "family": "macross",
+      "total": 713,
+      "netR": 7.075455,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 20,
+      "family": "macross",
+      "total": 233,
+      "netR": 2.32,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 10,
+      "family": "macross",
+      "total": 130,
+      "netR": 1.29,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 5,
+      "family": "macross",
+      "total": 71,
+      "netR": 0.7,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_46953c7e154e42f96239faf5a4a3",
+      "weeks": 2,
+      "family": "macross",
+      "total": 33,
+      "netR": 0.32,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_87b5bd2eb472e1191c78dc72873b",
+      "weeks": 2,
+      "family": "macross",
+      "total": 42,
+      "netR": -0.091333333333,
+      "minCumR": -0.748666666667,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "macross_87b5bd2eb472e1191c78dc72873b",
+      "weeks": 5,
+      "family": "macross",
+      "total": 109,
+      "netR": 6.141166666667,
+      "minCumR": -0.539,
+      "asOf": 1791504000,
+      "issues": []
+    },
+    {
+      "id": "orb_e1c25af6fef2f4beeb50972e0403",
+      "weeks": 2,
+      "family": "orb",
+      "total": 8,
+      "netR": 0.06,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": [
+        "campaign:INCOMPLETE",
+        "campaign:UNVERIFIED",
+        "dashboard:INCOMPLETE",
+        "dashboard:UNVERIFIED"
+      ]
+    },
+    {
+      "id": "orb_e1c25af6fef2f4beeb50972e0403",
+      "weeks": 5,
+      "family": "orb",
+      "total": 22,
+      "netR": 0.19,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": [
+        "campaign:INCOMPLETE",
+        "campaign:UNVERIFIED",
+        "dashboard:INCOMPLETE",
+        "dashboard:UNVERIFIED"
+      ]
+    },
+    {
+      "id": "sol_b385e40b91a47fcfa5c0fa73400e",
+      "weeks": 2,
+      "family": "sol",
+      "total": 4,
+      "netR": 2,
+      "minCumR": 0,
+      "asOf": 1791504000,
+      "issues": [
+        "MISSING_PAIR"
+      ]
+    },
+    {
+      "id": "sol_b385e40b91a47fcfa5c0fa73400e",
+      "weeks": 5,
+      "family": "sol",
+      "total": 7,
+      "netR": 0.379333333333,
+      "minCumR": -0.620666666667,
+      "asOf": 1791504000,
+      "issues": [
+        "MISSING_PAIR"
+      ]
+    }
+  ]
+}

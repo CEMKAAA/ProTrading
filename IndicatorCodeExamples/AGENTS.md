@@ -66,3 +66,30 @@ Remove only disposable artifacts created by the current task after verification,
 with resolved-path safety checks. Existing files, backups and history must not
 be deleted without the user's explicit approval. Production isolation and
 accuracy checks still apply; minimal necessary test artifacts are permitted.
+
+## Strategy Result Identity And Rolling Refresh
+
+Strategy-search CURRENT results use the exact native audit and full saved TCAL
+(direction, daily loss/win quotas, start time and seven day-hour masks). Keep
+OrbUserWindowKey shared between dashboard writes, campaign writes and SEARCH.
+Saved ORB/MaCross/EntryLab presets pin NAS sampling to their saved timeframe;
+loading on another display chart must not silently change that NAS timeframe.
+Sol presets predating NAS timeframe metadata remain chart-specific when NAS is
+active; do not mix their window keys across chart timeframes.
+
+Never overwrite StrategyWindowArchive snapshots. MEGA 1 (20261008) is historical
+legacy evidence with known calculation defects, not a profitability proof.
+MEGA 2 (20261009) is sealed only after per-window native campaign/dashboard
+trade-trace parity. CURRENT refresh writes WindowMetrics only. Source switching
+is display-only and must never apply strategy settings or affect open positions.
+Use scripts/complete_corrected_strategy_campaign.ps1 for the verified campaign,
+then scripts/install_strategy_window_refresh.ps1 for the isolated rolling worker.
+Do not subtract aggregate R/W/L to roll MC, quotas or Independent occupancy.
+
+For repeatable user-started CURRENT campaigns use `Run-Mega-Audit.bat` at the
+workspace root; see `MEGA_AUDIT.md`. Every new run rescans the actual Common
+strategy libraries for all four families. Never hardcode 188 or reuse a stale
+catalog as the strategy inventory. Running campaigns keep their frozen snapshot;
+the BAT attaches a monitor instead of replacing their manifest or stopping them.
+Reuse verified research binaries and require per-window native dashboard parity
+and WindowMetrics readback. Manual reruns must never overwrite MEGA archives.

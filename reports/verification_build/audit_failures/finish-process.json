@@ -1,0 +1,11 @@
+{
+    "startedUtc":  "2026-10-10T00:31:45.8830082Z",
+    "stdout":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\finish-restart-20261010-003145.stdout.log",
+    "sourceHash":  "be6a04ce44dbed0ace9dc0f10f9aefe3aa643f2657efd24c45ce3424e6d5175a",
+    "stderr":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\finish-restart-20261010-003145.stderr.log",
+    "script":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\scripts\\finish_verified_strategy_campaign.ps1",
+    "pid":  27672,
+    "reason":  "Resume after absolute report path fix",
+    "userAuthorized":  true,
+    "campaignPid":  14324
+}

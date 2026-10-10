@@ -136,6 +136,10 @@ test('operator Studio origin accepts HTTPS or loopback only, without embedded cr
  try{
   const auth=new SupabaseAuth(p,{...config,studioOrigin:'https://studio.example.com'});
   assert.equal(auth.confirmationUrl,'https://studio.example.com/studio');
+  const pages=new SupabaseAuth(p,{...config,studioOrigin:'https://cemkaaa.github.io',studioBasePath:'/CemkaCapital'});
+  assert.equal(pages.confirmationUrl,'https://cemkaaa.github.io/CemkaCapital/studio/');
+  for(const studioBasePath of ['/../evil','//evil.example','/CemkaCapital?next=evil','/%2e%2e','https://evil.example','/CemkaCapital/'])
+   assert.throws(()=>new SupabaseAuth(p,{...config,studioBasePath}));
   for(const studioOrigin of ['http://evil.example','https://user:secret@studio.example.com','https://studio.example.com/?next=https://evil.example','https://studio.example.com/other','javascript:alert(1)'])
    assert.throws(()=>new SupabaseAuth(p,{...config,studioOrigin}));
  }finally{p.close();}

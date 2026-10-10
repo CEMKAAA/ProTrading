@@ -1,0 +1,38 @@
+{
+  "state": "VERIFIED_COMPLETE",
+  "updatedUtc": "2026-10-10T08:38:40.459Z",
+  "sourceHash": "be6a04ce44dbed0ace9dc0f10f9aefe3aa643f2657efd24c45ce3424e6d5175a",
+  "requestedStrategies": 188,
+  "requestedWindows": 1692,
+  "completeStrategies": 172,
+  "validWindows": 1616,
+  "confirmedUnavailableWindows": 76,
+  "unconfirmedWindows": 0,
+  "integrityErrors": 0,
+  "nativeReadback": {
+    "rows": 1692,
+    "checks": 3384,
+    "failed": 0,
+    "current": 1616,
+    "baseline": 1616,
+    "unavailable": 76,
+    "order_attempts": 0
+  },
+  "compile": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "deployed": [
+    "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.ex5",
+    "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5",
+    "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+    "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5"
+  ],
+  "report": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\CLOSURE.md",
+  "baseline": "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\reports\\verification_build\\audit_failures\\mega-baseline",
+  "automaticRefresh": {
+    "task": "ProTradingSystem-StrategyWindowRefresh",
+    "installed": true,
+    "enabled": true
+  }
+}

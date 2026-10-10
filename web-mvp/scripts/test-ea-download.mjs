@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {requestEaPackage,downloadEaBlob} from '../lib/ea-download.ts';
+import {CONTROL_CREDENTIALS} from '../lib/control-endpoint.ts';
 
 test('package download uses authenticated POST, validates ZIP bytes and never follows redirects',async()=>{
  let request;const bytes=new Uint8Array([0x50,0x4b,3,4,1,2,3]);
  const blob=await requestEaPackage('cookie-session',async(url,options)=>{request={url,options};return new Response(bytes,{headers:{'Content-Type':'application/zip'}});});
- assert.equal(blob.size,7);assert.equal(request.options.method,'POST');assert.equal(request.options.credentials,'include');assert.equal(request.options.redirect,'error');assert.equal(request.options.headers.Authorization,'Bearer cookie-session');assert.equal(request.options.body,'{}');
+ assert.equal(blob.size,7);assert.equal(request.options.method,'POST');assert.equal(request.options.credentials,CONTROL_CREDENTIALS);assert.equal(request.options.redirect,'error');assert.equal(request.options.headers.Authorization,'Bearer cookie-session');assert.equal(request.options.body,'{}');
 });
 test('failed verification, HTML/error responses and empty or malformed ZIP do not start a download',async()=>{
  await assert.rejects(()=>requestEaPackage('x',async()=>Response.json({error:'VERIFIED_EA_BUILD_UNAVAILABLE'},{status:503})),/VERIFIED_EA_BUILD_UNAVAILABLE/);

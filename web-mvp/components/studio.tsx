@@ -10,7 +10,7 @@ import StrategyDemo from "./strategy-demo";
 import ConnectionPanel from "./connection-panel";
 import UniversalDashboard from "./universal-dashboard";
 import StudioMarketOrbit from "./studio-market-orbit";
-import { CONTROL_API,storedSession,storeSession } from '@/lib/control-endpoint';
+import { CONTROL_API,CONTROL_CREDENTIALS,CONTROL_TIMEOUT_MS,storedSession,storeSession } from '@/lib/control-endpoint';
 import { authReturn } from '@/lib/auth-return';
 import AdminStrategyAccess from './admin-strategy-access';
 export default function Studio() {
@@ -26,7 +26,7 @@ export default function Studio() {
   }
   let alive=true;
   const saved=storedSession();
-  void fetch(CONTROL_API+'/v1/auth/session',{headers:saved?{Authorization:'Bearer '+saved}:{},credentials:'include',cache:'no-store',signal:AbortSignal.timeout(10000)})
+  void fetch(CONTROL_API+'/v1/auth/session',{headers:saved?{Authorization:'Bearer '+saved}:{},credentials:CONTROL_CREDENTIALS,cache:'no-store',signal:AbortSignal.timeout(CONTROL_TIMEOUT_MS)})
    .then(async response=>{if(!alive)return;if(response.ok){const data=await response.json() as {accessToken:string};updateCredential(data.accessToken);}else if(response.status===401)storeSession('');}).catch(()=>{});
   return()=>{alive=false;};
  },[]);
