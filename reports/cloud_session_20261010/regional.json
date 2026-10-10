@@ -1,0 +1,67 @@
+{
+  "label": "regional",
+  "rounds": 3,
+  "checkedAt": "2026-10-10T12:34:34.643Z",
+  "requests": 9,
+  "failures": [],
+  "meanMs": 837,
+  "maxMs": 1150,
+  "results": [
+    {
+      "path": "/v1/auth/login",
+      "status": 200,
+      "elapsedMs": 1352
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 654
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 747
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 928
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 646
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 732
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 1150
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 767
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 802
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 1105
+    },
+    {
+      "path": "/v1/auth/logout",
+      "status": 200,
+      "elapsedMs": 906
+    }
+  ],
+  "nativeTradingRequested": false
+}

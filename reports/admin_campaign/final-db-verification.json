@@ -1,0 +1,54 @@
+{
+  "security": [
+    {
+      "result": "PASS",
+      "checks": "default deny, direct table denial, forged admin denial, granted exact metrics, stale fingerprint, revoke, admin catalog"
+    }
+  ],
+  "database": [
+    {
+      "families": {
+        "orb": 70,
+        "sol": 30,
+        "macross": 82,
+        "entrylab": 9
+      },
+      "strategies": 191,
+      "campaign_strategies": 188,
+      "stale_campaigns": 0,
+      "campaign_windows": 1692,
+      "grants_digest": "a1c9df40cba10b8df39454fe294c3244",
+      "no_campaign": [
+        {
+          "id": "macross_3dff9201a65ef661e33734cc5a35",
+          "name": "btcusd0.02RStrategy",
+          "grants": 0
+        },
+        {
+          "id": "sol_cb2736d9f42e9cbab42314145525",
+          "name": "jp2250.01H1.5HtfMode",
+          "grants": 0
+        },
+        {
+          "id": "sol_18cbba93094a95461742dc1f734a",
+          "name": "jp2250.01HasResearchPotential",
+          "grants": 0
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "strategies": 188,
+    "windows": 1692,
+    "matched": 188,
+    "mismatch": [],
+    "extra": []
+  },
+  "catalog": {
+    "checked": 191,
+    "webRecords": 191,
+    "matched": 191,
+    "problems": [],
+    "extra": []
+  }
+}

@@ -45,3 +45,7 @@ reports/strategy_audit_20261009_parity/source/
 reports/strategy_audit_20261009_parity/manifest.private.json
 reports/strategy_audit_20261009_rolling/source/
 reports/strategy_audit_20261009_rolling/manifest.private.json
+reports/admin_campaign/*.private.json
+reports/admin_campaign/*.private.sql
+reports/admin_campaign/current_catalog/catalog.private.json
+reports/admin_campaign/current_catalog/audit-input-profiles.private.json

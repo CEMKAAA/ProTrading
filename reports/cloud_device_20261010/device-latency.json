@@ -1,0 +1,205 @@
+{
+  "checkedAt": "2026-10-10T12:33:51.099Z",
+  "nativeTradingRequested": false,
+  "realTerminalTest": false,
+  "results": [
+    {
+      "path": "/v1/auth/login",
+      "status": 200,
+      "elapsedMs": 1361
+    },
+    {
+      "path": "/v1/ea/package",
+      "status": 200,
+      "elapsedMs": 4243
+    },
+    {
+      "path": "/v1/ea/enroll",
+      "status": 201,
+      "elapsedMs": 808
+    },
+    {
+      "path": "/v1/pairings/review",
+      "status": 200,
+      "elapsedMs": 1221
+    },
+    {
+      "path": "/v1/pairings/approve",
+      "status": 200,
+      "elapsedMs": 1230
+    },
+    {
+      "path": "/v1/installations/4cf4d1f1-a39d-45b7-8e1c-550920d8844b/activate",
+      "status": 200,
+      "elapsedMs": 1001
+    },
+    {
+      "path": "/v1/device/identity",
+      "status": 200,
+      "elapsedMs": 865
+    },
+    {
+      "path": "/v1/device/connect",
+      "status": 200,
+      "elapsedMs": 1136
+    },
+    {
+      "path": "/v1/device/heartbeat",
+      "status": 200,
+      "elapsedMs": 797
+    },
+    {
+      "path": "/v1/device/status",
+      "status": 200,
+      "elapsedMs": 837
+    },
+    {
+      "path": "/v1/device/claim",
+      "status": 200,
+      "elapsedMs": 1055
+    },
+    {
+      "path": "/v1/device/command",
+      "status": 200,
+      "elapsedMs": 807
+    },
+    {
+      "path": "/v1/device/identity",
+      "status": 200,
+      "elapsedMs": 919
+    },
+    {
+      "path": "/v1/device/heartbeat",
+      "status": 200,
+      "elapsedMs": 1179
+    },
+    {
+      "path": "/v1/device/status",
+      "status": 200,
+      "elapsedMs": 881
+    },
+    {
+      "path": "/v1/device/claim",
+      "status": 200,
+      "elapsedMs": 817
+    },
+    {
+      "path": "/v1/device/command",
+      "status": 200,
+      "elapsedMs": 984
+    },
+    {
+      "path": "/v1/device/identity",
+      "status": 200,
+      "elapsedMs": 854
+    },
+    {
+      "path": "/v1/device/heartbeat",
+      "status": 200,
+      "elapsedMs": 930
+    },
+    {
+      "path": "/v1/device/status",
+      "status": 200,
+      "elapsedMs": 1132
+    },
+    {
+      "path": "/v1/device/claim",
+      "status": 200,
+      "elapsedMs": 822
+    },
+    {
+      "path": "/v1/device/command",
+      "status": 200,
+      "elapsedMs": 748
+    },
+    {
+      "path": "/v1/device/identity",
+      "status": 200,
+      "elapsedMs": 1022
+    },
+    {
+      "path": "/v1/device/heartbeat",
+      "status": 200,
+      "elapsedMs": 926
+    },
+    {
+      "path": "/v1/device/status",
+      "status": 200,
+      "elapsedMs": 859
+    },
+    {
+      "path": "/v1/device/claim",
+      "status": 200,
+      "elapsedMs": 827
+    },
+    {
+      "path": "/v1/device/command",
+      "status": 200,
+      "elapsedMs": 887
+    },
+    {
+      "path": "/v1/device/identity",
+      "status": 200,
+      "elapsedMs": 870
+    },
+    {
+      "path": "/v1/device/heartbeat",
+      "status": 200,
+      "elapsedMs": 862
+    },
+    {
+      "path": "/v1/device/status",
+      "status": 200,
+      "elapsedMs": 812
+    },
+    {
+      "path": "/v1/device/claim",
+      "status": 200,
+      "elapsedMs": 742
+    },
+    {
+      "path": "/v1/device/command",
+      "status": 200,
+      "elapsedMs": 910
+    },
+    {
+      "path": "/v1/device/identity",
+      "status": 200,
+      "elapsedMs": 957
+    },
+    {
+      "path": "/v1/device/heartbeat",
+      "status": 200,
+      "elapsedMs": 867
+    },
+    {
+      "path": "/v1/device/status",
+      "status": 200,
+      "elapsedMs": 836
+    },
+    {
+      "path": "/v1/device/claim",
+      "status": 200,
+      "elapsedMs": 813
+    },
+    {
+      "path": "/v1/device/command",
+      "status": 200,
+      "elapsedMs": 1085
+    },
+    {
+      "path": "/v1/installations/4cf4d1f1-a39d-45b7-8e1c-550920d8844b/revoke",
+      "status": 200,
+      "elapsedMs": 884
+    },
+    {
+      "path": "/v1/auth/logout",
+      "status": 200,
+      "elapsedMs": 924
+    }
+  ],
+  "status": "PASS",
+  "deviceCalls": 31,
+  "maxDeviceMs": 1179
+}

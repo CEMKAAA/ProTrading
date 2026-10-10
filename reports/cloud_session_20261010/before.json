@@ -1,0 +1,89 @@
+{
+  "label": "before",
+  "rounds": 3,
+  "checkedAt": "2026-10-10T11:38:32.875Z",
+  "requests": 9,
+  "failures": [
+    {
+      "path": "/v1/library/strategies",
+      "status": 500,
+      "elapsedMs": 13931,
+      "error": "CLOUD_SERVICE_UNAVAILABLE"
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 500,
+      "elapsedMs": 14166,
+      "error": "CLOUD_SERVICE_UNAVAILABLE"
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 500,
+      "elapsedMs": 14104,
+      "error": "CLOUD_SERVICE_UNAVAILABLE"
+    }
+  ],
+  "meanMs": 15469,
+  "maxMs": 20126,
+  "results": [
+    {
+      "path": "/v1/auth/login",
+      "status": 200,
+      "elapsedMs": 9328
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 12841
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 500,
+      "elapsedMs": 13931,
+      "error": "CLOUD_SERVICE_UNAVAILABLE"
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 20126
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 10790
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 500,
+      "elapsedMs": 14166,
+      "error": "CLOUD_SERVICE_UNAVAILABLE"
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 19977
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 13200
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 500,
+      "elapsedMs": 14104,
+      "error": "CLOUD_SERVICE_UNAVAILABLE"
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 20090
+    },
+    {
+      "path": "/v1/auth/logout",
+      "status": 200,
+      "elapsedMs": 8912
+    }
+  ],
+  "nativeTradingRequested": false
+}

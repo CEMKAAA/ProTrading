@@ -80,11 +80,13 @@ export class SupabaseAuth {
     // Clock drift must not lengthen a demo or turn an old response into a new grant.
     if(Math.abs(state.serverNow-at)>30000||Math.abs(state.trial.expiresAt-state.trial.startsAt-30*86400000)>1)
       throw new ControlError('AUTH_CLOCK_OR_TRIAL_INVALID',503);
-    p.provisionAccount(state.accountId,Math.floor(state.paidUntil));
-    p.run('UPDATE accounts SET disabled=? WHERE id=?',state.disabled?1:0,state.accountId);
+    const name=state.displayName.replace(/[\r\n\x00-\x1f\x7f]/g,'').trim().slice(0,60)||'Abone';
+    if(typeof p.db.syncAuthority==='function')return p.db.syncAuthority({accountId:state.accountId,paidUntil:Math.floor(state.paidUntil),
+      disabled:state.disabled?1:0,startsAt:Math.floor(state.trial.startsAt),expiresAt:Math.floor(state.trial.expiresAt),
+      name,email:state.email,authorityUntil:at+10000,accessActive:state.accessActive?1:0});
+    p.run('INSERT INTO accounts(id,entitlement_until,disabled) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET entitlement_until=excluded.entitlement_until,disabled=excluded.disabled',state.accountId,Math.floor(state.paidUntil),state.disabled?1:0);
     p.run('INSERT INTO account_trials VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET starts_at=excluded.starts_at,expires_at=excluded.expires_at',
       state.accountId,Math.floor(state.trial.startsAt),Math.floor(state.trial.expiresAt));
-    const name=state.displayName.replace(/[\r\n\x00-\x1f\x7f]/g,'').trim().slice(0,60)||'Abone';
     p.setDisplayName(state.accountId,name);
     p.run('INSERT INTO supabase_accounts VALUES(?,?,?) ON CONFLICT(account_id) DO UPDATE SET email=excluded.email,authority_until=excluded.authority_until',
       state.accountId,state.email,at+10000);

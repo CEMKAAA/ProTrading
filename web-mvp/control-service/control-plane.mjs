@@ -14,6 +14,15 @@ export class ControlError extends Error {
 const requireThat = (condition, code, status) => { if (!condition) throw new ControlError(code, status); };
 const parse = (schema, value) => { const result = schema.safeParse(value); requireThat(result.success, "INVALID_REQUEST", 400); return result.data; };
 const phases = ["preparing", "downloading", "replaying", "uploading"];
+const accountAccess = (row, at) => {
+  const trial = row.trialStartsAt == null ? null : {startsAt:row.trialStartsAt,expiresAt:row.trialExpiresAt};
+  const fresh = !row.remoteAccountId || row.authorityUntil > at;
+  const paid = fresh && !row.disabled && row.paidUntil > at;
+  const demo = fresh && !row.disabled && !!trial && trial.expiresAt > at;
+  return {accessActive:paid||demo,accessMode:paid?'paid':demo?'demo':'inactive',
+    entitlementUntil:Math.max(row.paidUntil,trial?.expiresAt??0),
+    trial:trial?{...trial,daysRemaining:Math.max(0,Math.ceil((trial.expiresAt-at)/86400000))}:null};
+};
 
 export class ControlPlane {
   constructor({ database = ":memory:", signingKey = keyPair(), eaSigningKey = eaKeyPair(), now = () => Date.now() } = {}) {
@@ -221,16 +230,9 @@ export class ControlPlane {
     return accountId;
   }
   accessState(accountId) {
-    const account=this.get("SELECT * FROM accounts WHERE id=?",accountId);
+    const account=this.get("SELECT a.id,a.disabled,a.entitlement_until AS paidUntil,t.starts_at AS trialStartsAt,t.expires_at AS trialExpiresAt,r.account_id AS remoteAccountId,r.authority_until AS authorityUntil FROM accounts a LEFT JOIN account_trials t ON t.account_id=a.id LEFT JOIN supabase_accounts r ON r.account_id=a.id WHERE a.id=?",accountId);
     requireThat(account,"ACCOUNT_UNKNOWN",403);
-    const trial=this.get("SELECT starts_at AS startsAt,expires_at AS expiresAt FROM account_trials WHERE account_id=?",accountId);
-    const remote=this.get("SELECT authority_until FROM supabase_accounts WHERE account_id=?",accountId);
-    const fresh=!remote||remote.authority_until>this.now();
-    const paid=fresh&&!account.disabled&&account.entitlement_until>this.now();
-    const demo=fresh&&!account.disabled&&!!trial&&trial.expiresAt>this.now();
-    return {accessActive:paid||demo,accessMode:paid?"paid":demo?"demo":"inactive",
-      entitlementUntil:Math.max(account.entitlement_until,trial?.expiresAt??0),
-      trial:trial?{...trial,daysRemaining:Math.max(0,Math.ceil((trial.expiresAt-this.now())/86400000))}:null};
+    return accountAccess(account,this.now());
   }
   issueEnrollment(accessToken) {
     const actor=this.browser(accessToken);this.entitlement(actor.accountId);
@@ -266,16 +268,29 @@ export class ControlPlane {
   }
   browser(accessToken) {
     requireThat(typeof accessToken === "string" && accessToken.length >= 32 && accessToken.length <= 256, "UNAUTHORIZED", 401);
-    const actor = this.get("SELECT s.id AS sessionId,s.account_id AS accountId,s.expires_at AS sessionExpiry,a.entitlement_until AS entitlementUntil,a.disabled FROM sessions s JOIN accounts a ON a.id=s.account_id WHERE token_hash=?", hash(accessToken));
+    const actor = this.get("SELECT s.id AS sessionId,s.account_id AS accountId,s.expires_at AS sessionExpiry,a.entitlement_until AS paidUntil,a.disabled,t.starts_at AS trialStartsAt,t.expires_at AS trialExpiresAt,r.account_id AS remoteAccountId,r.authority_until AS authorityUntil FROM sessions s JOIN accounts a ON a.id=s.account_id LEFT JOIN account_trials t ON t.account_id=a.id LEFT JOIN supabase_accounts r ON r.account_id=a.id WHERE token_hash=?", hash(accessToken));
     requireThat(actor && actor.sessionExpiry > this.now() && !actor.disabled, "UNAUTHORIZED", 401);
-    return {...actor,entitlementUntil:this.accessState(actor.accountId).entitlementUntil};
+    const {sessionId,accountId,sessionExpiry,disabled}=actor;
+    return {sessionId,accountId,sessionExpiry,disabled,entitlementUntil:accountAccess(actor,this.now()).entitlementUntil};
   }
   entitlement(accountId) {
     const account = this.get("SELECT * FROM accounts WHERE id=?", accountId);
-    requireThat(account && !account.disabled && this.accessState(accountId).accessActive, "ENTITLEMENT_EXPIRED", 403);
-    return {...account,entitlement_until:this.accessState(accountId).entitlementUntil};
+    const access=account&&!account.disabled?this.accessState(accountId):null;
+    requireThat(access?.accessActive, "ENTITLEMENT_EXPIRED", 403);
+    return {...account,entitlement_until:access.entitlementUntil};
   }
   sessionInfo(accessToken) {
+    if(typeof this.db.sessionSnapshot==='function'){
+      requireThat(typeof accessToken==='string'&&accessToken.length>=32&&accessToken.length<=256,'UNAUTHORIZED',401);
+      const row=this.db.sessionSnapshot(hash(accessToken)),at=this.now();
+      requireThat(row&&row.sessionExpiry>at&&!row.disabled,'UNAUTHORIZED',401);
+      const access=accountAccess(row,at);
+      return {accountId:row.accountId,displayName:row.profileName??row.localEmail?.split('@')[0].slice(0,60)??'Abone',
+        ...access,subscriptionActive:access.accessActive,email:row.email??row.localEmail??null,trading:row.trading,
+        installations:row.installations,terminalStatuses:row.statuses,
+        lease:row.leaseInstallationId?{installationId:row.leaseInstallationId,expiresAt:row.leaseExpiresAt,
+          active:row.leaseExpiresAt>at,controlledHere:row.leaseSessionId===row.sessionId}:null};
+    }
     const actor = this.browser(accessToken);
     const lease = this.get("SELECT installation_id AS installationId,expires_at AS expiresAt,session_id AS sessionId FROM leases WHERE account_id=?", actor.accountId);
     const access=this.accessState(actor.accountId);

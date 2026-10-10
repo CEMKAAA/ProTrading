@@ -165,6 +165,29 @@ test('Supabase outage fails closed instead of using a previously cached paid/dem
  assert.equal(f.p.sessionInfo(s.accessToken).subscriptionActive,false);
  assert.throws(()=>f.p.issueEnrollment(s.accessToken),e=>e.code==='ENTITLEMENT_EXPIRED');f.p.close();
 });
+test('temporary provider failure preserves the browser session and recovers without another login',async()=>{
+ const f=fixture(),s=await f.login(),actor=f.p.browser(s.accessToken);
+ try{
+  f.advance(3550000);f.offline(true);
+  await rejects(()=>f.auth.forBrowser(s.accessToken),'AUTH_PROVIDER_UNAVAILABLE');
+  assert.equal(f.p.browser(s.accessToken).sessionId,actor.sessionId);
+  assert.equal(f.p.accessState(f.account).accessActive,false);
+  f.offline(false);await f.auth.forBrowser(s.accessToken);
+  assert.equal(f.p.browser(s.accessToken).sessionId,actor.sessionId);
+  assert.equal(f.p.sessionInfo(s.accessToken).subscriptionActive,true);
+ }finally{f.p.close();}
+});
+test('hourly JWT refreshes do not require a new login; the existing 12-hour session cap remains enforced',async()=>{
+ const f=fixture(),s=await f.login(),actor=f.p.browser(s.accessToken);
+ try{
+  for(let hour=1;hour<=11;hour++){
+   f.advance(3600000);await f.auth.forBrowser(s.accessToken);
+   assert.equal(f.p.browser(s.accessToken).sessionId,actor.sessionId);
+  }
+  assert.equal(f.refreshes(),11);
+  f.advance(3600000);await rejects(()=>f.auth.forBrowser(s.accessToken),'UNAUTHORIZED');
+ }finally{f.p.close();}
+});
 test('external logout deletes local controller/session/tickets; old JWT cannot restore authority',async()=>{
  const f=fixture(),s=await f.login();f.p.issueEnrollment(s.accessToken);f.revoke();
  await rejects(()=>f.auth.forBrowser(s.accessToken),'SESSION_REVOKED');

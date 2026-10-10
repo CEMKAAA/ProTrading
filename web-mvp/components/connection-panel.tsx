@@ -26,23 +26,24 @@ export default function ConnectionPanel({ credential, onCredential }: { credenti
  const {t,locale}=useLanguage();
   const [session, setSession] = useState<Session | null>(null);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [code, setCode] = useState("");
+  const [pollError,setPollError]=useState('');
   const [review, setReview] = useState<Review | null>(null), [selected, setSelected] = useState("");
   const [fingerprintChecked, setFingerprintChecked] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
   const refresh = useCallback(async () => {
     const current = await api<Session>("/v1/session", credential);
     setSession(current);
+    setPollError('');
     setSelected(value => current.installations.some(i => i.id === value && i.state === "approved") ? value : current.installations.find(i => i.state === "approved")?.id ?? "");
   }, [credential]);
   useEffect(() => {
     if (!credential) return; // The parent remounts this panel when the credential changes.
-    let active = true;
+    let active = true,pending=true;
     void Promise.all([api<Session>("/v1/session", credential), api<{ jobs: Job[] }>("/v1/jobs", credential)]).then(([current, history]) => {
       if (!active) return;
-      setSession(current); setSelected(current.installations.find(i => i.state === "approved")?.id ?? ""); setJob(history.jobs[0] ?? null);
-    }).catch(e => { if (active) setError(errorText(e)); });
-    let pending = false;
-    const timer = setInterval(() => { if (document.hidden || !active || pending) return; pending = true; void refresh().catch(e => { if (active) setError(errorText(e)); }).finally(() => { pending = false; }); }, 10000);
+      setSession(current); setPollError(''); setSelected(current.installations.find(i => i.state === "approved")?.id ?? ""); setJob(history.jobs[0] ?? null);
+    }).catch(e => { if (active) setPollError(errorText(e)); }).finally(()=>{pending=false;});
+    const timer = setInterval(() => { if (document.hidden || !active || pending) return; pending = true; void refresh().catch(e => { if (active) setPollError(errorText(e)); }).finally(() => { pending = false; }); }, 10000);
     return () => { active = false; clearInterval(timer); };
   }, [credential, refresh]);
   const activeJob = job?.state === "queued" || job?.state === "running";
@@ -64,7 +65,7 @@ export default function ConnectionPanel({ credential, onCredential }: { credenti
     <div className="control-disclosure"><Terminal size={20}/><div><strong><UiText>{"Your computer does the research"}</UiText></strong><p><UiText>{"The website sends settings to your own MT5. Keep MT5 and the companion running while you use the studio."}</UiText></p></div><HelpButton topic="connect"/></div>
     <ol className="guide-connect-steps"><li><strong><UiText>{"Download & extract"}</UiText></strong><span><UiText>{"Get your personalized EA ZIP from the main dashboard. Node.js 22.13+ and MT5 are required for this local pilot."}</UiText></span></li><li><strong><UiText>{"Start & pair"}</UiText></strong><span><UiText>{"Run "}</UiText><code><UiText>{"start_connection.bat"}</UiText></code><UiText>{" from the extracted ZIP. Enter its pairing code below and compare the complete fingerprint."}</UiText></span></li><li><strong><UiText>{"Attach & authorize"}</UiText></strong><span><UiText>{"Copy the ZIP's MQL5 files to MT5's data folder. Attach the connection EA and load "}</UiText><code><UiText>{".state/connection.set"}</UiText></code><UiText>{". Authorize this browser below, then return to the dashboard to audit."}</UiText></span></li></ol>
     {!credential&&<p className="guide-blocker"><UiText>{"Close this window and sign in on the dashboard first. You do not need a developer token."}</UiText></p>}
-    {error && <div className="control-error" role="alert"><UiText>{friendlyError(error)}</UiText></div>}
+    {(error||pollError) && <div className="control-error" role="alert"><UiText>{friendlyError(error||pollError)}</UiText></div>}
     {session && <>
       <div className="control-session"><ShieldCheck size={19}/><div><strong><UiText>{"Signed in securely"}</UiText></strong><span><UiText>{session.accessMode==="demo"?`DEMO / ${session.trial?.daysRemaining??0} days remaining`:session.subscriptionActive ? "Entitlement active" : "Entitlement expired"}</UiText><UiText>{" / Trading "}</UiText><UiText>{session.trading.enabled ? "ON requested" : "OFF"}</UiText></span></div><button className="icon-btn" aria-label={t("Refresh connection status")} disabled={busy} onClick={() => void action(refresh)}><RefreshCw size={18}/></button><button className="icon-btn" aria-label={t("Sign out and revoke this control session")} disabled={busy} onClick={() => void action(async () => { await api("/v1/auth/logout", credential, {}); onCredential(""); setReview(null); })}><Unplug size={18}/></button></div>
       <form onSubmit={e => { e.preventDefault(); void action(async () => {setReview(null);setFingerprintChecked(false);setReview(await api<Review>("/v1/pairings/review", credential, { code }));}); }}>

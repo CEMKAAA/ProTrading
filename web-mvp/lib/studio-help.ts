@@ -151,6 +151,7 @@ export function friendlyError(code:string):string {
   CONTROL_SERVICE_UNAVAILABLE:CLOUD_SESSION?'Cannot reach the online service. Check your internet connection and retry; the local launcher is not required for sign-in.':'The local control service is unavailable. Start the project launcher and try again.',
   'Failed to fetch':CLOUD_SESSION?'Cannot reach the online service. Check your internet connection and retry; the local launcher is not required for sign-in.':'Cannot reach the local control service. Start the project launcher and retry.',
   SERVICE_UNAVAILABLE:CLOUD_SESSION?'The online service is temporarily unavailable. Retry shortly.':'The service is unavailable. Check the launcher and retry.',
+  CLOUD_SERVICE_UNAVAILABLE:'The online service is temporarily unavailable. Retry shortly.',
   VERIFIED_EA_BUILD_UNAVAILABLE:'The verified EA package is unavailable. No unverified file was downloaded. Contact support or retry after the build is repaired.',
   EA_DOWNLOAD_FAILED:CLOUD_SESSION?'The EA download failed. Check your internet connection and try again.':'The EA download failed. Check the local service and try again.',
   EA_DOWNLOAD_INVALID:'The server did not return a valid EA ZIP. Nothing was downloaded. Retry or contact support.',

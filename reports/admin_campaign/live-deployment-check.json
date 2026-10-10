@@ -1,0 +1,288 @@
+{
+  "commit": "5b0593df09b2fdeafaf314044f0b5b8c3d8a7638",
+  "site": "https://cemkaaa.github.io/CemkaCapital/studio/",
+  "checkedAt": "2026-10-10T11:24:23.879Z",
+  "files": [
+    {
+      "file": ".nojekyll",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "404.html",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "benchmark-evidence.json",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "favicon.svg",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "index.html",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "index.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "research-core.webp",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "__next._full.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "__next._tree.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "__next.__PAGE__.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "404/index.html",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "studio/index.html",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "studio/index.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "studio/__next._full.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "studio/__next._tree.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "studio/__next.studio/__PAGE__.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/3GvpwXtB4YxbJWboKXfB8/_buildManifest.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/3GvpwXtB4YxbJWboKXfB8/_clientMiddlewareManifest.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/3GvpwXtB4YxbJWboKXfB8/_ssgManifest.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/0cz1d0mv5g_q7.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/0h2qsuyze9ds1.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/0swkm0d-n4dxb.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/14kzx_etlrjyr.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/19mx3mg6lkumu.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/1dsr75uswgwrt.css",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/1mh6a-0e61pyc.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/22k8s7m3ochj9.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/2coi-pwv-pse9.css",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/2ke-1_so6eh6n.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/2_yoplqbydx3m.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/310vm2bl3xxpt.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/31u1o9cgftwi4.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/3b-_g7x7lk2ce.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/3hufv2c5-e5pk.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/chunks/turbopack-3tcde8nam86ls.js",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-cyrillic-400-normal.0m1ahpdxrpokj.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-cyrillic-400-normal.2-z93d2j9-3s0.woff",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-cyrillic-ext-400-normal.09jq5v9-1wf71.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-cyrillic-ext-400-normal.2iaubq2jy0rx3.woff",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-latin-400-normal.2lhng2ntocry9.woff",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-latin-400-normal.3xdfs0-p_zi4c.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-latin-ext-400-normal.0nrwft7nlo5oa.woff",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-latin-ext-400-normal.1hjaitcyq2e2r.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-vietnamese-400-normal.2kzc8ichkozg5.woff",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/ibm-plex-mono-vietnamese-400-normal.3a7fs2yw914a9.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/manrope-cyrillic-ext-wght-normal.1dtltwig2y3wh.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/manrope-cyrillic-wght-normal.1hmx3sz6swr8m.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/manrope-greek-wght-normal.37b2k1x9f-55d.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/manrope-latin-ext-wght-normal.0-hru0xfwhnbp.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/manrope-latin-wght-normal.1p_a2k8qd5zhp.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_next/static/media/manrope-vietnamese-wght-normal.3xvzy9_grgcx4.woff2",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_not-found/index.html",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_not-found/index.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_not-found/__next._full.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_not-found/__next._tree.txt",
+      "status": 200,
+      "matches": true
+    },
+    {
+      "file": "_not-found/__next._not-found/__PAGE__.txt",
+      "status": 200,
+      "matches": true
+    }
+  ],
+  "failures": []
+}

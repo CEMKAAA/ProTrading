@@ -1,7 +1,7 @@
 "use client";
 import { UiText, useLanguage } from './language-provider';
 import { useEffect, useState, useCallback, useRef, useId } from "react";
-import { Activity, Download, Play, Save, Search, ShieldCheck, Terminal, Square, Library, ArrowUpRight, SlidersHorizontal, ScanLine, Clock3, GitBranch, Gauge, Waves, Layers, Globe2, Wallet, Boxes, Check } from "lucide-react";
+import { Activity, Download, Play, Save, Search, ShieldCheck, Terminal, Square, Library, ArrowUpRight, SlidersHorizontal, ScanLine, Clock3, GitBranch, Gauge, Waves, Layers, Globe2, Wallet, Boxes, Check, LoaderCircle } from "lucide-react";
 import { eaCatalog, defaultConfiguration, universalConfigurationSchema, type Control, type Family, type UniversalConfiguration } from "@/lib/universal-contract";
 import type { BacktestResult, BacktestRequest } from "@/lib/control-contract";
 import LeverSwitch from "./lever-switch";
@@ -18,6 +18,7 @@ import type { TutorMood } from '@/lib/tutor-behavior';
 import {requestEaPackage,downloadEaBlob} from '@/lib/ea-download';
 import EaActivationGuide from './ea-activation-guide';
 import SharedStrategyLibrary from './shared-strategy-library';
+import AuthProgress from './auth-progress';
 
 const API=CONTROL_API;
 const families:Record<Family,string>={entrylab:"Entry Lab",macross:"MA Crossover",orb:"Opening Range",sol:"Liquidity Narrative"};
@@ -97,7 +98,7 @@ function Matrix({config,onChange}:{config:UniversalConfiguration;onChange:(c:Uni
   return <div className="uc-matrix"><div className="guide-inline"><p><UiText>{"Select allowed entry hours for each day. 9 means 09:00-10:00 in the broker calendar. Selections take effect only when the matrix switch is ON and you Apply."}</UiText></p><HelpButton topic="Time Matrix"/></div>{config.runtime.timeMatrixEnabled&&config.dayHourMasks.every(m=>m===0)&&<p role="alert" className="uc-error"><UiText>{"No hours selected: this filter will block every new entry."}</UiText></p>}<table><thead><tr><th><UiText>{"Day"}</UiText></th>{Array.from({length:24},(_,h)=><th key={h}><UiText>{h}</UiText></th>)}</tr></thead><tbody>{["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"].map((day,d)=><tr key={day}><th><UiText>{day}</UiText></th>{Array.from({length:24},(_,h)=><td key={h}><input aria-label={`${day} ${h}-${h+1}`} type="checkbox" checked={!!(config.dayHourMasks[d]&(1<<h))} onChange={e=>set(d,h,e.target.checked)}/></td>)}</tr>)}</tbody></table>
     <div className="uc-row"><button className="secondary-btn" onClick={()=>onChange({...config,dayHourMasks:Array(7).fill(0xffffff)})}><UiText>{"All Hours"}</UiText></button><button className="secondary-btn" onClick={()=>onChange({...config,dayHourMasks:Array(7).fill(0)})}><UiText>{"Clear Hours"}</UiText></button></div></div>;
 }
-export default function UniversalDashboard({credential,onCredential,onConnect}:{credential:string;onCredential:(t:string)=>void;onConnect:()=>void}){
+export default function UniversalDashboard({credential,restoring=false,onCredential,onConnect}:{credential:string;restoring?:boolean;onCredential:(t:string)=>void;onConnect:()=>void}){
  const {t,locale}=useLanguage();
   const [sessionRecord,setSessionRecord]=useState<{credential:string;data:Session}|null>(null),[config,setConfig]=useState(()=>defaultConfiguration("entrylab"));
   const session=sessionRecord?.credential===credential?sessionRecord.data:null;
@@ -108,8 +109,12 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
   const strategies=libraryRecord.credential===credential?libraryRecord.items:[];
   const setStrategies=useCallback((items:UniversalConfiguration[])=>setLibraryRecord({credential,items}),[credential]);
   const [busy,setBusy]=useState(false),[error,setError]=useState(""),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[displayName,setDisplayName]=useState(""),[signup,setSignup]=useState(false),[page,setPage]=useState(0);
+  const [pollError,setPollError]=useState('');
+  const visibleError=error||pollError;
   const [panel,setPanel]=useState<"library"|"controls"|"builder"|null>(null);
   const [authNotice,setAuthNotice]=useState("");
+  const [authPending,setAuthPending]=useState<'login'|'register'|null>(null);
+  const authInFlight=useRef(false);
   const [downloadBusy,setDownloadBusy]=useState(false),[downloadError,setDownloadError]=useState('');
   const [downloadRecord,setDownloadRecord]=useState<{credential:string;url:string;filename:string}|null>(null);
   const downloadOwner=useRef(credential);downloadOwner.current=credential;
@@ -137,9 +142,23 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
   const [appliedWeeks,setAppliedWeeks]=useState(2);
   useEffect(()=>{const id=setInterval(()=>setClock(Date.now()),3000);return()=>clearInterval(id);},[]);
   const openPanel=(next:"library"|"controls"|"builder",trigger:HTMLButtonElement)=>{windowTrigger.current=trigger;setPanel(next);setWindowOpen(true);};
-  const refresh=useCallback(async()=>{if(!credential)return;const data=await api<Session>("/v1/session",credential);setSessionRecord({credential,data});setClock(Date.now());setSelected(previous=>previous||data.lease?.installationId||data.installations.find((i:{state:string})=>i.state==="approved")?.id||"");},[credential]);
+  const refresh=useCallback(async()=>{if(!credential)return;const data=await api<Session>("/v1/session",credential);if(downloadOwner.current!==credential)return;setSessionRecord({credential,data});setPollError('');setClock(Date.now());setSelected(previous=>previous||data.lease?.installationId||data.installations.find((i:{state:string})=>i.state==="approved")?.id||"");},[credential]);
   const action=async(work:()=>Promise<void>)=>{if(busy)return;setBusy(true);setError("");try{await work();}catch(e){setError(e instanceof Error?e.message:"REQUEST_FAILED");}finally{setBusy(false);}};
-  useEffect(()=>{if(!credential)return;let alive=true,pending=false;const poll=async()=>{if(!alive||pending)return;pending=true;try{await refresh();}catch(e){if(alive){const message=e instanceof Error?e.message:"CONNECTION_FAILED";setError(message);if(["UNAUTHORIZED","SESSION_REVOKED","SESSION_SCOPE_MISMATCH"].includes(message))onCredential("");}}finally{pending=false;}};void poll();const id=setInterval(poll,3000);return()=>{alive=false;clearInterval(id);};},[credential,refresh,onCredential]);
+  async function authenticate(){
+    if(busy||authInFlight.current)return;
+    const mode=signup?'register':'login';
+    const payload={email,password,...(signup?{displayName:displayName.trim()}: {})};
+    authInFlight.current=true;setAuthPending(mode);
+    try{await action(async()=>{
+      setAuthNotice('');
+      const result=await api<{accessToken?:string;confirmationRequired?:boolean;message?:string}>(`/v1/auth/${mode}`,'',payload);
+      if(result.confirmationRequired){setAuthNotice(result.message??'Confirm your email, then sign in.');setSignup(false);}
+      else if(result.accessToken)onCredential(result.accessToken);
+      else throw new Error('AUTH_SESSION_INVALID');
+      setPassword('');
+    });}finally{authInFlight.current=false;setAuthPending(null);}
+  }
+  useEffect(()=>{setPollError('');if(!credential)return;let alive=true,pending=false;const poll=async()=>{if(!alive||pending)return;pending=true;try{await refresh();}catch(e){if(alive){const message=e instanceof Error?e.message:"CONNECTION_FAILED";setPollError(message);if(["UNAUTHORIZED","SESSION_REVOKED","SESSION_SCOPE_MISMATCH"].includes(message))onCredential("");}}finally{pending=false;}};void poll();const id=setInterval(poll,3000);return()=>{alive=false;clearInterval(id);};},[credential,refresh,onCredential]);
   useEffect(()=>{if(!credential||!session?.subscriptionActive)return;let alive=true;void api<{strategies:UniversalConfiguration[]}>("/v1/strategies",credential).then(d=>{if(alive)setStrategies(d.strategies);}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[credential,session?.subscriptionActive,setStrategies]);
   const jobId=job?.id,jobState=job?.state;
   useEffect(()=>{if(!credential||!jobId||!jobState||!["queued","running"].includes(jobState))return;let alive=true,pending=false;const id=setInterval(()=>{if(!alive||pending)return;pending=true;void api<Job>(`/v1/jobs/${jobId}`,credential).then(data=>{if(alive)setJob(data);}).catch(e=>{if(alive)setError(e.message);}).finally(()=>{pending=false;});},1000);return()=>{alive=false;clearInterval(id);};},[credential,jobId,jobState,setJob]);
@@ -180,7 +199,7 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
   return <div className="universal-dashboard">
     <section className="guide-welcome" aria-label={t("Getting started")}>
       <div className="guide-welcome-copy"><span className="eyebrow"><UiText>{"YOUR FIRST RUN, WITHOUT THE GUESSWORK"}</UiText></span><h2><UiText>{"One step at a time."}</UiText></h2><p><UiText>{"Connect MT5. Choose your rules. Test them on history."}</UiText><br/><UiText>{"Trading stays off until you explicitly request it."}</UiText></p><div className="guide-inline"><HelpButton topic="start"><UiText>{"Show me how it works"}</UiText></HelpButton><div className="guide-view" role="group" aria-label={t("Dashboard complexity")}><button type="button" aria-pressed={!expert} onClick={()=>setExpert(false)}><UiText>{"Guided view"}</UiText></button><button type="button" aria-pressed={expert} onClick={()=>setExpert(true)}><UiText>{"Expert view"}</UiText></button></div></div></div>
-      <aside className="guide-coach"><TutorRobot paused={coachPaused} allowMotion={coachMotion} mood={busy||running||coachEditing?'thinking':error?'concern':agentMood}/><strong><UiText>{"Your studio guide"}</UiText></strong><StudioAgent key={credential||'anonymous'} credential={credential} active={!!session?.subscriptionActive} configuration={(()=>{try{return prepare(config);}catch{return config;}})()} auditWeeks={auditWeeks} symbol={terminal?.symbol??null} jobId={job?.id??null} summary={summary??null} resultIsCurrent={!!matchingAudit&&!dirty} strategies={strategies} connectionKey={`${selected}/${terminal?.symbol??''}/${terminal?.brokerServer??''}`} pending={busy} onMoodChange={setAgentMood} onConfirm={confirmAgent} onRestore={(c,w)=>{setConfig(structuredClone(c));setAuditWeeks(w);}}/><button type="button" className="text-btn" onClick={()=>{if(reducedMotion&&!coachMotion){setCoachMotion(true);setCoachPaused(false);}else setCoachPaused(p=>!p);}}><UiText>{reducedMotion&&!coachMotion?'Play this animation':coachPaused?'Resume robot':'Pause robot'}</UiText></button></aside>
+      <aside className="guide-coach"><TutorRobot paused={coachPaused} allowMotion={coachMotion} mood={busy||running||coachEditing?'thinking':visibleError?'concern':agentMood}/><strong><UiText>{"Your studio guide"}</UiText></strong><StudioAgent key={credential||'anonymous'} credential={credential} active={!!session?.subscriptionActive} configuration={(()=>{try{return prepare(config);}catch{return config;}})()} auditWeeks={auditWeeks} symbol={terminal?.symbol??null} jobId={job?.id??null} summary={summary??null} resultIsCurrent={!!matchingAudit&&!dirty} strategies={strategies} connectionKey={`${selected}/${terminal?.symbol??''}/${terminal?.brokerServer??''}`} pending={busy} onMoodChange={setAgentMood} onConfirm={confirmAgent} onRestore={(c,w)=>{setConfig(structuredClone(c));setAuditWeeks(w);}}/><button type="button" className="text-btn" onClick={()=>{if(reducedMotion&&!coachMotion){setCoachMotion(true);setCoachPaused(false);}else setCoachPaused(p=>!p);}}><UiText>{reducedMotion&&!coachMotion?'Play this animation':coachPaused?'Resume robot':'Pause robot'}</UiText></button></aside>
     </section>
     <nav className="guide-journey" aria-label={t("Setup steps")}>{[
       ['1','Sign in','Your private demo workspace',!!session,'account'],
@@ -190,7 +209,19 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
     ].map(([n,title,hint,done,topic])=><div key={String(n)} data-done={!!done}><span className="guide-step-number">{done?<Check size={18}/>:n}</span><div><strong><UiText>{title}</UiText></strong><small><UiText>{hint}</UiText></small></div><HelpButton topic={String(topic)}/></div>)}</nav>
     {expert&&<div className="uc-workflow mono" aria-label={t("Execution workflow")}><span className="uc-workflow-current"><i/><UiText>{"01 / CONFIGURE"}</UiText></span><b><UiText>{"/"}</UiText></b><span className={running?"uc-workflow-current":""}><UiText>{"02 / "}</UiText><UiText>{running?"AUDIT RUNNING":"RESEARCH"}</UiText></span><b><UiText>{"/"}</UiText></b><span className={terminal?.trading?"uc-workflow-current":""}><UiText>{"03 / "}</UiText><UiText>{terminal?.trading?"LIVE AUTHORIZED":"EXECUTION LOCKED"}</UiText></span><small><UiText>{"EXPLICIT AUTHORITY. ALWAYS."}</UiText></small></div>}
     <div className="uc-authority surface" id="studio-account"><div className="uc-row"><div><span className="eyebrow"><UiText>{"STEP 1 / YOUR ACCOUNT"}</UiText></span><h2><UiText>{session?.displayName?`Hello, ${session.displayName}`:'Start with your own workspace'}</UiText></h2></div><HelpButton topic="account"/></div>
-      {!session?<><form className="uc-login" onSubmit={e=>{e.preventDefault();void action(async()=>{setAuthNotice("");const result=await api<{accessToken?:string;confirmationRequired?:boolean;message?:string}>(`/v1/auth/${signup?"register":"login"}`,"",{email,password,...(signup?{displayName:displayName.trim()}: {})});if(result.confirmationRequired){setAuthNotice(result.message??"Confirm your email, then sign in.");setSignup(false);}else if(result.accessToken)onCredential(result.accessToken);else throw new Error("AUTH_SESSION_INVALID");setPassword("");});}}>{signup&&<label><UiText>{"Subscriber name"}</UiText><input required value={displayName} maxLength={60} onChange={e=>setDisplayName(e.target.value)} autoComplete="name"/></label>}<label><UiText>{"Email"}</UiText><input type="email" required value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username"/></label><label><UiText>{"Password"}</UiText><input type="password" required minLength={signup?12:1} value={password} onChange={e=>setPassword(e.target.value)} autoComplete={signup?"new-password":"current-password"}/></label><button className="primary-btn" disabled={busy}><UiText>{signup?"Create Account":"Sign In"}</UiText></button><button type="button" className="text-btn" onClick={()=>setSignup(!signup)}><UiText>{signup?"Already registered?":"Create an account"}</UiText></button></form>{authNotice&&<p role="status" className="uc-caption"><UiText>{authNotice}</UiText></p>}</>:
+      {restoring||credential&&!session?<AuthProgress restoring={restoring} retrying={!!pollError} onRetry={()=>void action(refresh)}/>:
+        !session?<><form className="uc-login" aria-busy={!!authPending} onSubmit={e=>{e.preventDefault();void authenticate();}}>
+          {signup&&<label><UiText>{"Subscriber name"}</UiText><input required disabled={!!authPending} value={displayName} maxLength={60} onChange={e=>setDisplayName(e.target.value)} autoComplete="name"/></label>}
+          <label><UiText>{"Email"}</UiText><input type="email" required disabled={!!authPending} value={email} onChange={e=>setEmail(e.target.value)} autoComplete="username"/></label>
+          <label><UiText>{"Password"}</UiText><input type="password" required disabled={!!authPending} minLength={signup?12:1} value={password} onChange={e=>setPassword(e.target.value)} autoComplete={signup?"new-password":"current-password"}/></label>
+          <button type="submit" className="primary-btn" disabled={busy}>
+            {authPending&&<LoaderCircle className="uc-auth-spinner" size={18} aria-hidden="true"/>}<UiText>{authPending==='register'?'Creating your account...':authPending==='login'?'Signing you in...':signup?'Create Account':'Sign In'}</UiText>
+          </button>
+          <button type="button" className="text-btn" disabled={busy} onClick={()=>setSignup(!signup)}><UiText>{signup?"Already registered?":"Create an account"}</UiText></button>
+        </form>
+        {authPending&&<p role="status" aria-live="polite" className="uc-caption"><UiText>{'Your request is in progress. Please wait; do not submit again.'}</UiText></p>}
+        {error&&<p role="alert" className="uc-error"><UiText>{friendlyError(error)}</UiText></p>}
+        {authNotice&&<p role="status" className="uc-caption"><UiText>{authNotice}</UiText></p>}</>:
       <><div className="uc-status-grid"><div><small><UiText>{session.accessMode==="demo"?"30-day demo / one time":"Subscription"}</UiText></small><strong><UiText>{session.accessMode==="demo"?"DEMO":session.subscriptionActive?"ACTIVE":"INACTIVE"}</UiText></strong><span><UiText>{session.accessMode==="demo"?`${session.trial?.daysRemaining??0} days remaining / ends ${new Date(session.trial!.expiresAt).toLocaleDateString(locale)}`:session.subscriptionActive?`Until ${new Date(session.entitlementUntil).toLocaleString(locale)}`:"Demo ended. Subscribe to continue research or trading."}</UiText></span></div><div><small><UiText>{"MT5 installation"}</UiText></small><strong><UiText>{online?"CONNECTED":"STANDBY"}</UiText></strong><span><UiText>{terminal?`${terminal.symbol} / ${terminal.brokerServer}`:"Attach the connection EA and pair your device"}</UiText></span></div><div><small><UiText>{"Native positions"}</UiText></small><strong><UiText>{terminal?.openPositions??"--"}</UiText></strong><span><UiText>{"Protective management continues when trading is OFF"}</UiText></span></div></div>
       <div className="uc-row"><button className="secondary-btn" onClick={onConnect}><Terminal size={16}/><UiText>{"Connect / Manage MT5"}</UiText></button><HelpButton topic="connect"/><select aria-label={t("Installation")} value={selected} onChange={e=>setSelected(e.target.value)}><option value=""><UiText>{"Choose your approved connection"}</UiText></option>{session.installations.filter(i=>i.state==="approved").map(i=><option key={i.id} value={i.id}>{i.label}</option>)}</select>
         <button className="secondary-btn" disabled={!selected||busy||!session.subscriptionActive} onClick={()=>void action(async()=>{await api(`/v1/installations/${selected}/activate`,credential,{});await refresh();})}><UiText>{permitted?'This browser is authorized':'Authorize this browser'}</UiText></button><HelpButton topic="controller"/>
@@ -223,7 +254,7 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
       </div><p className="uc-caption"><UiText>{"Apply never turns trading on. Trading OFF stops new entries, not the existing positions' protective SL/TP. Results are terminal-reported, using the existing production audit semantics, not a synthetic web backtest."}</UiText></p>
       {auditBlock&&<p className="guide-blocker" role="status"><ShieldCheck size={18}/><UiText>{auditBlock}</UiText></p>}
     </section>
-    {error&&<p role="alert" className="uc-error"><UiText>{friendlyError(error)}</UiText></p>}
+    {visibleError&&credential&&<p role="alert" className="uc-error"><UiText>{friendlyError(visibleError)}</UiText></p>}
     {terminal?.error&&<p role="alert" className="uc-error"><UiText>{"MT5: "}</UiText><UiText>{friendlyError(terminal.error)}</UiText></p>}
     <section className="uc-results surface" aria-live="polite"><div className="uc-row"><div><span className="eyebrow"><UiText>{"STEP 4 / CHECK WHAT ACTUALLY HAPPENED"}</UiText></span><h2><UiText>{"MT5 Audit / "}</UiText><UiText>{job?.state??"No run yet"}</UiText></h2></div><HelpButton topic="results"/><span className="mono"><UiText>{job?`${job.request.symbol} / ${weekLabel(job.request.version===2?job.request.auditWeeks:2)}`:"WAITING FOR APPLY"}</UiText></span></div>
       {job?.progress&&<div className="uc-progress"><span><UiText>{job.progress.phase}</UiText><UiText>{" / "}</UiText><UiText>{job.progress.processed}</UiText> <UiText>{job.progress.total===null?"/ total unknown":`/ ${job.progress.total}`}</UiText></span>{job.progress.total!==null&&job.progress.total>0?<progress value={job.progress.processed} max={job.progress.total}/>:<p><UiText>{"Waiting for real broker history. No cosmetic completion estimate."}</UiText></p>}</div>}
@@ -257,7 +288,7 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
       </>}
       {validation&&<p role="alert" className="uc-error"><UiText>{"Check this draft: "}</UiText><UiText>{validation}</UiText></p>}
       {auditBlock&&<p className="guide-blocker"><UiText>{auditBlock}</UiText></p>}
-      {error&&<p role="alert" className="uc-error"><UiText>{friendlyError(error)}</UiText></p>}
+      {visibleError&&<p role="alert" className="uc-error"><UiText>{friendlyError(visibleError)}</UiText></p>}
     </ConsoleWindow>
     <ConsoleWindow open={!!familyPending} onOpenChange={open=>{if(!open)setFamilyPending(null);}} title={t("Start with another engine?")} description={t("Changing engine families replaces this draft with the new family's defaults. Saved strategies are untouched.")} tone="gold"
       footer={<><button type="button" className="secondary-btn" onClick={()=>setFamilyPending(null)}><UiText>{"Keep my current draft"}</UiText></button><button type="button" className="primary-btn" onClick={()=>{if(familyPending)changeFamily(familyPending);}}><UiText>{"Use "}</UiText><UiText>{familyPending?families[familyPending]:'new engine'}</UiText><UiText>{" defaults"}</UiText></button></>}>
@@ -268,7 +299,7 @@ export default function UniversalDashboard({credential,onCredential,onConnect}:{
       <dl className="guide-review-grid"><div><dt><UiText>{"MT5 account / broker"}</UiText></dt><dd><UiText>{terminal?.accountLogin??'Unknown'}</UiText><UiText>{" / "}</UiText><UiText>{terminal?.brokerServer??'Offline'}</UiText></dd></div><div><dt><UiText>{"Chart instrument"}</UiText></dt><dd><UiText>{terminal?.symbol??'Offline'}</UiText></dd></div><div><dt><UiText>{"Setup / engine"}</UiText></dt><dd>{config.name}<UiText>{" / "}</UiText><UiText>{families[config.family]}</UiText></dd></div><div><dt><UiText>{"Intended risk / target"}</UiText></dt><dd><UiText>{String(config.inputs.InpRiskPerTradePct)}</UiText><UiText>{"% / "}</UiText><UiText>{String(config.runtime.targetR)}</UiText><UiText>{"R"}</UiText></dd></div><div><dt><UiText>{"Stop model"}</UiText></dt><dd><UiText>{config.inputs.InpPipSlModeDefault?`${config.inputs.InpPipSlPips} pips`:'Engine stop model'}</UiText></dd></div><div><dt><UiText>{"Position mode"}</UiText></dt><dd><UiText>{config.runtime.independent?`Independent / max ${config.runtime.maxOpen}`:'Legacy / one position'}</UiText></dd></div></dl>
       <p className="uc-caption"><UiText>{"Percentage risk applies only in the corresponding sizing mode. Broker minimum volume, margin and execution costs can change actual exposure. An audit is not a profit guarantee."}</UiText></p><HelpButton topic="live"/>
       <label className="guide-ack"><input type="checkbox" checked={liveAcknowledged} onChange={e=>setLiveAcknowledged(e.target.checked)}/><span><UiText>{"I checked this account, instrument, sizing and audit. I understand this can open real trades and Trading OFF only stops new entries."}</UiText></span></label>
-      {liveBlock&&<p role="status" className="guide-blocker"><UiText>{liveBlock}</UiText></p>}{error&&<p role="alert" className="uc-error"><UiText>{friendlyError(error)}</UiText></p>}
+      {liveBlock&&<p role="status" className="guide-blocker"><UiText>{liveBlock}</UiText></p>}{visibleError&&<p role="alert" className="uc-error"><UiText>{friendlyError(visibleError)}</UiText></p>}
     </ConsoleWindow>
   </div>;
 }

@@ -8,6 +8,8 @@ import operatorKey from './operator-public-key.mjs';
 globalThis.Buffer=Buffer;
 const url=Deno.env.get('SUPABASE_URL'),serviceKey=Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const apiUrl=url+'/functions/v1/stratum-control',studio='https://cemkaaa.github.io';
+// Keep the account-locked SQL transaction beside this project's Singapore database.
+const databaseRegion='ap-southeast-1';
 const database=postgres(Deno.env.get('SUPABASE_DB_URL'),{prepare:false,max:2,idle_timeout:20,connect_timeout:10,
  types:{safeInteger:{to:20,from:[20],serialize:String,parse:value=>{const n=Number(value);if(!Number.isSafeInteger(n))throw new Error('DATABASE_INTEGER_UNSAFE');return n;}}}});
 const encryption=createHash('sha256').update('stratum-cloud-config-v1\0'+serviceKey).digest();
@@ -55,6 +57,10 @@ Deno.serve(async request=>{
  if(request.method==='OPTIONS')return new Response(null,{status:204,headers:{'Access-Control-Allow-Origin':studio,'Access-Control-Allow-Credentials':'true','Access-Control-Allow-Methods':'GET, POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type, Authorization, X-Stratum-Proof','Access-Control-Max-Age':'600','Vary':'Origin'}});
  const ip=request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()??'unknown';
  try{
+  if(Deno.env.get('SB_REGION')&&Deno.env.get('SB_REGION')!==databaseRegion){
+   const forwarded=new Request(apiUrl+path,request);forwarded.headers.set('x-region',databaseRegion);
+   return await fetch(forwarded,{redirect:'error',signal:AbortSignal.timeout(30000)});
+  }
   // Rate limits are persisted, not per-isolate maps; no credentials are retained in the key.
   const sensitive=/\/auth\/|\/pairings|\/ea\//.test(path),limit=sensitive?12:600,at=Date.now();
   const key=digest(ip+'|'+(sensitive?'identity':'all'));

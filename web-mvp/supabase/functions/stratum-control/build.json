@@ -1,9 +1,9 @@
 {
   "canonical": {
-    "control-plane.mjs": "abde0578d6100f5c65218f7fa8bfb788f4f44e53b35b06e39be13a184e52ed31",
-    "supabase-auth.mjs": "cf4168570f9c5ce4facdf6dbeda67dc3121381046730ae85bf25a8bb6b0997a8",
+    "control-plane.mjs": "8584def269d6bd1bd1ffce6ead153c592ee8e28fb7cc5a9f1c8603c460341502",
+    "supabase-auth.mjs": "b095d85333111757fdd27ad1ff375abff342a26f4e49bfbdfe623f0d4e6c1d7d",
     "http.mjs": "4f6e274a1ea83e08eeac4d3536a5bf03528bc49ae9ebd2376d192c484a73ad26",
     "delivery.mjs": "5ca040dc7fc0ef0cff858de4b5fd6a69d5931612ac1d1c51cf215ed83842a4c5"
   },
-  "bundleSha256": "86f59d07c0745d004aea4b76b43c515a4641be2f1b69b934509a11b79e04a300"
+  "bundleSha256": "6c75f43ab8e8f2589b881c4361a695a22d05b939154d1564d75993ad41a90f10"
 }

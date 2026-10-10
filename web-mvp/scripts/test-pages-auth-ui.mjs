@@ -19,12 +19,10 @@ page.on('response', response => {
   if (response.url().startsWith(CLOUD_CONTROL)) responses.push({ path: response.url().slice(CLOUD_CONTROL.length), status: response.status() });
 });
 try {
-  const restoredSession=page.waitForResponse(response=>response.url()===CLOUD_CONTROL+'/v1/auth/session',{timeout:60000});
-  void restoredSession.catch(()=>{});
   await page.goto(site, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  // The initial client-side session request proves React hydration has completed.
-  await restoredSession;
+  // The form replaces the restoring state only after React hydration completes.
   const form = page.locator('form.uc-login');
+  await form.waitFor({state:'visible',timeout:60000});
   await form.locator('input[type=email]').fill(qa.email);
   await form.locator('input[type=password]').fill(qa.password);
   const sessionPromise = page.waitForResponse(response => response.url() === CLOUD_CONTROL + '/v1/session' && response.status() === 200, { timeout: 90000 });
@@ -41,6 +39,13 @@ try {
   await form.waitFor({ state: 'detached', timeout: 45000 });
   // Observe several automatic refreshes, not just the first successful login response.
   await page.waitForTimeout(15000);
+  assert.equal(await page.evaluate(()=>!!sessionStorage.getItem('stratum.cloud-session.v1')),true);
+  await page.reload({waitUntil:'domcontentloaded'});
+  await page.locator('.uc-status-grid').waitFor({state:'visible',timeout:60000});
+  assert.equal(await page.locator('form.uc-login').count(),0);
+  await page.waitForTimeout(10000);
+  assert.equal(calls.filter(call=>call.url.endsWith('/v1/auth/login')).length,1);
+  assert.equal(calls.filter(call=>call.url.endsWith('/v1/auth/session')).length,0);
   assert.equal(failures.length, 0);
   assert.ok(calls.length > 0);
   assert.ok(calls.every(call => call.url.startsWith(CLOUD_CONTROL)));
@@ -62,4 +67,4 @@ try {
     }
   } finally { await browser.close(); }
 }
-console.log(JSON.stringify({ status: 'PASS', site, responses, checks: ['published login form', 'real Supabase QA login', 'authenticated session', 'no localhost auth calls', 'no CORS errors', 'no server 5xx responses', 'test-session cleanup'], nativeTradingRequested: false }));
+console.log(JSON.stringify({ status: 'PASS', site, responses, checks: ['published login form', 'real Supabase QA login', 'authenticated session', 'automatic session polling', 'reload restores same cloud session without another login', 'no anonymous auth probe', 'no localhost auth calls', 'no CORS errors', 'no server 5xx responses', 'test-session cleanup'], nativeTradingRequested: false }));

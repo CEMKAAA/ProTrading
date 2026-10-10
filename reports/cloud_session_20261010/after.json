@@ -1,0 +1,112 @@
+{
+  "label": "after",
+  "rounds": 6,
+  "checkedAt": "2026-10-10T11:47:55.973Z",
+  "requests": 18,
+  "failures": [],
+  "meanMs": 9599,
+  "maxMs": 13088,
+  "results": [
+    {
+      "path": "/v1/auth/login",
+      "status": 200,
+      "elapsedMs": 7898
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 6752
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 8855
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 12679
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 7674
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 9389
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 12061
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 7343
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 8503
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 12452
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 7724
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 9762
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 12740
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 6768
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 8852
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 13088
+    },
+    {
+      "path": "/v1/jobs",
+      "status": 200,
+      "elapsedMs": 7429
+    },
+    {
+      "path": "/v1/session",
+      "status": 200,
+      "elapsedMs": 8579
+    },
+    {
+      "path": "/v1/library/strategies",
+      "status": 200,
+      "elapsedMs": 12138
+    },
+    {
+      "path": "/v1/auth/logout",
+      "status": 200,
+      "elapsedMs": 7186
+    }
+  ],
+  "nativeTradingRequested": false
+}

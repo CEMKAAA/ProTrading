@@ -54,6 +54,50 @@ test('async policy preserves personal identity, session arrays and settings upse
  assert.deepEqual(await f.plane.strategies(f.access),[c]);
  }finally{f.db.db.close();}
 });
+
+test('batched session snapshot equals canonical policy, including stale authority and controller scope',async()=>{
+ const f=await fixture();try{
+  const at=Date.now();f.plane.now=()=>at;
+  await f.plane.setDisplayName(f.account,'Poll QA');
+  await f.plane.run('INSERT INTO account_trials VALUES(?,?,?)',f.account,at-1000,at+30*86400000-1000);
+  await f.plane.run('INSERT INTO supabase_accounts VALUES(?,?,?)',f.account,'poll@example.com',at+10000);
+  await f.plane.run('INSERT INTO terminal_status VALUES(?,?,?)',f.installation.id,JSON.stringify({symbol:'USDJPYm',trading:false}),at);
+  const snapshot=async tokenHash=>{
+   const row=await f.db.get(`SELECT s.id AS sessionId,s.account_id AS accountId,s.expires_at AS sessionExpiry,a.disabled,
+    a.entitlement_until AS paidUntil,t.starts_at AS trialStartsAt,t.expires_at AS trialExpiresAt,
+    r.account_id AS remoteAccountId,r.authority_until AS authorityUntil,r.email,p.display_name AS profileName,i.email AS localEmail,
+    l.installation_id AS leaseInstallationId,l.expires_at AS leaseExpiresAt,l.session_id AS leaseSessionId
+    FROM sessions s JOIN accounts a ON a.id=s.account_id LEFT JOIN account_trials t ON t.account_id=a.id
+    LEFT JOIN supabase_accounts r ON r.account_id=a.id LEFT JOIN account_profiles p ON p.account_id=a.id
+    LEFT JOIN identities i ON i.account_id=a.id LEFT JOIN leases l ON l.account_id=a.id WHERE s.token_hash=?`,tokenHash);
+   if(!row)return undefined;
+   row.trading=await f.plane.tradingInfo(row.accountId);
+   row.installations=await f.db.all('SELECT id,label,state,created_at AS createdAt FROM installations WHERE account_id=? ORDER BY created_at DESC',row.accountId);
+   row.statuses=(await f.db.all('SELECT installation_id,status_json,at FROM terminal_status WHERE installation_id IN(SELECT id FROM installations WHERE account_id=?)',row.accountId))
+    .map(r=>({...JSON.parse(r.status_json),installationId:r.installation_id,reportedAt:r.at}));
+   return row;
+  };
+  for(const update of [()=>{},()=>f.plane.run('UPDATE supabase_accounts SET authority_until=0 WHERE account_id=?',f.account),
+   ()=>f.plane.run('UPDATE supabase_accounts SET authority_until=? WHERE account_id=?',at+10000,f.account),
+   ()=>f.plane.run('UPDATE leases SET expires_at=0 WHERE account_id=?',f.account),
+   async()=>{const other=await f.plane.issueBrowserSession(f.account);const actor=await f.plane.browser(other.accessToken);await f.plane.run('UPDATE leases SET session_id=? WHERE account_id=?',actor.sessionId,f.account);}]){
+   delete f.db.sessionSnapshot;await update();const expected=await f.plane.sessionInfo(f.access);
+   f.db.sessionSnapshot=snapshot;assert.deepEqual(await f.plane.sessionInfo(f.access),expected);
+  }
+  await assert.rejects(()=>f.plane.sessionInfo('x'.repeat(43)),e=>e.code==='UNAUTHORIZED');
+  await f.plane.run('UPDATE accounts SET disabled=1 WHERE id=?',f.account);
+  await assert.rejects(()=>f.plane.sessionInfo(f.access),e=>e.code==='UNAUTHORIZED');
+ }finally{f.db.db.close();}
+});
+
+test('Postgres authority sync and session snapshot use one statement each without widening owner scope',async()=>{
+ const calls=[],db=new PostgresStore({async unsafe(sql,args){calls.push({sql,args});return Object.assign([],{count:0});}});
+ const v={accountId:id(),paidUntil:0,disabled:0,startsAt:1,expiresAt:2,name:'Quant',email:'qa@example.com',authorityUntil:10,accessActive:0};
+ await db.syncAuthority(v);assert.equal(calls.length,1);assert.equal(calls[0].args.length,9);
+ assert.match(calls[0].sql,/UPDATE trading SET enabled=0,revision=revision\+1/);assert.match(calls[0].sql,/AND \$9=0/);
+ await db.sessionSnapshot('token-hash');assert.equal(calls.length,2);assert.deepEqual(calls[1].args,['token-hash']);
+ assert.match(calls[1].sql,/WHERE s\.token_hash=\$1/);assert.match(calls[1].sql,/owned\.account_id=a\.id/);
+});
 test('async policy retains scope, signature, nonce replay and per-owner job isolation',async()=>{
  const f=await fixture();try{
  const proof=makeProof(f.installation.id,'POST','/v1/device/heartbeat',{},f.keys.privateKey);

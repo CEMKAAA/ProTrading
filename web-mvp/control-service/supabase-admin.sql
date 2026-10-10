@@ -14,6 +14,7 @@ create table if not exists stratum_private.strategy_catalog (
   native_snapshot jsonb not null,
   import_note text not null default '',
   active boolean not null default true,
+  campaign_results jsonb,
   updated_at timestamptz not null default now(),
   check (configuration is null or (configuration->>'family'=family and configuration->>'version'='2'))
 );
@@ -26,6 +27,7 @@ create table if not exists stratum_private.strategy_grants (
   updated_at timestamptz not null default now(),
   primary key (user_id,strategy_id)
 );
+alter table stratum_private.strategy_catalog add column if not exists campaign_results jsonb;
 create index if not exists strategy_catalog_family_name on stratum_private.strategy_catalog(family,lower(name),id) where active;
 create table if not exists stratum_private.strategy_grant_events (
   id bigint generated always as identity primary key,
@@ -90,7 +92,8 @@ begin
   select coalesce(jsonb_object_agg(family,n),'{}') into counts from(select family,count(*) n from stratum_private.strategy_catalog where active group by family) q;
   select coalesce(jsonb_agg(to_jsonb(q)),'[]'::jsonb) into items from (
     select c.id,c.name,c.family,c.symbol,c.configuration is not null as ready,c.import_note as "importNote",
-      coalesce(g.enabled,false) as enabled,coalesce(g.revision,0) as revision
+      coalesce(g.enabled,false) as enabled,coalesce(g.revision,0) as revision,
+      case when c.campaign_results->>'strategySourceHash'=c.source_hash then c.campaign_results else null end as campaign
     from stratum_private.strategy_catalog c left join stratum_private.strategy_grants g on g.strategy_id=c.id and g.user_id=p_user_id
     where c.active and c.family=p_family and position(lower(p_query) in lower(c.name||' '||c.symbol))>0
     order by lower(c.name),c.id limit 50 offset p_offset
@@ -124,7 +127,8 @@ declare state jsonb; items jsonb;
 begin
   state:=stratum_private.access_state();
   if not (state->>'accessActive')::boolean then raise exception 'STRATUM_ACCESS_REQUIRED' using errcode='42501'; end if;
-  select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'name',c.name,'family',c.family,'symbol',c.symbol,'sourceHash',c.source_hash) order by c.family,lower(c.name),c.id),'[]') into items
+  select coalesce(jsonb_agg(jsonb_build_object('id',c.id,'name',c.name,'family',c.family,'symbol',c.symbol,'sourceHash',c.source_hash,
+    'campaign',case when c.campaign_results->>'strategySourceHash'=c.source_hash then c.campaign_results else null end) order by c.family,lower(c.name),c.id),'[]') into items
     from stratum_private.strategy_catalog c join stratum_private.strategy_grants g on g.strategy_id=c.id
     where c.active and c.configuration is not null and g.user_id=auth.uid() and g.enabled;
   return jsonb_build_object('items',items);
