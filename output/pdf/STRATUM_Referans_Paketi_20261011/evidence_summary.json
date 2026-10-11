@@ -1,0 +1,950 @@
+{
+  "generatedAt": "2026-10-11T18:05:27.536Z",
+  "controls": {
+    "orb": {
+      "inputs": 182,
+      "runtime": 20
+    },
+    "macross": {
+      "inputs": 191,
+      "runtime": 19
+    },
+    "sol": {
+      "inputs": 101,
+      "runtime": 18
+    },
+    "entrylab": {
+      "inputs": 191,
+      "runtime": 20
+    }
+  },
+  "catalog": {
+    "security": [
+      {
+        "result": "PASS",
+        "checks": "default deny, direct table denial, forged admin denial, granted exact metrics, stale fingerprint, revoke, admin catalog"
+      }
+    ],
+    "database": [
+      {
+        "families": {
+          "orb": 70,
+          "sol": 30,
+          "macross": 82,
+          "entrylab": 9
+        },
+        "strategies": 191,
+        "campaign_strategies": 188,
+        "stale_campaigns": 0,
+        "campaign_windows": 1692,
+        "grants_digest": "a1c9df40cba10b8df39454fe294c3244",
+        "no_campaign": [
+          {
+            "id": "macross_3dff9201a65ef661e33734cc5a35",
+            "name": "btcusd0.02RStrategy",
+            "grants": 0
+          },
+          {
+            "id": "sol_cb2736d9f42e9cbab42314145525",
+            "name": "jp2250.01H1.5HtfMode",
+            "grants": 0
+          },
+          {
+            "id": "sol_18cbba93094a95461742dc1f734a",
+            "name": "jp2250.01HasResearchPotential",
+            "grants": 0
+          }
+        ]
+      }
+    ],
+    "metrics": {
+      "strategies": 188,
+      "windows": 1692,
+      "matched": 188,
+      "mismatch": [],
+      "extra": []
+    },
+    "catalog": {
+      "checked": 191,
+      "webRecords": 191,
+      "matched": 191,
+      "problems": [],
+      "extra": []
+    }
+  },
+  "examples": [
+    {
+      "name": "2RModeljp225",
+      "family": "orb",
+      "symbol": "JP225m",
+      "asOf": 1791575217,
+      "timeframe": 15,
+      "mode": "LEGACY",
+      "metrics": {
+        "total": 279,
+        "wins": 121,
+        "losses": 158,
+        "open": 0,
+        "flat": 0,
+        "winRate": 43.369175627240146,
+        "netR": 64.191666666667,
+        "minCumR": -4.865555555556
+      },
+      "criterion": "Highest 5Y Net R in family among available windows with >=100 closed trades; retrospective selection."
+    },
+    {
+      "name": "xauusdtrendlineDailyStrategy2R",
+      "family": "macross",
+      "symbol": "XAUUSDm",
+      "asOf": 1791575217,
+      "timeframe": 5,
+      "mode": "LEGACY",
+      "metrics": {
+        "total": 1120,
+        "wins": 413,
+        "losses": 707,
+        "open": 0,
+        "flat": 0,
+        "winRate": 36.875,
+        "netR": 103.2716,
+        "minCumR": -0.18
+      },
+      "criterion": "Highest 5Y Net R in family among available windows with >=100 closed trades; retrospective selection."
+    },
+    {
+      "name": "SolAdvanced_JP225_H2H1_2R",
+      "family": "sol",
+      "symbol": "JP225m",
+      "asOf": 1791575217,
+      "timeframe": 5,
+      "mode": "LEGACY",
+      "metrics": {
+        "total": 514,
+        "wins": 283,
+        "losses": 231,
+        "open": 0,
+        "flat": 0,
+        "winRate": 55.05836575875487,
+        "netR": 167.68325,
+        "minCumR": 0
+      },
+      "criterion": "Highest 5Y Net R in family among available windows with >=100 closed trades; retrospective selection."
+    }
+  ],
+  "parity": {
+    "checkedAt": "2026-10-10T21:45:55.519Z",
+    "strategy": "jp225Close/Reverse0.25R",
+    "strategyId": "user_853fdb478ffc791a62835a66",
+    "symbol": "JP225m",
+    "baseline": "unmodified canonical MaCross source, saved-strategy application and normal historical audit",
+    "binarySha256": "c7435543b2e4285f4ae14711880184efffd4b5f18b3568c41e383450e63e6a7f",
+    "configurationSha256": "7fd91a58e13758189480516e1735e594733ba575baad41fb7ad18ba1e029b5f7",
+    "rows": 41,
+    "differences": [],
+    "labelDifferences": [
+      {
+        "trade": 2,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 4,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 5,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 6,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 7,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 9,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 11,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 13,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 16,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 18,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 19,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 21,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 22,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 23,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 24,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 25,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 26,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 27,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 28,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 31,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 32,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 33,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 35,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 36,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      },
+      {
+        "trade": 38,
+        "original": "TP025",
+        "universal": "TP_R0.25000000"
+      }
+    ],
+    "fromUtc": "2026-09-21T00:00:00.000Z",
+    "toUtc": "2026-10-05T00:00:00.000Z",
+    "original": {
+      "wins": 25,
+      "losses": 15,
+      "flat": 0,
+      "open": 1,
+      "data": 0,
+      "netR": -0.6851666666660001,
+      "maxClosedDrawdownR": 2.1021666666670002,
+      "winRate": 62.5,
+      "trust": "client_reported",
+      "coverageComplete": true
+    },
+    "universal": {
+      "wins": 25,
+      "losses": 15,
+      "flat": 0,
+      "open": 1,
+      "data": 0,
+      "netR": -0.6851666666660001,
+      "maxClosedDrawdownR": 2.1021666666670002,
+      "winRate": 62.5,
+      "trust": "client_reported",
+      "coverageComplete": true
+    },
+    "status": "PASS"
+  },
+  "trace": [
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-21T13:25:00.000Z",
+      "entryUtc": "2026-09-21T13:30:00.000Z",
+      "exitUtc": "2026-09-21T14:25:00.000Z",
+      "entryPrice": 65930.4,
+      "exitPrice": 66193.5,
+      "sl": 66530.4,
+      "tp": 65780.4,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.4385,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-21T14:20:00.000Z",
+      "entryUtc": "2026-09-21T14:25:00.000Z",
+      "exitUtc": "2026-09-21T15:00:02.000Z",
+      "entryPrice": 66193.5,
+      "exitPrice": 66343.5,
+      "sl": 65593.5,
+      "tp": 66343.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-21T20:50:00.000Z",
+      "entryUtc": "2026-09-21T20:55:00.000Z",
+      "exitUtc": "2026-09-21T23:55:00.000Z",
+      "entryPrice": 66530.5,
+      "exitPrice": 66701.7,
+      "sl": 67130.5,
+      "tp": 66380.5,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.285333333333,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-21T23:50:00.000Z",
+      "entryUtc": "2026-09-21T23:55:00.000Z",
+      "exitUtc": "2026-09-22T00:00:14.000Z",
+      "entryPrice": 66701.7,
+      "exitPrice": 66851.7,
+      "sl": 66101.7,
+      "tp": 66851.7,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-22T02:40:00.000Z",
+      "entryUtc": "2026-09-22T02:45:01.000Z",
+      "exitUtc": "2026-09-22T04:10:37.000Z",
+      "entryPrice": 66696,
+      "exitPrice": 66546,
+      "sl": 67296,
+      "tp": 66546,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-22T09:50:00.000Z",
+      "entryUtc": "2026-09-22T09:55:00.000Z",
+      "exitUtc": "2026-09-22T13:36:45.000Z",
+      "entryPrice": 66696.7,
+      "exitPrice": 66846.7,
+      "sl": 66096.7,
+      "tp": 66846.7,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-23T00:40:00.000Z",
+      "entryUtc": "2026-09-23T00:45:00.000Z",
+      "exitUtc": "2026-09-23T01:15:17.000Z",
+      "entryPrice": 67003.3,
+      "exitPrice": 66853.3,
+      "sl": 67603.3,
+      "tp": 66853.3,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-23T04:15:00.000Z",
+      "entryUtc": "2026-09-23T04:20:03.000Z",
+      "exitUtc": "2026-09-23T10:50:02.000Z",
+      "entryPrice": 66909,
+      "exitPrice": 66798.4,
+      "sl": 66309,
+      "tp": 67059,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.184333333333,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-23T10:45:00.000Z",
+      "entryUtc": "2026-09-23T10:50:02.000Z",
+      "exitUtc": "2026-09-23T11:22:26.000Z",
+      "entryPrice": 66798.4,
+      "exitPrice": 66648.4,
+      "sl": 67398.4,
+      "tp": 66648.4,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-23T13:25:00.000Z",
+      "entryUtc": "2026-09-23T13:30:00.000Z",
+      "exitUtc": "2026-09-23T13:35:00.000Z",
+      "entryPrice": 66756.5,
+      "exitPrice": 66548.4,
+      "sl": 66156.5,
+      "tp": 66906.5,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.346833333333,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-23T13:30:00.000Z",
+      "entryUtc": "2026-09-23T13:35:00.000Z",
+      "exitUtc": "2026-09-23T13:47:12.000Z",
+      "entryPrice": 66548.4,
+      "exitPrice": 66398.4,
+      "sl": 67148.4,
+      "tp": 66398.4,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-23T22:00:00.000Z",
+      "entryUtc": "2026-09-23T22:05:00.000Z",
+      "exitUtc": "2026-09-23T23:25:00.000Z",
+      "entryPrice": 66228.6,
+      "exitPrice": 66105.3,
+      "sl": 65628.6,
+      "tp": 66378.6,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.2055,
+      "spreadPrice": 3.400000000009
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-23T23:20:00.000Z",
+      "entryUtc": "2026-09-23T23:25:00.000Z",
+      "exitUtc": "2026-09-24T00:01:11.000Z",
+      "entryPrice": 66105.3,
+      "exitPrice": 65955.3,
+      "sl": 66705.3,
+      "tp": 65955.3,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-24T13:10:00.000Z",
+      "entryUtc": "2026-09-24T13:15:01.000Z",
+      "exitUtc": "2026-09-24T15:10:00.000Z",
+      "entryPrice": 65688.5,
+      "exitPrice": 65460.4,
+      "sl": 65088.5,
+      "tp": 65838.5,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.380166666667,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-24T15:05:00.000Z",
+      "entryUtc": "2026-09-24T15:10:00.000Z",
+      "exitUtc": "2026-09-24T16:20:00.000Z",
+      "entryPrice": 65460.4,
+      "exitPrice": 65898.7,
+      "sl": 66060.4,
+      "tp": 65310.4,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.7305,
+      "spreadPrice": 3.099999999999
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-24T16:15:00.000Z",
+      "entryUtc": "2026-09-24T16:20:00.000Z",
+      "exitUtc": "2026-09-24T16:40:51.000Z",
+      "entryPrice": 65898.7,
+      "exitPrice": 66048.7,
+      "sl": 65298.7,
+      "tp": 66048.7,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-24T18:00:00.000Z",
+      "entryUtc": "2026-09-24T18:05:00.000Z",
+      "exitUtc": "2026-09-25T00:05:00.000Z",
+      "entryPrice": 65622.9,
+      "exitPrice": 65846.7,
+      "sl": 66222.9,
+      "tp": 65472.9,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.373,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-25T00:00:00.000Z",
+      "entryUtc": "2026-09-25T00:05:00.000Z",
+      "exitUtc": "2026-09-25T01:09:02.000Z",
+      "entryPrice": 65846.7,
+      "exitPrice": 65996.7,
+      "sl": 65246.7,
+      "tp": 65996.7,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-25T12:05:00.000Z",
+      "entryUtc": "2026-09-25T12:10:00.000Z",
+      "exitUtc": "2026-09-25T13:21:33.000Z",
+      "entryPrice": 66513.4,
+      "exitPrice": 66363.4,
+      "sl": 67113.4,
+      "tp": 66363.4,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-25T16:00:00.000Z",
+      "entryUtc": "2026-09-25T16:05:00.000Z",
+      "exitUtc": "2026-09-27T22:05:01.000Z",
+      "entryPrice": 66636.5,
+      "exitPrice": 66403.2,
+      "sl": 66036.5,
+      "tp": 66786.5,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.388833333333,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-27T22:00:00.000Z",
+      "entryUtc": "2026-09-27T22:05:01.000Z",
+      "exitUtc": "2026-09-27T22:59:08.000Z",
+      "entryPrice": 66403.2,
+      "exitPrice": 66253.2,
+      "sl": 67003.2,
+      "tp": 66253.2,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 7.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-27T23:50:00.000Z",
+      "entryUtc": "2026-09-27T23:55:00.000Z",
+      "exitUtc": "2026-09-28T00:02:02.000Z",
+      "entryPrice": 66554.7,
+      "exitPrice": 66704.7,
+      "sl": 65954.7,
+      "tp": 66704.7,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-28T02:40:00.000Z",
+      "entryUtc": "2026-09-28T02:45:00.000Z",
+      "exitUtc": "2026-09-28T05:44:05.000Z",
+      "entryPrice": 66313.9,
+      "exitPrice": 66163.9,
+      "sl": 66913.9,
+      "tp": 66163.9,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-28T11:40:00.000Z",
+      "entryUtc": "2026-09-28T11:45:01.000Z",
+      "exitUtc": "2026-09-28T12:20:07.000Z",
+      "entryPrice": 65884.5,
+      "exitPrice": 66034.5,
+      "sl": 65284.5,
+      "tp": 66034.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-28T14:10:00.000Z",
+      "entryUtc": "2026-09-28T14:15:00.000Z",
+      "exitUtc": "2026-09-28T14:43:52.000Z",
+      "entryPrice": 65736.5,
+      "exitPrice": 65586.5,
+      "sl": 66336.5,
+      "tp": 65586.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-28T16:20:00.000Z",
+      "entryUtc": "2026-09-28T16:25:01.000Z",
+      "exitUtc": "2026-09-28T16:26:34.000Z",
+      "entryPrice": 65914.5,
+      "exitPrice": 66064.5,
+      "sl": 65314.5,
+      "tp": 66064.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-28T20:50:00.000Z",
+      "entryUtc": "2026-09-28T20:55:00.000Z",
+      "exitUtc": "2026-09-28T22:00:06.000Z",
+      "entryPrice": 65861.5,
+      "exitPrice": 65711.5,
+      "sl": 66461.5,
+      "tp": 65711.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-29T06:10:00.000Z",
+      "entryUtc": "2026-09-29T06:15:00.000Z",
+      "exitUtc": "2026-09-29T06:29:39.000Z",
+      "entryPrice": 65254.5,
+      "exitPrice": 65404.5,
+      "sl": 64654.5,
+      "tp": 65404.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.099999999999
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-30T10:10:00.000Z",
+      "entryUtc": "2026-09-30T10:15:00.000Z",
+      "exitUtc": "2026-09-30T12:32:04.000Z",
+      "entryPrice": 66944.3,
+      "exitPrice": 67544.3,
+      "sl": 67544.3,
+      "tp": 66794.3,
+      "outcome": "LOSS",
+      "exitReason": "SL",
+      "netR": -1,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-30T12:30:00.000Z",
+      "entryUtc": "2026-09-30T12:35:00.000Z",
+      "exitUtc": "2026-09-30T17:15:00.000Z",
+      "entryPrice": 67547.6,
+      "exitPrice": 67154.5,
+      "sl": 66947.6,
+      "tp": 67697.6,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.655166666667,
+      "spreadPrice": 3.400000000009
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-09-30T17:10:00.000Z",
+      "entryUtc": "2026-09-30T17:15:00.000Z",
+      "exitUtc": "2026-09-30T18:49:27.000Z",
+      "entryPrice": 67154.5,
+      "exitPrice": 67004.5,
+      "sl": 67754.5,
+      "tp": 67004.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-09-30T23:20:00.000Z",
+      "entryUtc": "2026-09-30T23:25:06.000Z",
+      "exitUtc": "2026-09-30T23:45:11.000Z",
+      "entryPrice": 67100.8,
+      "exitPrice": 67250.8,
+      "sl": 66500.8,
+      "tp": 67250.8,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.400000000009
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-10-01T07:15:00.000Z",
+      "entryUtc": "2026-10-01T07:20:00.000Z",
+      "exitUtc": "2026-10-01T07:26:05.000Z",
+      "entryPrice": 68562.3,
+      "exitPrice": 68412.3,
+      "sl": 69162.3,
+      "tp": 68412.3,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-10-01T10:40:00.000Z",
+      "entryUtc": "2026-10-01T10:45:00.000Z",
+      "exitUtc": "2026-10-01T13:25:00.000Z",
+      "entryPrice": 68615.7,
+      "exitPrice": 68302.5,
+      "sl": 68015.7,
+      "tp": 68765.7,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.522,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-10-01T13:20:00.000Z",
+      "entryUtc": "2026-10-01T13:25:00.000Z",
+      "exitUtc": "2026-10-01T14:00:55.000Z",
+      "entryPrice": 68302.5,
+      "exitPrice": 68152.5,
+      "sl": 68902.5,
+      "tp": 68152.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-10-01T17:20:00.000Z",
+      "entryUtc": "2026-10-01T17:25:00.000Z",
+      "exitUtc": "2026-10-01T17:30:04.000Z",
+      "entryPrice": 68235.5,
+      "exitPrice": 68385.5,
+      "sl": 67635.5,
+      "tp": 68385.5,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-10-01T23:35:00.000Z",
+      "entryUtc": "2026-10-01T23:40:00.000Z",
+      "exitUtc": "2026-10-02T00:00:00.000Z",
+      "entryPrice": 68235.3,
+      "exitPrice": 68513.7,
+      "sl": 68835.3,
+      "tp": 68085.3,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.464,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-10-01T23:55:00.000Z",
+      "entryUtc": "2026-10-02T00:00:00.000Z",
+      "exitUtc": "2026-10-02T00:18:59.000Z",
+      "entryPrice": 68513.7,
+      "exitPrice": 68663.7,
+      "sl": 67913.7,
+      "tp": 68663.7,
+      "outcome": "WIN",
+      "exitReason": "TP",
+      "netR": 0.25,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-10-02T15:15:00.000Z",
+      "entryUtc": "2026-10-02T15:20:00.000Z",
+      "exitUtc": "2026-10-02T19:55:00.000Z",
+      "entryPrice": 69410.3,
+      "exitPrice": 69773.6,
+      "sl": 70010.3,
+      "tp": 69260.3,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.6055,
+      "spreadPrice": 3.399999999994
+    },
+    {
+      "direction": "BUY",
+      "signalUtc": "2026-10-02T19:50:00.000Z",
+      "entryUtc": "2026-10-02T19:55:00.000Z",
+      "exitUtc": "2026-10-04T23:55:00.000Z",
+      "entryPrice": 69773.6,
+      "exitPrice": 69560.3,
+      "sl": 69173.6,
+      "tp": 69923.6,
+      "outcome": "LOSS",
+      "exitReason": "REVERSE",
+      "netR": -0.3555,
+      "spreadPrice": 3.100000000006
+    },
+    {
+      "direction": "SELL",
+      "signalUtc": "2026-10-04T23:50:00.000Z",
+      "entryUtc": "2026-10-04T23:55:00.000Z",
+      "exitUtc": null,
+      "entryPrice": 69560.3,
+      "exitPrice": null,
+      "sl": 70160.3,
+      "tp": 69410.3,
+      "outcome": "OPEN",
+      "exitReason": "OPEN",
+      "netR": null,
+      "spreadPrice": 3.399999999994
+    }
+  ],
+  "screenshots": [
+    {
+      "id": "web_home",
+      "filename": "web_home.png",
+      "caption": "Yayımlanan üretim ön yüzünün yerel build kaydı. Tanıtım/rehber sahneleri sentetiktir.",
+      "kind": "production_frontend_capture"
+    },
+    {
+      "id": "web_builder_chapter",
+      "filename": "web_builder_chapter.png",
+      "caption": "Ana sayfanın builder bölümü; örnek kural görseli, yatırım tavsiyesi değildir.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_connection_chapter",
+      "filename": "web_connection_chapter.png",
+      "caption": "Ana sayfanın web-MT5 bağlantı anlatımı.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_account",
+      "filename": "web_account.png",
+      "caption": "Gerçek üretim UI; kimlik ve bağlantı durumu yalnızca görsel test verisidir.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_control_deck",
+      "filename": "web_control_deck.png",
+      "caption": "Gerçek üretim kontrol odası; parametreler varsayılan taslak, Trading OFF.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_control_modules",
+      "filename": "web_control_modules.png",
+      "caption": "Gerçek üretim kontrol odası seçicileri; görsel önizleme, emir yetkisi yok.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_strategy_library",
+      "filename": "web_strategy_library.png",
+      "caption": "Gerçek UI + doğrulanmış MEGA arşiv metrikleri; API yalnızca görsel yakalama için taklit edilmiştir.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_strategy_result_card",
+      "filename": "web_strategy_result_card.png",
+      "caption": "Gerçek üretim strateji kartı + seçili 5Y MEGA arşiv sonucu. Kimlik/erişim görsel test verisidir; yeni audit çalıştırılmadı.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_entry_builder",
+      "filename": "web_entry_builder.png",
+      "caption": "Gerçek üretim builder modalı; RSI(14) için eğitim amaçlı BUY/SELL örnek taslağı. Ayarlar sunucuya uygulanmadı, audit veya canlı emir yok.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_nas_controls",
+      "filename": "web_nas_controls.png",
+      "caption": "Gerçek üretim NAS parametre odası; hiçbir ayar uygulanmadı.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_animated_lesson",
+      "filename": "web_animated_lesson.png",
+      "caption": "Ayar etkisini anlatan sentetik mum grafiği ve robot; canlı/backtest verisi değildir.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    },
+    {
+      "id": "web_activation_guide",
+      "filename": "web_activation_guide.png",
+      "caption": "Gerçek üretim aktivasyon rehberi; adımlar gösterim amaçlı, eşleştirme yapılmadı.",
+      "kind": "production_frontend_with_readonly_fixture_api"
+    }
+  ],
+  "pageErrors": []
+}

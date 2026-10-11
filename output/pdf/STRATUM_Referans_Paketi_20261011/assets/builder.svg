@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="644" viewBox="0 0 509.276 205">
+<title>builder</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="205" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="15" y="18" width="143" height="56" rx="8" fill="#F8F2E4" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="25" y="37" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">BUY A</text>
+<text x="25" y="53" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">RSI(14) &gt; 50</text>
+<rect x="189" y="18" width="143" height="56" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="199" y="37" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">BUY B</text>
+<text x="199" y="53" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">EMA(12) &gt; EMA(26)</text>
+<rect x="365" y="18" width="127" height="56" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="375" y="37" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">KAPANMIŞ BAR</text>
+<text x="375" y="53" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Causal state</text>
+<line x1="158" y1="46" x2="189" y2="46" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="189" y1="46" x2="183.73450462865776" y2="43.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="189" y1="46" x2="183.73450462865776" y2="48.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<text x="169" y="30" fill="#17313F" font-family="Candara, sans-serif" font-size="8" font-weight="700" text-anchor="start">AND</text>
+<line x1="332" y1="46" x2="365" y2="46" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="365" y1="46" x2="359.73450462865776" y2="43.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="365" y1="46" x2="359.73450462865776" y2="48.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<rect x="15" y="107" width="221" height="65" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="25" y="126" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">SELL / EXIT AYRI</text>
+<text x="25" y="142" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Ters kural otomatik varsayılmaz</text>
+<rect x="270" y="107" width="222" height="65" rx="8" fill="#E7F4EF" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="280" y="126" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">PREVIEW → KAYDET</text>
+<text x="280" y="142" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Audit ve live izin ayrı</text>
+<line x1="423" y1="74" x2="423" y2="107" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="423" y1="107" x2="425.8765532316252" y2="101.73450462865776" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="423" y1="107" x2="420.1234467683748" y2="101.73450462865776" stroke="#2C8F7D" stroke-width="1.8"/>
+<text x="25" y="95" fill="#17313F" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">((A OR B) AND C): soldan sağa</text>
+</svg>

@@ -1,0 +1,26 @@
+[
+  {
+    "file": "T01_evidence_card.svg",
+    "issues": []
+  },
+  {
+    "file": "T02_ui_walkthrough.svg",
+    "issues": []
+  },
+  {
+    "file": "T03_trust_boundary.svg",
+    "issues": []
+  },
+  {
+    "file": "T04_before_after.svg",
+    "issues": []
+  },
+  {
+    "file": "T05_strategy_evidence.svg",
+    "issues": []
+  },
+  {
+    "file": "T06_error_clinic.svg",
+    "issues": []
+  }
+]

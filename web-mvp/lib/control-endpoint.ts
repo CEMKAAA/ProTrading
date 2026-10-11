@@ -22,9 +22,20 @@ export const CONTROL_TIMEOUT_MS = controlTimeout();
 const sessionKey = 'stratum.cloud-session.v1';
 export function storedSession(): string {
   if (!CLOUD_SESSION || typeof window === 'undefined') return '';
-  try { return sessionStorage.getItem(sessionKey) ?? ''; } catch { return ''; }
+  // Only the opaque, server-expiring BFF handle is stored, never Supabase tokens.
+  try {
+    const saved = localStorage.getItem(sessionKey);
+    if (saved) return saved;
+  } catch { /* Use tab storage if persistent storage is unavailable. */ }
+  try {
+    const previous = sessionStorage.getItem(sessionKey) ?? '';
+    if (previous) storeSession(previous);
+    return previous;
+  } catch { return ''; }
 }
 export function storeSession(value: string): void {
   if (!CLOUD_SESSION || typeof window === 'undefined') return;
+  try { if (value) localStorage.setItem(sessionKey, value); else localStorage.removeItem(sessionKey); } catch { /* Private browsing can disable storage. */ }
+  // Mirror for older open tabs; logout removes both copies.
   try { if (value) sessionStorage.setItem(sessionKey, value); else sessionStorage.removeItem(sessionKey); } catch { /* Private browsing can disable storage. */ }
 }

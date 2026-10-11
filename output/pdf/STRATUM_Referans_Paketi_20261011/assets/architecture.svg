@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="644" viewBox="0 0 509.276 205">
+<title>architecture</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="205" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="15" y="17" width="145" height="68" rx="8" fill="#F8F2E4" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="25" y="36" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">WEB / STUDIO</text>
+<text x="25" y="52" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Ayar taslağı + review</text>
+<rect x="181" y="17" width="145" height="68" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="191" y="36" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">SUPABASE</text>
+<text x="191" y="52" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Auth + private DB + Edge</text>
+<rect x="347" y="17" width="145" height="68" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="357" y="36" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">YEREL HELPER</text>
+<text x="357" y="52" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Cihaz proof + IPC</text>
+<rect x="181" y="118" width="145" height="68" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="191" y="137" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">BROKER</text>
+<text x="191" y="153" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Fiyat, tick, execution</text>
+<rect x="347" y="118" width="145" height="68" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="357" y="137" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">UNIVERSAL MT5</text>
+<text x="357" y="153" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Native audit + risk + trade</text>
+<line x1="160" y1="54" x2="181" y2="54" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="181" y1="54" x2="175.73450462865776" y2="51.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="181" y1="54" x2="175.73450462865776" y2="56.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="326" y1="54" x2="347" y2="54" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="347" y1="54" x2="341.73450462865776" y2="51.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="347" y1="54" x2="341.73450462865776" y2="56.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="420" y1="85" x2="420" y2="118" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="420" y1="118" x2="422.8765532316252" y2="112.73450462865776" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="420" y1="118" x2="417.1234467683748" y2="112.73450462865776" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="347" y1="151" x2="326" y2="151" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="326" y1="151" x2="331.26549537134224" y2="153.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="326" y1="151" x2="331.26549537134224" y2="148.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<text x="15" y="115" fill="#17313F" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Ayar / imzalı komut →</text>
+<text x="15" y="131" fill="#17313F" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">← terminal-reported sonuç</text>
+</svg>

@@ -155,6 +155,13 @@ export class ControlPlane {
         const row = (await this.get("SELECT * FROM trading WHERE account_id=?", accountId));
         return row ? { enabled: !!row.enabled, jobId: row.job_id, revision: row.revision, installationId: row.installation_id } : { enabled: false, jobId: null, revision: 0 };
     }
+    async durableOperation(installation) {
+        if (!installation.account_id || installation.state !== 'approved')
+            return null;
+        // Only the existing explicit Trading ON record is durable. No browser
+        // timeout, heartbeat or reconnect may create or change this consent.
+        return (await this.get("SELECT t.job_id,t.generation,j.configuration_hash,j.request_json FROM trading t JOIN jobs j ON j.id=t.job_id AND j.account_id=t.account_id AND j.installation_id=t.installation_id AND j.generation=t.generation JOIN leases l ON l.account_id=t.account_id AND l.installation_id=t.installation_id AND l.generation=t.generation WHERE t.account_id=? AND t.installation_id=? AND t.enabled=1 AND j.state='completed'", installation.account_id, installation.id)) ?? null;
+    }
     async operation(installation) {
         const lease = (await this.currentLease(installation));
         const row = (await this.get("SELECT * FROM trading WHERE account_id=?", installation.account_id));
@@ -217,7 +224,8 @@ export class ControlPlane {
             const lease = (await this.get("SELECT l.*,s.expires_at AS session_expiry FROM leases l JOIN sessions s ON s.id=l.session_id WHERE l.account_id=? AND l.installation_id=?", installation.account_id, installation.id));
             const agent = (await this.get("SELECT * FROM agent_sessions WHERE installation_id=?", installation.id));
             const access = (await this.accessState(installation.account_id)), active = access.accessActive;
-            const controller = active && lease && lease.expires_at > this.now() && lease.session_expiry > this.now()
+            const persistent = (await this.durableOperation(installation));
+            const controller = active && lease && lease.expires_at > this.now() && (lease.session_expiry > this.now() || persistent)
                 && agent?.agent_id === installation.agentId && agent.expires_at > this.now() && agent.generation === lease.generation;
             const sequence = (await this.get("INSERT INTO ea_sequences VALUES(?,1) ON CONFLICT(installation_id) DO UPDATE SET sequence=sequence+1 RETURNING sequence", installation.id)).sequence;
             const expiry = this.now() + 15000;
@@ -391,8 +399,18 @@ export class ControlPlane {
     async activate(accessToken, installationId) {
         const actor = (await this.browser(accessToken)), account = (await this.entitlement(actor.accountId));
         return (await this.atomic(async () => {
-            (await this.ownedInstallation(actor, installationId));
-            const generation = id(), expiresAt = Math.min(this.now() + 90000, actor.sessionExpiry, account.entitlement_until);
+            const installation = (await this.ownedInstallation(actor, installationId));
+            const persistent = (await this.durableOperation(installation));
+            const expiresAt = Math.min(this.now() + 90000, actor.sessionExpiry, account.entitlement_until);
+            if (persistent) {
+                // Move browser control without restarting the already-approved device
+                // strategy or invalidating its completed audit. The old browser is fenced
+                // by session_id even though the live generation remains unchanged.
+                (await this.run("UPDATE leases SET session_id=?,expires_at=? WHERE account_id=? AND installation_id=? AND generation=?", actor.sessionId, expiresAt, actor.accountId, installationId, persistent.generation));
+                (await this.event(actor.accountId, 'controller_reauthorized_running_strategy', { installationId, jobId: persistent.job_id }));
+                return { installationId, generation: persistent.generation, expiresAt };
+            }
+            const generation = id();
             // A new generation fences the previous controller AND every in-flight job.
             (await this.run("UPDATE jobs SET state='cancelled',failure_code='CONTROLLER_REPLACED',updated_at=? WHERE account_id=? AND state IN ('queued','running')", this.now(), actor.accountId));
             (await this.run("INSERT INTO leases(account_id,installation_id,session_id,generation,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET installation_id=excluded.installation_id,session_id=excluded.session_id,generation=excluded.generation,expires_at=excluded.expires_at", actor.accountId, installationId, actor.sessionId, generation, expiresAt));
@@ -446,11 +464,13 @@ export class ControlPlane {
     }
     async currentLease(installation, checkEntitlement = true) {
         requireThat(installation.account_id && installation.state === "approved", "PAIRING_REQUIRED", 403);
-        if (checkEntitlement)
-            (await this.entitlement(installation.account_id));
+        const account = checkEntitlement ? (await this.entitlement(installation.account_id)) : null;
         const lease = (await this.get("SELECT l.*,s.expires_at AS session_expiry FROM leases l JOIN sessions s ON s.id=l.session_id WHERE l.account_id=? AND l.installation_id=?", installation.account_id, installation.id));
-        requireThat(lease && lease.expires_at > this.now() && lease.session_expiry > this.now(), "CONTROLLER_LEASE_EXPIRED", 403);
-        return lease;
+        const persistent = (await this.durableOperation(installation));
+        requireThat(lease && (persistent || lease.expires_at > this.now() && lease.session_expiry > this.now()), "CONTROLLER_LEASE_EXPIRED", 403);
+        return persistent ? { ...lease,
+            expires_at: Math.min(this.now() + 90000, account?.entitlement_until ?? Number.MAX_SAFE_INTEGER),
+            session_expiry: Number.MAX_SAFE_INTEGER, persistent: true } : lease;
     }
     async heartbeat(installation) {
         const lease = (await this.currentLease(installation)), account = (await this.entitlement(installation.account_id));

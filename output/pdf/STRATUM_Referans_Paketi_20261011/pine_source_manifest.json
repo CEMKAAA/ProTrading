@@ -1,0 +1,146 @@
+﻿[
+    {
+        "file":  "AlphaTrend.pine",
+        "lines":  195,
+        "sha256":  "377AAE4ABF8A7A3C3E168460CA3FF9F47C6DD935E14873F11A06E11ADF9B2F6D",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "AlphaTrend2.pine",
+        "lines":  55,
+        "sha256":  "C68D17F23EA609725A3792CCD0407BB9B2BF79F7A1214DBC29AC3881CF619E13",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "BollingerOTT.pine",
+        "lines":  93,
+        "sha256":  "CF2135EAB6A8583874767A879F47E8D33186890061B16E61F29E5A9E5F27FC8C",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "followline.pine",
+        "lines":  71,
+        "sha256":  "DC0F8FFDCC70A663879423BE0F96ACAE240EFC34B8554422F0062F9B0C01E456",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "HighAndLowOptimizedTrend.pine",
+        "lines":  206,
+        "sha256":  "36F53A4399ACD8D6BCFE8C4AC5B5CF51EDF37561842982A71CA51890EFF2A090",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "Laguerre.pine",
+        "lines":  49,
+        "sha256":  "A21249DC0A64E272B579B7FBFE06060AE797F563BBB3464B70611AEDD9D9BAF3",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "MacdCrossover.pine",
+        "lines":  329,
+        "sha256":  "D059D09A0BF82D8231D18486491E5067AE505AA5C92DDB0A1C54BB2554B5E541",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "MacdReloaded.pine",
+        "lines":  296,
+        "sha256":  "25425D479ACF2B516B6152009DBCEDF964770DE19C371D0305CA306B9D693C1A",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "MavilimScreener.pine",
+        "lines":  201,
+        "sha256":  "C7B95C998B90F7E361F2186AC6E0A0AC0BA52D1949587B5A593EABB769CA2A35",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "MovingAverage.pine",
+        "lines":  294,
+        "sha256":  "A3F9E238C42EAD0F630F81E721FB0D6490D7D72CAD152BFB440D1FD104B2E0CD",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "OptimizedTrend.pine",
+        "lines":  169,
+        "sha256":  "C769EAB1C130A590E0D811D9848138930F1E574B75FC42D16553A92656B7C97F",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "PmaxOnRsi.pine",
+        "lines":  105,
+        "sha256":  "02F36E02CDBE59EDB9A25F2C20C99E8155447EFFF9A54CB50E709633947E2E8B",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "Quantitative.pine",
+        "lines":  39,
+        "sha256":  "6A77256FB2431B90A46DF887938C8A23B83BB56D05A2FE349A54A138151CF91A",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "QuantitativeEstimation.pine",
+        "lines":  38,
+        "sha256":  "94E2B7421857D61A40AD6AE05A6E1CDBFECC864773098D5D05EE57EF4E2D1A2D",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "StochasticOtt.pine",
+        "lines":  85,
+        "sha256":  "C57994DBC9F5AB662732EE191C47913B1BDF75BE409A5DEB20278AA243825E45",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "StochasticTrend.pine",
+        "lines":  85,
+        "sha256":  "C57994DBC9F5AB662732EE191C47913B1BDF75BE409A5DEB20278AA243825E45",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "Stop.pine",
+        "lines":  32,
+        "sha256":  "D7D8CBFA7C114CF2C19D43CEEF6C14224B85F124A763B32D55D223D3236C6C72",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "SuperTrendExplorer.pine",
+        "lines":  325,
+        "sha256":  "F3DD9B1E5C3A65FCD9F066D9F381737EAF01263CB399489E21C2C12AB55735F2",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "SuperTrendExplorerFirst40.pine",
+        "lines":  323,
+        "sha256":  "3869563D0CC1EAA2FEE9A6D98A56B227F0011CD8A26A2F4176930E58F54ECACA",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "SuperTrendS.pine",
+        "lines":  311,
+        "sha256":  "0C24835442625AE4EA26041F749A89AE7DED23AC1FCFB17BFC9AE8571C3AC169",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "TillsonMa.pine",
+        "lines":  212,
+        "sha256":  "A61FF60281C01E118AB1B9BD843688CFEFACAC091F0051B5195ECA693994A945",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "TrendMagic.pine",
+        "lines":  19,
+        "sha256":  "57F52BD45DED4B639C73AFFDE158A1AFCE4B4E222AE4AC8342A2A80BA009D521",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "Turtle.pine",
+        "lines":  59,
+        "sha256":  "CB2F265E82DE6E32489717615F94E0C5CF6EA125196AE41648F2DAE9856D18FE",
+        "reviewed_entire_source":  true
+    },
+    {
+        "file":  "TwinRange.pine",
+        "lines":  46,
+        "sha256":  "5484EB0ACD1FEE6673A68D596ECA3EB9D0C9D2BFAFCAB305FA56649A34CE4A55",
+        "reviewed_entire_source":  true
+    }
+]

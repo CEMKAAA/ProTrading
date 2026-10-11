@@ -3,6 +3,7 @@
   "checks": [
     "TR login spinner; inputs/mode locked; repeated submissions fenced; verified workspace loading",
     "reload restores the saved handle without an anonymous auth probe or another login",
+    "new tab restores persisted login without tab storage, a probe or another login",
     "temporary 503 preserves session and recovers through automatic polling",
     "actual revocation still clears the credential and requires login",
     "DE signup loading and confirmation without fake login; mobile layout; reduced motion",

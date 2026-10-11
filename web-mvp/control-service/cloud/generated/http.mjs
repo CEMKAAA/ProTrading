@@ -92,7 +92,7 @@ export function controlHttp(plane, { origins = ["https://cemkaaa.github.io"], au
             const keys = Object.keys(body);
             const exact = expectedKeys => { if (keys.length !== expectedKeys.length || keys.some(key => !expectedKeys.includes(key)))
                 throw new ControlError("INVALID_REQUEST", 400); };
-            const cookie = (value, maxAge = 43200) => undefined;
+            const cookie = (value, maxAge = 604800) => undefined;
             if (method === "GET" && path === "/health")
                 return reply(200, { service: "stratum-control", protocolVersion: 2, authMode: auth?.mode ?? "local-development", mt5Adapter: "universal-connection", billingConfigured: billingConfigured(), liveTradingDefault: false });
             if (method === "POST" && (path === "/v1/auth/register" || path === "/v1/auth/login")) {

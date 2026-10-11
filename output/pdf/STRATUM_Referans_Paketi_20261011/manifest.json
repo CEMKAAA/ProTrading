@@ -1,0 +1,604 @@
+{
+  "created": "2026-10-11",
+  "scope": "Internal technical context / no new live orders or campaign",
+  "sources": [
+    {
+      "id": "S01",
+      "title": "Ürün ve web konumlandırması",
+      "workspacePath": "web-mvp/components/launch-page.tsx",
+      "sha256": "548e4c978531ff05bcf28dd05e83af0963163b334202b513da09ec9875dcc854",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S02",
+      "title": "191 katalog / 188 kampanya doğrulaması",
+      "workspacePath": "reports/admin_campaign/VERIFICATION.md",
+      "sha256": "42475fb4f0b994f9cf20e0a41c6f3c3d4508815432ddd692e6f4dbc2647832bc",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S03",
+      "title": "Universal v2 input/runtime/builder sözleşmesi",
+      "workspacePath": "web-mvp/lib/universal-contract.ts",
+      "sha256": "dfdb8182bd1c82a1532a151a092c6253fc98ff1d5ca1cd6df601a96d678cbc8a",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S04",
+      "title": "Result/trade/coverage ve summarize sözleşmesi",
+      "workspacePath": "web-mvp/lib/control-contract.ts",
+      "sha256": "dc97f5fadba22738733fe7ccdd80e660523a8d8b27290cc2efac7ac9610115dc",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S05",
+      "title": "Ana sayfa görünümü ve current sunum metni",
+      "workspacePath": "web-mvp/components/launch-page.tsx",
+      "sha256": "548e4c978531ff05bcf28dd05e83af0963163b334202b513da09ec9875dcc854",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S06",
+      "title": "DB readback ve katalog metrik karşılaştırması",
+      "workspacePath": "reports/admin_campaign/final-db-verification.json",
+      "sha256": "2e44c59ecb99ece6900b2515842d4c0fcb137533efda74f7b5c6b7017b40dfb6",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S07",
+      "title": "11 Ekim canlı oturum/yetki dağıtım doğrulaması",
+      "workspacePath": "reports/session_continuity_20261011/verification.md",
+      "sha256": "3d84c30da40f2d5cb4859e8365a4f783d33e55e06b8b8f8731f75c489f3c31d6",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S08",
+      "title": "Native auth zinciri ve test sınırları (eski deploy bölümü güncel değil)",
+      "workspacePath": "web-mvp/docs/MT5_AUTHORIZATION_VERIFICATION.md",
+      "sha256": "e0fdd1857523d81c2f639eec8e2480916eb42230642da48e268e3f8044540754",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S09",
+      "title": "Studio kontrol odaları, apply, result ve review",
+      "workspacePath": "web-mvp/components/universal-dashboard.tsx",
+      "sha256": "561453bcdd19fa078a25d69033596d54ae8324c66dfbd95548522d6fd40ada37",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S10",
+      "title": "742 input/runtime definition kataloğu",
+      "workspacePath": "web-mvp/lib/ea-controls.json",
+      "sha256": "36442aeeaf493c90555d9c20186027dd0a9753efbc72dd5d5c0e5bed755977fb",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S11",
+      "title": "ORB kanonik davranış ve deployment kuralları",
+      "workspacePath": "IndicatorCodeExamples/orb/README.md",
+      "sha256": "ba020984f92b612f3ecc7e4ef4137aa36322794a611443d9aeb0925dfbbc43a3",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S12",
+      "title": "MaCross kanonik davranış ve export",
+      "workspacePath": "IndicatorCodeExamples/macrossover_orb/README.md",
+      "sha256": "a87a4c1db0775a7794ac1a1880034773f306da90d070c209130cd51b13be74e0",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S13",
+      "title": "Sol Advanced position/apply ve export",
+      "workspacePath": "IndicatorCodeExamples/SolAdvanced/README.md",
+      "sha256": "d096b8fd015f0c54bb197e27adbbaebdcda40f9c17600dfcbe4e2bf9b40a5819",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S14",
+      "title": "Entry Lab şablon, builder ve policy semantiği",
+      "workspacePath": "IndicatorCodeExamples/entry_engine_lab/README.md",
+      "sha256": "da3e7d4cc6dcd3d031ba81fed9a9c2b181211addde26cfb19cd72edd5184707f",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S15",
+      "title": "Broker/exchange clock profile, limits ve test",
+      "workspacePath": "IndicatorCodeExamples/DocumentsForAi/ORB_Broker_Timezone.md",
+      "sha256": "5d1e7ac9d0d9418da7e9e58fc8109e48a52e7356449dd047f9177032e2956938",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S16",
+      "title": "Sol Apply / ORB layout 5 Ekim doğrulaması",
+      "workspacePath": "reports/sol_apply_orb_layout_20261005.md",
+      "sha256": "d02d95de114362afdbf1e11bc33828d413df3b5da68f5b853e23128f9cd65b61",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S17",
+      "title": "Sol NAS politikası ve native entegrasyon",
+      "workspacePath": "IndicatorCodeExamples/SolAdvanced/LiqSolAdvancedNas.mqh",
+      "sha256": "979c93008a13deee1701668877325006164c188f25c9c07ceb834adc23239974",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S18",
+      "title": "Native builder mantığı ve serialization",
+      "workspacePath": "IndicatorCodeExamples/entry_engine_lab/LabEntryLogic.mqh",
+      "sha256": "28311ddb3e22e64bd5a0ee309cd3c6303fcc528efa3785c07667566d74e3df48",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S19",
+      "title": "Entry-time CSV ve Pine kaynak mapping sözleşmesi",
+      "workspacePath": "research/kivanc/README.md",
+      "sha256": "53a36648922f309f136a36df692b98a44be5fadfb7c883aac2dc47099534c514",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S20",
+      "title": "OF quote-proxy, coverage, histogram ve gates",
+      "workspacePath": "IndicatorCodeExamples/macrossover_orb/MaCrossOrderFlowCore.mqh",
+      "sha256": "8226a77f2d9b4adcf778b4cb306f903b23cfb2ea5d072d1970c50f349c84465b",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S21",
+      "title": "OF worker/cache adaptasyonu",
+      "workspacePath": "IndicatorCodeExamples/macrossover_orb/MaCrossOrderFlow.mqh",
+      "sha256": "a83d41915c5653527f0924042450586a22d7e1b5d742a066f784a15757461940",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S22",
+      "title": "TIME MATRIX betimleme ve native saat maskeleri",
+      "workspacePath": "docs/TradeCalendarMatrix.md",
+      "sha256": "ae31e0fdeabf1275cb38a6dcd1cc301a26f6f8992dcc99bc7c5f6afdd0544c50",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S23",
+      "title": "30 Eylül CSV/TIME MATRIX 5 yama doğrulaması",
+      "workspacePath": "research/kivanc/CSV_TIME_MATRIX_FIXES_20260930_TR.md",
+      "sha256": "86c01513cf18570ccac50d944bf24009ed6d529430ba8d0d841503f350559b5f",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S24",
+      "title": "CSV entry records, as-of writer ve path",
+      "workspacePath": "IndicatorCodeExamples/macrossover_orb/AuditTradeCsv.mqh",
+      "sha256": "7cfd04cd4b7a29f6600200e2434cd74a3f818f10563eca9fe4c8832e628c182d",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S25",
+      "title": "Web katalog, window ve multi-sort davranışı",
+      "workspacePath": "web-mvp/components/shared-strategy-library.tsx",
+      "sha256": "4794ed4efbdb8d8d70afb8dd4829810e818d58134dd048c3f4553179713a1894",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S26",
+      "title": "Rolling campaign tasarım notları (progress tarihli)",
+      "workspacePath": "reports/strategy_audit_20261009_rolling/README.md",
+      "sha256": "c27b03cc2da358b5b0ba440fdf45e418f32e0132d8ca04ba311e3254719190a7",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S27",
+      "title": "Mühürlü campaign metrik nesneleri (özel tarif içermez)",
+      "workspacePath": "reports/admin_campaign/campaign.private.json",
+      "sha256": "4792337e1606a9ce1092a211f76b368c203b61c5fc9dc51a524200bba1215de3",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S28",
+      "title": "Audit progress bileşeni test kaydı",
+      "workspacePath": "web-mvp/scripts/test-audit-progress-ui.mjs",
+      "sha256": "0668df96d5868078334f193d4299032b958deb77ad40458eafbac948cfb5f33f",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S29",
+      "title": "Frozen/optimized hız ve trace karşılaştırması",
+      "workspacePath": "reports/audit_acceleration_20261003.md",
+      "sha256": "00d9130d1dc29f0028d1c935fdaa494a1fb7e5698fab31a9227dcd9e7100ee4d",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S30",
+      "title": "24 Pine source manifest / SHA kayıtları",
+      "workspacePath": "research/kivanc/source_manifest.json",
+      "sha256": "3744a26cdfb4fe96b108b7e26657da74ca7743fe9a1c1e9807ab72ec14361c8c",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S31",
+      "title": "Uygulanmamış literatür feature adayları",
+      "workspacePath": "research/kivanc/FINANCIAL_FEATURE_RESEARCH_TR.md",
+      "sha256": "c65021f7782064f6dd2070ad3235b33be646c10b1c3bd124610c2d74fd41f031",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S32",
+      "title": "ORB ML deney ve leakage/purge protokolü",
+      "workspacePath": "docs/ORB_ML_Research_And_Validation.md",
+      "sha256": "0bad6299b63e3b16285e0dcaa8e9b8ee5aa9f5d5a251a0d8d5e4098eb1547cce",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S33",
+      "title": "Private kontrol düzlemi ve live authority policy",
+      "workspacePath": "web-mvp/control-service/control-plane.mjs",
+      "sha256": "82b6a1c6138bdae0248b29796c3b551f8697268e788f8f71a2a1338517d7f71f",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S34",
+      "title": "Supabase BFF oturum ve refresh uygulaması",
+      "workspacePath": "web-mvp/control-service/supabase-auth.mjs",
+      "sha256": "a9db32d165419dd09ac36aefcbbc506ac1ac4a87c303c36d0658d8f73f821b22",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S35",
+      "title": "Üç dilli sekiz adım activation içeriği",
+      "workspacePath": "web-mvp/lib/activation-guide.ts",
+      "sha256": "7fb44f4cf6dde5da592fb9426512cb538fe1213e685638a54f574a967e46ed92",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S36",
+      "title": "Kişisel kurulum ve local helper state",
+      "workspacePath": "web-mvp/control-service/personal-setup.mjs",
+      "sha256": "68d10bebeb9e75bb961e593d060c8ca2d30725b7a8fe68f39dc3a7bd21c113b3",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S37",
+      "title": "AI typed tool sözleşmesi ve plan doğrulama",
+      "workspacePath": "web-mvp/lib/studio-agent.ts",
+      "sha256": "f3d6b5bce4dd0eaac4c2b3aa6a8551b31d039ecf75a65da45081f8073a678a5f",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S38",
+      "title": "AI persona, lesson, voice sınırları (eski deploy notları güncel değil)",
+      "workspacePath": "web-mvp/docs/STUDIO_AGENT.md",
+      "sha256": "79c56a2e4406bf0d2eba2bce16da19336b9670ab00fb265ee137fb646011cd8c",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S39",
+      "title": "Agent chat/history/voice bileşeni",
+      "workspacePath": "web-mvp/components/studio-agent.tsx",
+      "sha256": "26491189629384d191047b72bb4c792c9432bb92f9527fdc2f6816ea4b25e2fe",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S40",
+      "title": "41-trade native/universal parity kaydı",
+      "workspacePath": "tmp/universal_connection_validation/canonical-parity-report.json",
+      "sha256": "cfeefda7f942e8f4298e38d67f4c3b0c23402097cbf74a9012dad213597e9139",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S41",
+      "title": "Dört aile gerçek EX5 roundtrip sonuç ve chart kontrolleri",
+      "workspacePath": "tmp/universal_connection_validation/roundtrip-report.json",
+      "sha256": "20169409e827c5ad2ba8574c582b346dc529c5b6ff1cb9552ae46c8c16141c69",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    },
+    {
+      "id": "S42",
+      "title": "Admin per-user strateji erişimi",
+      "workspacePath": "web-mvp/ADMIN_STRATEGIES.md",
+      "sha256": "43ef3e5e7a0ed6a928194c946ad66e56f7050e7d802edd03acb3916979125077",
+      "reviewScope": "relevant source sections and dated verification, not a full fresh code audit"
+    }
+  ],
+  "assets": [
+    {
+      "path": "assets\\agent.svg",
+      "bytes": 3268,
+      "sha256": "112dfb2eca2e9381b0981f39ba731ad701d6eae85f55357b5a7783785f00b604"
+    },
+    {
+      "path": "assets\\architecture.svg",
+      "bytes": 3898,
+      "sha256": "03a773954667b69d4028224d8f5553461e92fe2f4fb045772384fff6db20cbe5"
+    },
+    {
+      "path": "assets\\audit_pipeline.svg",
+      "bytes": 3290,
+      "sha256": "1a2357e50d535716e9a94527d49a1ccfee75e8b23809675dcc4e624c4ada543c"
+    },
+    {
+      "path": "assets\\authority.svg",
+      "bytes": 4421,
+      "sha256": "4c30d37a8f9838b3b3481ffcff347fe0a1eb86accc8f1dcba86e8439c24f5653"
+    },
+    {
+      "path": "assets\\benchmark.svg",
+      "bytes": 2783,
+      "sha256": "e05d32f460718e4e2714b04b8cb231e118cf79e170440d7cf29b900d62cde676"
+    },
+    {
+      "path": "assets\\builder.svg",
+      "bytes": 3561,
+      "sha256": "e10d371d1deb7821e77e1aa987bdba3251253c175145eac96afe75ae65024d83"
+    },
+    {
+      "path": "assets\\csv_asof.svg",
+      "bytes": 3316,
+      "sha256": "5c4c2fcafe41be6e3eb849928384ba9697dd60e43df82e80361288b33ec9d8a9"
+    },
+    {
+      "path": "assets\\download_progress.png",
+      "bytes": 20390,
+      "sha256": "348d859a01d226b0500b71d96038595ab03c0cd81d91ffaf3f82f052a171f2c7"
+    },
+    {
+      "path": "assets\\family_bundle.svg",
+      "bytes": 3276,
+      "sha256": "3d122e0eda0f00e938999cc8590e8614c0da55795ad4cdc66d921a379a6d1992"
+    },
+    {
+      "path": "assets\\geometry.svg",
+      "bytes": 1977,
+      "sha256": "dc9bfea9be50d1dd6e99db2fe20b587bf2d02eb71226b193719efef34bf34ba0"
+    },
+    {
+      "path": "assets\\layout_templates.svg",
+      "bytes": 1716,
+      "sha256": "e70eebae477f5eb484bb7fa7879b3955204a3c374a380aff2dbaecd117e858e8"
+    },
+    {
+      "path": "assets\\legacy_sol_jp225.png",
+      "bytes": 58994,
+      "sha256": "b292db71545e20dfeb0aab8a3ee6f2e80ca843da3f2b4b0cc80bb64d6d02d015"
+    },
+    {
+      "path": "assets\\orb.svg",
+      "bytes": 1947,
+      "sha256": "d52a90f5bbde4ab7fee9d26dbf8389af1f9c3883097c8626789a9033963bb465"
+    },
+    {
+      "path": "assets\\order_flow.svg",
+      "bytes": 2475,
+      "sha256": "be38af8848dd44023ccac06f5887d8dcc74ff23cfe3bc0961921b74e38d2dcad"
+    },
+    {
+      "path": "assets\\parity_equity.svg",
+      "bytes": 6294,
+      "sha256": "d568b31ebd377ae6c9703eefd348fac9003b1a95b8e53a635476744d326a68df"
+    },
+    {
+      "path": "assets\\positions.svg",
+      "bytes": 4354,
+      "sha256": "6838335f93c59d0e76dbb35f7a80164768364483399d7bb10d9e1d92ffdfc856"
+    },
+    {
+      "path": "assets\\product_loop.svg",
+      "bytes": 3292,
+      "sha256": "8312f49d369be56b34e287ae3098aa32b330d59a386106fe50cc2c6b399a4d65"
+    },
+    {
+      "path": "assets\\slide_wireframe.svg",
+      "bytes": 1715,
+      "sha256": "847d2a6bb27d9d8d1b5747fcd661670b8ea685a20ec5144cb6a2a30d7b9d24fe"
+    },
+    {
+      "path": "assets\\strategy_snapshot.svg",
+      "bytes": 3274,
+      "sha256": "67437f8bb58d6f85e6efe0c58e40d72e7bea76ab87050c98e341af8698067ced"
+    },
+    {
+      "path": "assets\\T01_evidence_card.svg",
+      "bytes": 2557,
+      "sha256": "64d94464efbdf531d64106788cc87cadb7a6b624c3dc4babef907faeb4db1509"
+    },
+    {
+      "path": "assets\\T02_ui_walkthrough.svg",
+      "bytes": 2516,
+      "sha256": "cffef621e3fdd734092b9b9680a54a5160e20e9a5dcecab3376424af823f987b"
+    },
+    {
+      "path": "assets\\T03_trust_boundary.svg",
+      "bytes": 3826,
+      "sha256": "dc0186b85b4f7b92f3013385dcce7cc0d2b2517bcfbd028b52eebc02af40e0e8"
+    },
+    {
+      "path": "assets\\T04_before_after.svg",
+      "bytes": 2583,
+      "sha256": "9d213f839052e4adb6a04712c6a9559cb02b13aaaa3984678ac33f045c72a6bd"
+    },
+    {
+      "path": "assets\\T05_strategy_evidence.svg",
+      "bytes": 3027,
+      "sha256": "353316b1d5be963bf110a9d6a3e81cdf02b345f641414671f84ab5a1e636e78e"
+    },
+    {
+      "path": "assets\\T06_error_clinic.svg",
+      "bytes": 3006,
+      "sha256": "c970947653dd0ef0b0b8f4a9523793e4b7c558846c9f76b7696765e5f284314d"
+    },
+    {
+      "path": "assets\\timezone.svg",
+      "bytes": 2627,
+      "sha256": "62bc5c81570da7e71194ed05955ede3e6d7a6953bfb7fa8e5cfc5721ea663903"
+    },
+    {
+      "path": "assets\\time_matrix.svg",
+      "bytes": 11455,
+      "sha256": "9c5dfdd9c7984fa051627fe5b8e4d10fb51ab5d11da7f683748b246b4dd34e6a"
+    },
+    {
+      "path": "assets\\web_account.png",
+      "bytes": 65859,
+      "sha256": "4aa5bfb8456778d25af50ebb29823362eaedb560c45b410a76e7bbe2ce59af7c"
+    },
+    {
+      "path": "assets\\web_activation_guide.png",
+      "bytes": 253543,
+      "sha256": "8bf2276ea83eb92b47e4ce7671126b146784a1f6e424853f7ab9216ae9c41b6b"
+    },
+    {
+      "path": "assets\\web_animated_lesson.png",
+      "bytes": 209518,
+      "sha256": "e08448f164bdc86faa5c37c723168ea29313e9d51e3a2c57d987ef71eff66dde"
+    },
+    {
+      "path": "assets\\web_builder_chapter.png",
+      "bytes": 234428,
+      "sha256": "f9cec0352aacd4bebe1b64c41de99e7b279b5cb023e4678a44d3626256e2a4a7"
+    },
+    {
+      "path": "assets\\web_connection_chapter.png",
+      "bytes": 137823,
+      "sha256": "deaeb956378b70c07154d1398f8811b6f5161f880eb096c3136ab463a9c0d5b6"
+    },
+    {
+      "path": "assets\\web_control_deck.png",
+      "bytes": 625455,
+      "sha256": "a0064ed53dc5941fe0da631c5d9a23a568112f7344ed58a7d45a160dc0f0acee"
+    },
+    {
+      "path": "assets\\web_control_modules.png",
+      "bytes": 320173,
+      "sha256": "a2cb16c5f0089e496b5170f35fd2290f18c002c8216357579582dbee8e6d5673"
+    },
+    {
+      "path": "assets\\web_entry_builder.png",
+      "bytes": 171569,
+      "sha256": "cf5e2e18835ded76dfd321701a6352116de27a010b9ec9c4a9d9a28f7542930f"
+    },
+    {
+      "path": "assets\\web_home.png",
+      "bytes": 857336,
+      "sha256": "cfc3add1fca38505bd8015dd2e6b7682608ec5a9cd15c17e58d166f082cca423"
+    },
+    {
+      "path": "assets\\web_nas_controls.png",
+      "bytes": 247001,
+      "sha256": "575b60de86c2b241e81368b510521db811476d45f04ce6609605bbef8b635ee8"
+    },
+    {
+      "path": "assets\\web_strategy_library.png",
+      "bytes": 270943,
+      "sha256": "f15cde7b33d0071beb8021de08f59eafe9d37b394f932c2943ebaf211d17c554"
+    },
+    {
+      "path": "assets\\web_strategy_result_card.png",
+      "bytes": 30299,
+      "sha256": "4f36be69c56a582334180af403f8e6a12ba69588286454ca4034710dae382eed"
+    },
+    {
+      "path": "campaign_metrics.json",
+      "bytes": 701565,
+      "sha256": "e90940907d2291e5f41e58b854a71b2c40c750a9a954561f56260e59aaadaef7"
+    },
+    {
+      "path": "controls_catalog.json",
+      "bytes": 239895,
+      "sha256": "36442aeeaf493c90555d9c20186027dd0a9753efbc72dd5d5c0e5bed755977fb"
+    },
+    {
+      "path": "DECKCRAFT_BRIEF_TR.md",
+      "bytes": 9488,
+      "sha256": "ad0e22e0d819b44d1c6d8fd0d703035ab156c89534e40253eb0b9fa8e5e8c6f9"
+    },
+    {
+      "path": "evidence_summary.json",
+      "bytes": 26114,
+      "sha256": "4c9d3909385e617912ab81bca2843cb43686acdd0077fe6a56677fbd794cf436"
+    },
+    {
+      "path": "FILMCRAFT_BRIEF_TR.md",
+      "bytes": 11582,
+      "sha256": "5bf8448c11d469db623bbabca7c3590585ff75de55d8793f8071008c39fad030"
+    },
+    {
+      "path": "HIZLI_BAGLAM.md",
+      "bytes": 2707,
+      "sha256": "a7ff6f47438d7850372793b56fa0c56f204792b8f9b030a5a72953e63b289bfa"
+    },
+    {
+      "path": "PDF_LAYOUT_CHECK.json",
+      "bytes": 17730,
+      "sha256": "e54ede8f75d03f25a80c72d2c9c7dc773595884a4c8959d83e693739ef021e3a"
+    },
+    {
+      "path": "pine_source_manifest.json",
+      "bytes": 4981,
+      "sha256": "3744a26cdfb4fe96b108b7e26657da74ca7743fe9a1c1e9807ab72ec14361c8c"
+    },
+    {
+      "path": "RAPOR_KAYNAGI_TR.md",
+      "bytes": 87953,
+      "sha256": "20dc048fd4606d5e168b0091aed17cc9a24e3e82f7fe9e5a0e13cc269c5e63cd"
+    },
+    {
+      "path": "STRATUM_Teknik_Referans_20261011.pdf",
+      "bytes": 2684763,
+      "sha256": "8591ce84855b1aeecac9fbc28eca21682be9b4d9f820bcc55a3e975ee12f80e0"
+    },
+    {
+      "path": "style_tokens.json",
+      "bytes": 453,
+      "sha256": "40f4d73b7fa599aa484e08a12195422dfacefeb03172d70780016125bc866101"
+    },
+    {
+      "path": "TEMPLATE_CHECK.json",
+      "bytes": 384,
+      "sha256": "9a9c0fe286b30f01e6dae3fd6563ba837fc1d327abd87248bdf6e104ff155653"
+    }
+  ],
+  "externalSources": [
+    {
+      "id": "E01",
+      "title": "MQL5 CopyTicksRange: tick isteme ve hata durumları",
+      "url": "https://www.mql5.com/en/docs/series/copyticksrange",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "E02",
+      "title": "MQL5 OrderCalcMargin: teminat hesabı",
+      "url": "https://www.mql5.com/en/docs/trading/ordercalcmargin",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "E03",
+      "title": "MQL5 OrderCalcProfit: hesap para biriminde PnL",
+      "url": "https://www.mql5.com/en/docs/trading/ordercalcprofit",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "E04",
+      "title": "GitHub Pages statik site barındırma",
+      "url": "https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "E05",
+      "title": "Supabase Auth ürün dokümantasyonu",
+      "url": "https://supabase.com/docs/guides/auth",
+      "accessed": "2026-10-11"
+    },
+    {
+      "id": "E06",
+      "title": "Supabase RLS ve veri erişimi sınırları",
+      "url": "https://supabase.com/docs/guides/database/postgres/row-level-security",
+      "accessed": "2026-10-11"
+    }
+  ],
+  "quality": {
+    "pdfPages": 60,
+    "reviewedAllPageContactSheets": true,
+    "pageBoundaryIssues": 0,
+    "replacementGlyphIssues": 0,
+    "editableTemplates": 6,
+    "templateBoundaryIssues": 0,
+    "uiCaptureBrowserErrors": 0
+  }
+}

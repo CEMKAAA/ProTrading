@@ -177,14 +177,15 @@ test('temporary provider failure preserves the browser session and recovers with
   assert.equal(f.p.sessionInfo(s.accessToken).subscriptionActive,true);
  }finally{f.p.close();}
 });
-test('hourly JWT refreshes do not require a new login; the existing 12-hour session cap remains enforced',async()=>{
+test('hourly JWT refreshes keep the same login for seven days and enforce the exact expiry boundary',async()=>{
  const f=fixture(),s=await f.login(),actor=f.p.browser(s.accessToken);
  try{
-  for(let hour=1;hour<=11;hour++){
+  assert.equal(s.expiresAt-f.p.now(),7*DAY);
+  for(let hour=1;hour<168;hour++){
    f.advance(3600000);await f.auth.forBrowser(s.accessToken);
    assert.equal(f.p.browser(s.accessToken).sessionId,actor.sessionId);
   }
-  assert.equal(f.refreshes(),11);
+  assert.equal(f.refreshes(),167);
   f.advance(3600000);await rejects(()=>f.auth.forBrowser(s.accessToken),'UNAUTHORIZED');
  }finally{f.p.close();}
 });
@@ -218,6 +219,7 @@ test('HTTP login returns only an HttpOnly cookie handle; cookie CSRF and develop
   const response=await post('/v1/auth/login',{email:f.state.email,password:'a-long-private-password'},{Origin:origin});assert.equal(response.status,200);
   const data=await response.json();assert.equal(data.accessToken,'cookie-session');const cookie=response.headers.get('set-cookie');
   assert.ok(cookie.includes('HttpOnly'));assert.ok(cookie.includes('SameSite=Strict'));assert.ok(!cookie.includes(f.jwt));
+  assert.ok(cookie.includes('Max-Age=604800'));assert.equal(data.expiresAt-f.p.now(),7*DAY);
   const headers={Cookie:cookie.split(';')[0],Authorization:'Bearer cookie-session',Origin:origin};
   const session=await (await fetch(base+'/v1/session',{headers})).json();assert.equal(session.accountId,f.account);assert.equal(session.accessMode,'demo');
   assert.equal((await post('/v1/trading',{}, {Cookie:headers.Cookie})).status,403);

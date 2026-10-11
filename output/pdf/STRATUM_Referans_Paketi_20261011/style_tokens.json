@@ -1,0 +1,19 @@
+{
+  "palette": {
+    "ink": "#17313F",
+    "gold": "#E4AD31",
+    "ice": "#EAF3F6",
+    "mint": "#2C8F7D",
+    "red": "#B74C43",
+    "muted": "#536C77",
+    "line": "#CFDCE2",
+    "paper": "#FAFBFA",
+    "ivory": "#F8F2E4"
+  },
+  "deck": "16:9 / 1920x1080",
+  "bodyMinPt": 22,
+  "headingPt": "36-44",
+  "motion": "180-280ms UI / 450-700ms diagram",
+  "sourceFootnoteRequired": true,
+  "financialResults": "historical/simulated label"
+}

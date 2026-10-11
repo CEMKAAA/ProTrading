@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="644" viewBox="0 0 509.276 205">
+<title>audit_pipeline</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="205" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="13" y="21" width="113" height="73" rx="8" fill="#F8F2E4" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="23" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">SNAPSHOT</text>
+<text x="23" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Hash + context</text>
+<line x1="126" y1="57" x2="139" y2="57" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="139" y1="57" x2="133.73450462865776" y2="54.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="139" y1="57" x2="133.73450462865776" y2="59.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<rect x="139" y="21" width="113" height="73" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="149" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">HAZIRLIK</text>
+<text x="149" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Coverage / history</text>
+<line x1="252" y1="57" x2="265" y2="57" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="265" y1="57" x2="259.73450462865776" y2="54.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="265" y1="57" x2="259.73450462865776" y2="59.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<rect x="265" y="21" width="113" height="73" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="275" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">REPLAY</text>
+<text x="275" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Chronological exit</text>
+<line x1="378" y1="57" x2="391" y2="57" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="391" y1="57" x2="385.73450462865776" y2="54.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="391" y1="57" x2="385.73450462865776" y2="59.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<rect x="391" y="21" width="113" height="73" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="401" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">SONUÇ</text>
+<text x="401" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Trade trace / DATA</text>
+<rect x="24" y="121" width="460" height="61" rx="8" fill="#E7F4EF" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="34" y="140" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">KRİTİK AYRIM</text>
+<text x="34" y="156" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Apply araştırmadır. Trading ON ayrı onay ve geçerli yetki gerektirir.</text>
+</svg>

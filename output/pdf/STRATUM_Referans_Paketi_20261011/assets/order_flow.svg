@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="644" viewBox="0 0 509.276 205">
+<title>order_flow</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="205" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="30" y="135" width="19" height="20" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="57" y="122" width="19" height="33" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="84" y="108" width="19" height="47" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="111" y="86" width="19" height="69" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="138" y="51" width="19" height="104" rx="2" fill="#E4AD31" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="165" y="63" width="19" height="92" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="192" y="97" width="19" height="58" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="219" y="118" width="19" height="37" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="246" y="131" width="19" height="24" rx="2" fill="#91BCC6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="28" y="31" fill="#17313F" font-family="Candara, sans-serif" font-size="10" font-weight="700" text-anchor="start">FİYAT BÖLGESİ AKTİVİTESİ</text>
+<rect x="310" y="28" width="178" height="70" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="320" y="47" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">PROFILE / POC / VA</text>
+<text x="320" y="63" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Referans quote histogramı</text>
+<rect x="310" y="115" width="178" height="65" rx="8" fill="#E7F4EF" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="320" y="134" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">ACTIVITY / DELTA</text>
+<text x="320" y="150" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Signal candle quote proxy</text>
+<text x="28" y="183" fill="#17313F" font-family="Candara, sans-serif" font-size="8.1" font-weight="400" text-anchor="start">Temsilî histogram; market tape / L2 değildir.</text>
+</svg>

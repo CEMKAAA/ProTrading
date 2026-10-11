@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="644" viewBox="0 0 509.276 205">
+<title>benchmark</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="205" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="15" y="20" fill="#17313F" font-family="Candara, sans-serif" font-size="9" font-weight="700" text-anchor="start">HAZIR BROKER GEÇMİŞİ / FIRST AUDIT</text>
+<text x="16" y="58" fill="#17313F" font-family="Candara, sans-serif" font-size="8.7" font-weight="700" text-anchor="start">MA / 20W</text>
+<rect x="104" y="51" width="271.9327272727272" height="9" rx="2" fill="#B8C6CD" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="104" y="63" width="44.85636363636364" height="9" rx="2" fill="#2C8F7D" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="422" y="64" fill="#17313F" font-family="Candara, sans-serif" font-size="11" font-weight="700" text-anchor="start">6.06x</text>
+<text x="16" y="92" fill="#17313F" font-family="Candara, sans-serif" font-size="8.7" font-weight="700" text-anchor="start">LAB / 20W</text>
+<rect x="104" y="85" width="289.9145454545455" height="9" rx="2" fill="#B8C6CD" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="104" y="97" width="33.49454545454546" height="9" rx="2" fill="#2C8F7D" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="422" y="98" fill="#17313F" font-family="Candara, sans-serif" font-size="11" font-weight="700" text-anchor="start">8.66x</text>
+<text x="16" y="126" fill="#17313F" font-family="Candara, sans-serif" font-size="8.7" font-weight="700" text-anchor="start">SOL / 20W</text>
+<rect x="104" y="119" width="23.89090909090909" height="9" rx="2" fill="#B8C6CD" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="104" y="131" width="3.949090909090909" height="9" rx="2" fill="#2C8F7D" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="422" y="132" fill="#17313F" font-family="Candara, sans-serif" font-size="11" font-weight="700" text-anchor="start">6.05x</text>
+<text x="16" y="160" fill="#17313F" font-family="Candara, sans-serif" font-size="8.7" font-weight="700" text-anchor="start">SOL / 5Y</text>
+<rect x="104" y="153" width="69.91454545454546" height="9" rx="2" fill="#B8C6CD" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="104" y="165" width="12.925454545454544" height="9" rx="2" fill="#2C8F7D" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="422" y="166" fill="#17313F" font-family="Candara, sans-serif" font-size="11" font-weight="700" text-anchor="start">5.41x</text>
+<text x="17" y="190" fill="#17313F" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Gri: frozen baseline   Yeşil: optimized   Süreler saniye</text>
+</svg>

@@ -17,6 +17,26 @@ export class PostgresStore {
   async all(query,...args){const p=postgresQuery(query,args);return Array.from(await this.sql.unsafe(p.sql,p.args));}
   async get(query,...args){return (await this.all(query,...args))[0];}
   async run(query,...args){const p=postgresQuery(query,args),r=await this.sql.unsafe(p.sql,p.args);return {changes:r.count};}
+  async deviceAccess(accountId) {
+    // Authenticated device proof is checked before this private SQL boundary.
+    // All joins use existing PKs; no service key or privileged RPC is exposed.
+    const row=await this.get(`SELECT jsonb_build_object(
+      'accountId',a.user_id,'email',u.email,'displayName',a.display_name,
+      'disabled',a.disabled OR (u.banned_until IS NOT NULL AND u.banned_until>now())
+        OR nullif(to_jsonb(u)->>'deleted_at','') IS NOT NULL OR u.email_confirmed_at IS NULL,
+      'accessActive',NOT a.disabled AND (u.banned_until IS NULL OR u.banned_until<=now())
+        AND nullif(to_jsonb(u)->>'deleted_at','') IS NULL AND u.email_confirmed_at IS NOT NULL
+        AND (a.paid_until>now() OR t.expires_at>now()),
+      'accessMode',CASE WHEN a.disabled OR (u.banned_until IS NOT NULL AND u.banned_until>now())
+        OR nullif(to_jsonb(u)->>'deleted_at','') IS NOT NULL OR u.email_confirmed_at IS NULL THEN 'inactive'
+        WHEN a.paid_until>now() THEN 'paid' WHEN t.expires_at>now() THEN 'demo' ELSE 'inactive' END,
+      'paidUntil',extract(epoch from a.paid_until)*1000,
+      'trial',jsonb_build_object('startsAt',extract(epoch from t.started_at)*1000,'expiresAt',extract(epoch from t.expires_at)*1000),
+      'serverNow',extract(epoch from now())*1000) AS state
+      FROM stratum_private.accounts a JOIN stratum_private.trial_claims t USING(email_hash)
+      JOIN auth.users u ON u.id=a.user_id WHERE a.user_id=?::uuid`,accountId);
+    return row?.state??null;
+  }
   async syncAuthority(v){
     // One statement preserves the same verified values without five network round trips.
     return this.run(`WITH account AS (

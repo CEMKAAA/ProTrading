@@ -1,0 +1,68 @@
+{
+  "checkedAt": "2026-10-11T11:40:33.037Z",
+  "status": "PASS",
+  "browserLifetimeMs": 604800000,
+  "edgeFunction": {
+    "name": "stratum-control",
+    "version": 12,
+    "bundleSha256": "d8b03c24c581d211f1484f83522dc7e435da0580595b07cf638e2c2c66edeef1"
+  },
+  "web": {
+    "commit": "8e7585c96a3cddd9b29d9ae793b126ba5e43b039",
+    "site": "https://cemkaaa.github.io/CemkaCapital/",
+    "pagesStatus": "built"
+  },
+  "tests": {
+    "policy": 118,
+    "failed": 0,
+    "browserUi": "PASS (production build with mocked API; TR/DE/EN, mobile, new tab, transient failure and revocation)",
+    "native": {
+      "checkedAt": "2026-10-11T11:06:33.551Z",
+      "status": "PASS",
+      "brokerOrdersEnabled": false,
+      "actualBrokerOrdersPlaced": false,
+      "expirySimulation": "Expired only the isolated QA browser database row; wall clock and market data unchanged.",
+      "binarySha256": "c7435543b2e4285f4ae14711880184efffd4b5f18b3568c41e383450e63e6a7f",
+      "checks": [
+        "Real signed Trading ON accepted by native EX5; Algo Trading remains disabled.",
+        "Past browser expiry, real helper renews native live authority beyond one signed-command lifetime.",
+        "Stopped helper causes native new-entry authority to expire.",
+        "Restarted helper resumes identical approved config without login, audit or another Trading ON.",
+        "Same-device web reauthorization preserves config; explicit OFF stops native authorization."
+      ],
+      "summary": {
+        "wins": 5,
+        "losses": 3,
+        "flat": 0,
+        "open": 0,
+        "data": 0,
+        "netR": 2,
+        "maxClosedDrawdownR": 1,
+        "winRate": 62.5,
+        "trust": "client_reported",
+        "coverageComplete": true
+      }
+    },
+    "cloud": {
+      "checkedAt": "2026-10-11T11:36:32.202Z",
+      "status": "PASS",
+      "nativeTradingRequested": false,
+      "brokerOrdersPlaced": false,
+      "fixtureResult": true,
+      "checks": [
+        "Real cloud login issues a seven-day BFF session; isolated signed live consent accepted.",
+        "Expired BFF and persisted lease do not interrupt prior consent; new signed helper session resumes identical configuration/generation.",
+        "New web login preserves approved setup; explicit Trading OFF stops new signed live commands."
+      ]
+    }
+  },
+  "limitations": [
+    "Seven-day expiry is verified with a simulated policy clock, not a real seven-day wait.",
+    "Existing browser sessions retain their issued expiry; a fresh sign-in receives seven days.",
+    "Native command/renewal testing kept MT5 Algo Trading disabled; no broker orders were placed.",
+    "The cloud continuity test used an unattached QA installation and a clearly labeled synthetic audit result.",
+    "Continuous live authorization still requires valid access, the approved installation, MT5 and its helper; outages expire short-lived new-entry grants."
+  ],
+  "nativeArtifactsChanged": false,
+  "newZipRequired": false
+}

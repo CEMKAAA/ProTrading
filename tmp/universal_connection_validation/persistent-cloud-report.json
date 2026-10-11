@@ -1,0 +1,12 @@
+{
+  "checkedAt": "2026-10-11T11:36:32.202Z",
+  "status": "PASS",
+  "nativeTradingRequested": false,
+  "brokerOrdersPlaced": false,
+  "fixtureResult": true,
+  "checks": [
+    "Real cloud login issues a seven-day BFF session; isolated signed live consent accepted.",
+    "Expired BFF and persisted lease do not interrupt prior consent; new signed helper session resumes identical configuration/generation.",
+    "New web login preserves approved setup; explicit Trading OFF stops new signed live commands."
+  ]
+}

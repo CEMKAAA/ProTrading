@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="565" viewBox="0 0 509.276 180">
+<title>geometry</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="180" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<line x1="24" y1="21" x2="279" y2="21" stroke="#2C8F7D" stroke-width="2"/>
+<text x="296" y="24" fill="#2C8F7D" font-family="Candara, sans-serif" font-size="10" font-weight="700" text-anchor="start">TP: hedef fiyat</text>
+<line x1="24" y1="73" x2="279" y2="73" stroke="#17313F" stroke-width="2"/>
+<text x="296" y="76" fill="#17313F" font-family="Candara, sans-serif" font-size="10" font-weight="700" text-anchor="start">ENTRY: executable fill</text>
+<line x1="24" y1="124" x2="279" y2="124" stroke="#B74C43" stroke-width="2"/>
+<text x="296" y="127" fill="#B74C43" font-family="Candara, sans-serif" font-size="10" font-weight="700" text-anchor="start">SL: ilk risk sınırı</text>
+<line x1="230" y1="68" x2="230" y2="26" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="230" y1="26" x2="227.12344676837478" y2="31.26549537134224" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="230" y1="26" x2="232.87655323162522" y2="31.26549537134224" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="230" y1="78" x2="230" y2="119" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="230" y1="119" x2="232.87655323162522" y2="113.73450462865776" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="230" y1="119" x2="227.12344676837478" y2="113.73450462865776" stroke="#2C8F7D" stroke-width="1.8"/>
+<text x="35" y="54" fill="#17313F" font-family="Candara, sans-serif" font-size="9" font-weight="400" text-anchor="start">Hedef R = TP mesafesi / ilk stop</text>
+<text x="35" y="158" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Örnek şema; gerçek fiyat serisi değildir.</text>
+</svg>

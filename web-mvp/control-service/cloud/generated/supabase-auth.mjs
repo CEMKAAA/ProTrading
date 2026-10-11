@@ -127,7 +127,7 @@ export class SupabaseAuth {
         const state = await (await this.state(tokens.access_token)), p = this.plane;
         return (await p.atomic(async () => {
             (await this.sync(state));
-            const result = (await p.issueBrowserSession(state.accountId, 12 * 3600000)), actor = (await p.browser(result.accessToken));
+            const result = (await p.issueBrowserSession(state.accountId, 7 * 86400000)), actor = (await p.browser(result.accessToken));
             (await p.run('INSERT INTO supabase_sessions VALUES(?,?,?,?)', actor.sessionId, state.sessionId, this.seal({ jwt: tokens.access_token, refresh: tokens.refresh_token, expiresAt: (tokens.expires_at ?? (p.now() / 1000 + tokens.expires_in)) * 1000 }, actor.sessionId), p.now()));
             return result;
         }));
@@ -196,9 +196,27 @@ export class SupabaseAuth {
         if (!(await this.plane.get('SELECT account_id FROM supabase_accounts WHERE account_id=?', installation.account_id)))
             throw new ControlError('PROVIDER_ACCOUNT_REQUIRED', 403);
         try {
-            await (await this.forAccount(installation.account_id));
+            const persistent = (await this.plane.durableOperation(installation));
+            if (persistent && typeof this.plane.db.deviceAccess === 'function') {
+                // Device execution consent is independent of the browser's JWT/session.
+                // Revalidate the owner in the private server-side database on each call;
+                // never accept metadata or entitlement supplied by the helper.
+                const state = await this.plane.db.deviceAccess(installation.account_id);
+                if (!state) {
+                    (await this.plane.run('UPDATE supabase_accounts SET authority_until=0 WHERE account_id=?', installation.account_id));
+                    (await this.plane.run('UPDATE trading SET enabled=0,revision=revision+1 WHERE account_id=?', installation.account_id));
+                    throw new ControlError('PROVIDER_ACCOUNT_REQUIRED', 403);
+                }
+                const verified = check(authority.omit({ sessionId: true }), state);
+                if (verified.accountId !== installation.account_id)
+                    throw new ControlError('SESSION_SCOPE_MISMATCH', 403);
+                (await this.sync(verified));
+            }
+            else
+                await (await this.forAccount(installation.account_id));
         }
         catch (error) {
+            (await this.plane.run('UPDATE supabase_accounts SET authority_until=0 WHERE account_id=?', installation.account_id));
             if (path !== '/v1/device/identity')
                 throw error;
         }

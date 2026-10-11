@@ -63,6 +63,13 @@ try{
  checks.push('TR login spinner; inputs/mode locked; repeated submissions fenced; verified workspace loading');
  await page.reload();await page.locator('.uc-status-grid').waitFor({state:'visible'});assert.equal(authCalls,1);assert.equal(probes,0);
  checks.push('reload restores the saved handle without an anonymous auth probe or another login');
+ const reopened=await c.newPage();let reopenedLogin=0;
+ await mock(reopened,async(path,route)=>{
+  if(path==='/v1/auth/login'||path==='/v1/auth/session'){reopenedLogin++;await route.fulfill({status:401,json:{error:'UNAUTHORIZED'}});return true;}
+ });
+ await reopened.goto(site);await reopened.locator('.uc-status-grid').waitFor({state:'visible'});
+ assert.equal(reopenedLogin,0);assert.equal(await reopened.evaluate(k=>localStorage.getItem(k),key),token);
+ await reopened.close();checks.push('new tab restores persisted login without tab storage, a probe or another login');
  offline=true;await waitFor(async()=>!!(await page.locator('.uc-error').count()));
  assert.equal(await form.count(),0);assert.equal(await page.evaluate(k=>sessionStorage.getItem(k),key),token);
  offline=false;await waitFor(async()=>!(await page.locator('.uc-error').count()));assert.equal(authCalls,1);

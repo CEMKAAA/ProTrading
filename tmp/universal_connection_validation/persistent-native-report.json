@@ -1,0 +1,27 @@
+{
+  "checkedAt": "2026-10-11T11:06:33.551Z",
+  "status": "PASS",
+  "brokerOrdersEnabled": false,
+  "actualBrokerOrdersPlaced": false,
+  "expirySimulation": "Expired only the isolated QA browser database row; wall clock and market data unchanged.",
+  "binarySha256": "c7435543b2e4285f4ae14711880184efffd4b5f18b3568c41e383450e63e6a7f",
+  "checks": [
+    "Real signed Trading ON accepted by native EX5; Algo Trading remains disabled.",
+    "Past browser expiry, real helper renews native live authority beyond one signed-command lifetime.",
+    "Stopped helper causes native new-entry authority to expire.",
+    "Restarted helper resumes identical approved config without login, audit or another Trading ON.",
+    "Same-device web reauthorization preserves config; explicit OFF stops native authorization."
+  ],
+  "summary": {
+    "wins": 5,
+    "losses": 3,
+    "flat": 0,
+    "open": 0,
+    "data": 0,
+    "netR": 2,
+    "maxClosedDrawdownR": 1,
+    "winRate": 62.5,
+    "trust": "client_reported",
+    "coverageComplete": true
+  }
+}

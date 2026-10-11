@@ -62,7 +62,7 @@ export function controlHttp(plane, { origins = ["http://127.0.0.1:4310", "http:/
       };
       const keys = Object.keys(body);
       const exact = expectedKeys => { if (keys.length !== expectedKeys.length || keys.some(key => !expectedKeys.includes(key))) throw new ControlError("INVALID_REQUEST", 400); };
-      const cookie=(value,maxAge=43200)=>res.setHeader('Set-Cookie',`stratum_session=${value}; Path=/v1; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
+      const cookie=(value,maxAge=604800)=>res.setHeader('Set-Cookie',`stratum_session=${value}; Path=/v1; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
       if (method === "GET" && path === "/health") return reply(200, { service: "stratum-control", protocolVersion: 2, authMode: auth?.mode??"local-development", mt5Adapter: "universal-connection", billingConfigured:billingConfigured(), liveTradingDefault:false });
       if(method==="POST"&&(path==="/v1/auth/register"||path==="/v1/auth/login")){
         const result=await (auth??plane)[path.endsWith('register')?'register':'login'](body);

@@ -1,6 +1,6 @@
 {
-  "control-plane.mjs": "4456be3d6e7aa3dfc7d2cb75bfd8446a312f04647268d4c485312647b39dfc8c",
-  "supabase-auth.mjs": "b095d85333111757fdd27ad1ff375abff342a26f4e49bfbdfe623f0d4e6c1d7d",
-  "http.mjs": "55a346cc95f79e07b6cc66eba6dd86ddc3f0d5eb5dc883eafa94bb26f4b1a4f7",
+  "control-plane.mjs": "82b6a1c6138bdae0248b29796c3b551f8697268e788f8f71a2a1338517d7f71f",
+  "supabase-auth.mjs": "a9db32d165419dd09ac36aefcbbc506ac1ac4a87c303c36d0658d8f73f821b22",
+  "http.mjs": "c2be509b4b4b43878e7ddb502b2a62d5bed4e9f2601883b523561736d42e7103",
   "delivery.mjs": "5ca040dc7fc0ef0cff858de4b5fd6a69d5931612ac1d1c51cf215ed83842a4c5"
 }

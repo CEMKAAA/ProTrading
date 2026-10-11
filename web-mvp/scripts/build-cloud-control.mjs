@@ -1,11 +1,12 @@
 import { build } from 'rolldown';
 import { resolve } from 'node:path';
-import { readFileSync,mkdirSync,writeFileSync } from 'node:fs';
+import { readFileSync,mkdirSync,writeFileSync,renameSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import './generate-cloud-control.mjs';
 
 const root=resolve(import.meta.dirname,'..'),out=resolve(root,'supabase/functions/stratum-control');
 mkdirSync(out,{recursive:true});
+function writeGenerated(path,text){writeFileSync(path+'.partial',text);renameSync(path+'.partial',path);}
 const generated=resolve(root,'control-service/cloud/generated/control-plane.mjs');
 const result=await build({input:resolve(root,'control-service/cloud/runtime.mjs'),platform:'node',write:false,
  external:id=>id.startsWith('node:')||id==='zod',output:{format:'esm',codeSplitting:false,minify:true},
@@ -18,9 +19,9 @@ const result=await build({input:resolve(root,'control-service/cloud/runtime.mjs'
  }}]});
 const chunks=result.output.filter(x=>x.type==='chunk');
 if(chunks.length!==1||/node:(fs|sqlite|http|https)/.test(chunks[0].code))throw new Error('CLOUD_BUNDLE_INVALID');
-writeFileSync(resolve(out,'control-bundle.mjs'),chunks[0].code);
+writeGenerated(resolve(out,'control-bundle.mjs'),chunks[0].code);
 const key=JSON.parse(readFileSync(resolve(root,'control-service/.state/signing-key.json'),'utf8'));
-writeFileSync(resolve(out,'operator-public-key.mjs'),'export default '+JSON.stringify(key.publicKey)+';\n');
+writeGenerated(resolve(out,'operator-public-key.mjs'),'export default '+JSON.stringify(key.publicKey)+';\n');
 let schema=readFileSync(resolve(root,'control-service/schema.sql'),'utf8').replace(/^PRAGMA.*\r?\n/gm,'')
  .replace('id INTEGER PRIMARY KEY, at','id BIGSERIAL PRIMARY KEY, at').replaceAll(' INTEGER',' BIGINT');
 schema='CREATE SCHEMA IF NOT EXISTS stratum_runtime;\nSET search_path TO stratum_runtime;\n'+schema+'\n';
@@ -36,7 +37,7 @@ DO $$DECLARE r record;BEGIN FOR r IN SELECT tablename FROM pg_tables WHERE schem
 END LOOP;END$$;
 RESET search_path;
 `;
-writeFileSync(resolve(root,'control-service/cloud/schema.sql'),schema);
-writeFileSync(resolve(out,'build.json'),JSON.stringify({canonical:JSON.parse(readFileSync(resolve(root,'control-service/cloud/generated/sources.json'),'utf8')),
+writeGenerated(resolve(root,'control-service/cloud/schema.sql'),schema);
+writeGenerated(resolve(out,'build.json'),JSON.stringify({canonical:JSON.parse(readFileSync(resolve(root,'control-service/cloud/generated/sources.json'),'utf8')),
  bundleSha256:createHash('sha256').update(chunks[0].code).digest('hex')},null,2)+'\n');
 console.log('Cloud bundle prepared: '+chunks[0].code.length+' bytes; no private keys or EA binaries included.');

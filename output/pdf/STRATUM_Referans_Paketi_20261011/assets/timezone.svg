@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="644" viewBox="0 0 509.276 205">
+<title>timezone</title><desc>STRATUM teknik rapor; düzenlenebilir vektör şema. Temsilî şemalar piyasa sonucu değildir.</desc>
+<rect x="0" y="0" width="509.27559055118115" height="205" rx="9" fill="#F7F9F9" stroke="#CFDCE2" stroke-width="0.6"/>
+<rect x="15" y="21" width="148" height="73" rx="8" fill="#F8F2E4" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="25" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">NEW YORK</text>
+<text x="25" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">09:30 yerel açılış</text>
+<line x1="163" y1="57" x2="182" y2="57" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="182" y1="57" x2="176.73450462865776" y2="54.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="182" y1="57" x2="176.73450462865776" y2="59.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<rect x="182" y="21" width="148" height="73" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="192" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">UTC / GMT0</text>
+<text x="192" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">13:30 yaz / 14:30 kış</text>
+<line x1="330" y1="57" x2="349" y2="57" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="349" y1="57" x2="343.73450462865776" y2="54.12344676837478" stroke="#2C8F7D" stroke-width="1.8"/>
+<line x1="349" y1="57" x2="343.73450462865776" y2="59.87655323162522" stroke="#2C8F7D" stroke-width="1.8"/>
+<rect x="349" y="21" width="148" height="73" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="359" y="40" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">BROKER UTC+2</text>
+<text x="359" y="56" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">15:30 yaz / 16:30 kış</text>
+<rect x="34" y="120" width="439" height="61" rx="8" fill="#EAF3F6" stroke="#CFDCE2" stroke-width="0.6"/>
+<text x="44" y="139" fill="#17313F" font-family="Candara, sans-serif" font-size="9.9" font-weight="700" text-anchor="start">BROKER DST ≠ EXCHANGE DST</text>
+<text x="44" y="155" fill="#536C77" font-family="Candara, sans-serif" font-size="8.5" font-weight="400" text-anchor="start">Aynı UTC anı, farklı chart saatleri. Tarihsel policy açık olmalı.</text>
+</svg>

@@ -16,6 +16,7 @@ const pure=new Set(['now','ticket','viewJob','conversationSummary','seal','unsea
 function convert(file, replacements=[], pureThis=pure, receivers=['this','p','plane']) {
   let code=readFileSync(resolve(root,'control-service',file),'utf8');
   sources[file]=createHash('sha256').update(code).digest('hex');
+  code=code.replaceAll('\r\n','\n');
   for(const [before,after] of replacements){
     if(!code.includes(before))throw new Error('CLOUD_GENERATOR_DRIFT: '+file+' / '+before.slice(0,65));
     code=code.replace(before,after);
@@ -76,13 +77,13 @@ convert('http.mjs',[
 // device() occurs at several sites: the initial replacement intentionally replaces only one.
 let http=readFileSync(resolve(out,'http.mjs'),'utf8');
 http=http.replace(/(?<!await )\bdevice\(\)/g,'(await device())');
-writeFileSync(resolve(out,'http.mjs'),http);
+writeGenerated(resolve(out,'http.mjs'),http);
 
 convert('delivery.mjs',[
   ["import { readFileSync } from 'node:fs';",''],
   ["import { fileURLToPath } from 'node:url';",''],
   ["import { build } from 'rolldown';",''],
-  [readFileSync(resolve(root,'control-service/delivery.mjs'),'utf8').split('const verificationJson=')[1].split('function crc32')[0], "undefined;\nexport async function companion(){throw new ControlError('CLOUD_ARTIFACTS_UNAVAILABLE',503);}\nexport function verifiedArtifacts(plane){return plane.artifacts;}\n"],
+  [readFileSync(resolve(root,'control-service/delivery.mjs'),'utf8').replaceAll('\r\n','\n').split('const verificationJson=')[1].split('function crc32')[0], "undefined;\nexport async function companion(){throw new ControlError('CLOUD_ARTIFACTS_UNAVAILABLE',503);}\nexport function verifiedArtifacts(plane){return plane.artifacts;}\n"],
   ["'This build uses the LOOPBACK LOCAL PILOT service, not a publicly deployed cloud authorization service.'", "'Cloud authorization is managed by Supabase.'"]
 ].filter(([s])=>!s.startsWith("'This build")),pure,['plane']);
 
@@ -95,7 +96,7 @@ for(const file of Object.keys(sources)){
   code=code.replaceAll("'./api-location.mjs'","'../../api-location.mjs'");
   code=code.replaceAll("'./studio-agent.mjs'","'../../studio-agent.mjs'");
   code=code.replaceAll('"./subscription-provider.mjs"','"../billing-disabled.mjs"');
-  writeFileSync(path,code);
+  writeGenerated(path,code);
 }
-writeFileSync(resolve(out,'sources.json'),JSON.stringify(sources,null,2)+'\n');
+writeGenerated(resolve(out,'sources.json'),JSON.stringify(sources,null,2)+'\n');
 console.log('Generated cloud control policy from '+Object.keys(sources).length+' canonical modules.');
