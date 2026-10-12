@@ -1,0 +1,38 @@
+﻿[
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "sha256":  "85F179F4F5C85130143413E3A6C951CABA7FE2578CEFBFF315C3BEACF2D00DB1"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "sha256":  "882CCFC8CA28363D96C8F42F5DC6F7EB16EF04F78372155E2955C0F66AD82A17"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5",
+        "sha256":  "4F1454701CFD54C3D7EF354D703545A9E8D3DA24891E0F470A04C19E623E63E1"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.mq5",
+        "sha256":  "23EF2118FAB915AB9C29482883E153C0E6B24B28C4F4EE866D97BB5D30E59386"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "95939921ADF9A0F9BB13E085ACDECBD7F3AE74E728B7A9240935929B45F1DAB4"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "DEA9103B2632AE430D03A22148D20601AA07D67476A0E2BD634BDCCCD44EAE5E"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.ex5",
+        "sha256":  "6F6CFCC6424589BFF56890FD4E2BF9B3FAEF243943516E5651CDD969427EE421"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.mq5",
+        "sha256":  "EFCFEC290B23B1F2638557C6021749EE2AD59602F5F833615E62140CB3C48033"
+    },
+    {
+        "file":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "sha256":  "8F02C671D1B785FD5E93F91A8901BD48512B73118FCD703B74699DEAF0E80126"
+    }
+]

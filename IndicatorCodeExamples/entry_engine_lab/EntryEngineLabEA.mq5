@@ -495,6 +495,7 @@ int    g_strategyVisibleCount = 0;
 datetime g_strategyApplyFlashUntil = 0;
 string g_strategyFilterNetText = "";
 string g_strategyFilterPair = "";
+int    g_strategyFilterPositionMode = 0; // 0 ALL, 1 LEGACY, 2 INDEPENDENT; search only.
 string g_strategyFilterGeometryText = "";
 bool   g_strategyFilterGeometryEnabled = false;
 double g_strategyFilterGeometry = 0.0;
@@ -2892,14 +2893,18 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
 bool OrbStrategyPresetPassesMetricFilters(const OrbStrategyPreset &p)
 {
    if(g_strategyFilterPair!=""&&OrbStrategyPresetPair(p)!=g_strategyFilterPair)return false;
+   int slot=OrbUserSlot(p.id);
+   bool independent=slot>=0&&g_userStrategies[slot].independent;
+   if(g_strategyFilterPositionMode==1&&independent)return false;
+   if(g_strategyFilterPositionMode==2&&!independent)return false;
    if(g_strategyFilterGeometryEnabled)
    {
       // Geometry, not realized net R; non-fixed targets have no single preset ratio.
       if(p.targetMode!=ORB_TARGET_R_LEG)return false;
       double r=p.targetLeg==(int)ORB_TARGET_CUSTOM?OrbUserCustomR(p):LegR(p.targetLeg);
       if(!MathIsValidNumber(r)||r<=0.0)return false;
-      if(p.invertMode)r=1.0/r;
-      if(MathAbs(r-g_strategyFilterGeometry)>0.000001)return false;
+      // The selected architecture stays the same when trade direction is inverted.
+      if(MathAbs(r-g_strategyFilterGeometry)>1e-8*MathMax(MathAbs(r),MathAbs(g_strategyFilterGeometry)))return false;
    }
    if(!g_strategyFilterNetEnabled&&!g_strategyFilterWrEnabled&&!g_strategyFilterMinCumEnabled)return true;
    if(!p.metric1yReady)return false;
@@ -8028,7 +8033,7 @@ void UpdateDashboard()
    CreateEdit("EDIT_PRESET_WR",x+202,y+54,48,18,g_strategyFilterWrText);
    CreateLabel("DASH_PRESET_MC_L",x+258,y+59,"MC >=",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_MC",x+298,y+54,52,18,g_strategyFilterMinCumText);
-   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled||g_strategyFilterGeometryEnabled||g_strategyFilterPair!="";
+   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled||g_strategyFilterGeometryEnabled||g_strategyFilterPair!=""||g_strategyFilterPositionMode!=0;
    CreateButton("BTN_PRESET_FILTER",x+358,y+54,92,18,"APPLY FILTER",metricFilterActive?C'30,150,95':C'38,101,176');
    CreateButton("BTN_PRESET_FILTER_CLEAR",x+456,y+54,62,18,"CLEAR",C'80,80,80');
    CreateLabel("DASH_PRESET_FILTER_COUNT",x+526,y+59,IntegerToString(ArraySize(g_strategyMatches))+"/"+IntegerToString(OrbStrategyPresetCount()),
@@ -8037,15 +8042,17 @@ void UpdateDashboard()
       g_strategyFavoritesOnly?C'184,103,22':C'38,101,176');
    CreateLabel("DASH_PRESET_GEOMETRY_L",x+146,y+83,"TP/SL R =",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_GEOMETRY",x+218,y+78,76,20,g_strategyFilterGeometryText);
-   ObjectSetString(0,PREFIX+"EDIT_PRESET_GEOMETRY",OBJPROP_TOOLTIP,"Exact target/SL ratio after inversion; blank = all. Use APPLY FILTER.");
+   ObjectSetString(0,PREFIX+"EDIT_PRESET_GEOMETRY",OBJPROP_TOOLTIP,"Saved target R architecture, not audit Net R. Inversion does not change this filter. Blank = all; APPLY FILTER commits the value.");
    CreateButton("BTN_PRESET_SYMBOL",x+304,y+78,140,20,"PAIR: "+(g_strategyFilterPair==""?"ALL":g_strategyFilterPair),
       g_strategyFilterPair==""?C'38,101,176':C'30,150,95');
    ObjectSetString(0,PREFIX+"BTN_PRESET_SYMBOL",OBJPROP_TOOLTIP,"Cycle ALL and every pair present in saved and built-in strategies. Library filter only.");
    CreateButton("BTN_FY_RESEARCH",x+454,y+78,152,20,"5Y LEADERBOARD",C'38,101,176');
    ObjectDelete(0,PREFIX+"DASH_PRESET_FAV_HINT");
    OrbStrategyWindowControls(x,y);
-   CreateLabel("DASH_PRESET_CURRENT",x+12,y+154,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
-   CreateLabel("DASH_PRESET_PICK",x+12,y+170,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
+   CreateButton("BTN_PRESET_POSITION_MODE",x+12,y+150,140,20,"MODE: "+(g_strategyFilterPositionMode==0?"ALL":g_strategyFilterPositionMode==1?"LEGACY":"INDEPENDENT"),g_strategyFilterPositionMode==0?C'38,101,176':C'30,150,95');
+   ObjectSetString(0,PREFIX+"BTN_PRESET_POSITION_MODE",OBJPROP_TOOLTIP,"Cycle ALL / LEGACY / INDEPENDENT using saved strategy settings. Does not change trading mode or audit results.");
+   CreateLabel("DASH_PRESET_CURRENT",x+162,y+154,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
+   CreateLabel("DASH_PRESET_PICK",x+162,y+170,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
 
    x=InpDashboardX;
    int rootY=InpDashboardY;
@@ -10275,6 +10282,15 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       UpdateDashboard();ChartRedraw(0);return;
    }
 
+   if(sparam==PREFIX+"BTN_PRESET_POSITION_MODE")
+   {
+      g_strategyFilterPositionMode=(g_strategyFilterPositionMode+1)%3;
+      g_strategySearchPage=0;
+      OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
+      g_strategyPopupOpen=true;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
    if(sparam==PREFIX+"BTN_PRESET_FILTER")
    {
       if(!OrbStrategyApplyMetricFilters())
@@ -10297,6 +10313,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(sparam==PREFIX+"BTN_PRESET_FILTER_CLEAR")
    {
       g_strategyFilterPair="";
+      g_strategyFilterPositionMode=0;
       g_strategyFilterNetText="";g_strategyFilterWrText="";g_strategyFilterMinCumText="";
       g_strategyFilterGeometryText="";g_strategyFilterGeometryEnabled=false;g_strategyFilterGeometry=0.0;
       g_strategyFilterNetEnabled=false;g_strategyFilterWrEnabled=false;g_strategyFilterMinCumEnabled=false;

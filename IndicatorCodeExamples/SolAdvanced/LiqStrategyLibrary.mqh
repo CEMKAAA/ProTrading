@@ -7,6 +7,10 @@ bool g_liqLibraryPanel=false,g_liqLibraryStarted=false;
 string g_liqLibrarySelected="";
 ulong g_liqLibraryOpenedAt=0;
 int g_liqLibraryPage=0;
+int g_liqLibraryFilterMode=0; // 0 ALL, 1 LEGACY, 2 INDEPENDENT; search only.
+string g_liqLibraryFilterRText="";
+bool g_liqLibraryFilterREnabled=false;
+double g_liqLibraryFilterR=0.0;
 string g_liqLibraryQuery="",g_liqLibraryName="",g_liqLibraryStatus="";
 string g_liqLibraryFiles[],g_liqLibraryNames[];
 bool LiqLibraryRStepAllowed(int step)
@@ -232,6 +236,50 @@ bool LiqLibraryApply(string path)
    RefreshAfterConfigChange(true);g_tcalChanged=false;return true;
 }
 #include "LiqStrategyWindowMetrics.mqh"
+bool LiqLibraryParseFilterR(string raw,bool &enabled,double &value)
+{
+   StringTrimLeft(raw);StringTrimRight(raw);StringReplace(raw,",",".");
+   if(raw==""){enabled=false;value=0.0;return true;}
+   int dots=0,digits=0;
+   for(int i=0;i<StringLen(raw);i++)
+   {
+      ushort c=StringGetCharacter(raw,i);
+      if(c>='0'&&c<='9'){digits++;continue;}
+      if(c=='.'&&++dots==1)continue;
+      return false;
+   }
+   double parsed=StringToDouble(raw);
+   if(digits==0||!MathIsValidNumber(parsed)||parsed<=0.0)return false;
+   enabled=true;value=parsed;return true;
+}
+bool LiqLibrarySavedR(string path,const double &values[],double &ratio)
+{
+   // Read the saved model/custom value, never the currently selected strategy.
+   if(ArraySize(values)<9||(int)values[8]!=(int)ERL_TARGET_FIXED_R)return false;
+   int target=(int)values[3];
+   if(target!=(int)ERL_RR_CUSTOM)
+   {
+      if(!((target>=0&&target<=5)||(target>=101&&target<=200)))return false;
+      ratio=TargetR((ERL_RR_MODE)target);
+   }
+   else
+   {
+      string text="",lines[];if(!LiqLibraryRead(path,text))return false;
+      int n=StringSplit(text,'\n',lines),at=n>5?7+(int)StringToInteger(lines[5]):n;
+      if(at>=n||!LiqLibraryCustomR(lines[at],ratio))return false;
+   }
+   return MathIsValidNumber(ratio)&&ratio>0.0;
+}
+bool LiqLibraryPassesFilters(string path,const double &values[])
+{
+   bool independent=LiqWindowIndependent(path);
+   if(g_liqLibraryFilterMode==1&&independent)return false;
+   if(g_liqLibraryFilterMode==2&&!independent)return false;
+   if(!g_liqLibraryFilterREnabled)return true;
+   double ratio=0.0;
+   return LiqLibrarySavedR(path,values,ratio)
+      &&MathAbs(ratio-g_liqLibraryFilterR)<=1e-8*MathMax(MathAbs(ratio),MathAbs(g_liqLibraryFilterR));
+}
 void LiqLibraryScan()
 {
    SwRefreshRequest("sol");
@@ -243,6 +291,7 @@ void LiqLibraryScan()
       if(!LiqLibraryUnpack(path,name,values,false))continue;
       if(g_liqLibraryFavorites&&!FileIsExist(path+".fav",FILE_COMMON))continue;
       if(g_liqLibraryQuery!=""&&StringFind(LiqLibraryLower(name),LiqLibraryLower(g_liqLibraryQuery))<0)continue;
+      if(!LiqLibraryPassesFilters(path,values))continue;
       int n=ArraySize(g_liqLibraryFiles);ArrayResize(g_liqLibraryFiles,n+1);ArrayResize(g_liqLibraryNames,n+1);
       g_liqLibraryFiles[n]=path;g_liqLibraryNames[n]=name;
    }while(FileFindNext(h,found));
@@ -258,6 +307,7 @@ void LiqLibraryScan()
       if(overridden)continue;
       if(g_liqLibraryFavorites&&!FileIsExist(path+".fav",FILE_COMMON))continue;
       if(g_liqLibraryQuery!=""&&StringFind(LiqLibraryLower(name),LiqLibraryLower(g_liqLibraryQuery))<0)continue;
+      if(!LiqImageRead(path,name,values)||!LiqLibraryPassesFilters(path,values))continue;
       int n=ArraySize(g_liqLibraryFiles);ArrayResize(g_liqLibraryFiles,n+1);ArrayResize(g_liqLibraryNames,n+1);
       g_liqLibraryFiles[n]=path;g_liqLibraryNames[n]=name;
    }
@@ -289,6 +339,7 @@ void LiqLibraryReadEdits()
 {
    if(ObjectFind(0,LiqLibraryObject("QUERY"))>=0)g_liqLibraryQuery=ObjectGetString(0,LiqLibraryObject("QUERY"),OBJPROP_TEXT);
    if(ObjectFind(0,LiqLibraryObject("NAME"))>=0)g_liqLibraryName=ObjectGetString(0,LiqLibraryObject("NAME"),OBJPROP_TEXT);
+   if(ObjectFind(0,LiqLibraryObject("FILTER_R"))>=0)g_liqLibraryFilterRText=ObjectGetString(0,LiqLibraryObject("FILTER_R"),OBJPROP_TEXT);
 }
 void LiqLibraryNavigation()
 {
@@ -385,7 +436,7 @@ void LiqLibraryDraw()
 #ifdef LN_SOL_ADV_NAS_READY
    marginSpace=120;
 #endif
-   LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,410+marginSpace,"",bg);
+   LiqLibraryWidget("BG",OBJ_RECTANGLE_LABEL,x,y,w,440+marginSpace,"",bg);
    LiqLibraryWidget("TITLE",OBJ_LABEL,x+12,y+10,w-50,20,"STRATEGIES // "+_Symbol,bg);
    LiqLibraryWidget("CLOSE_PANEL",OBJ_BUTTON,x+w-38,y+5,30,24,"X",clrMaroon);
    LiqLibraryWidget("QUERY",OBJ_EDIT,x+12,y+38,w-260,24,g_liqLibraryQuery,C'38,46,60');
@@ -393,28 +444,35 @@ void LiqLibraryDraw()
    LiqLibraryWidget("APPLY",OBJ_BUTTON,x+w-158,y+38,146,24,"APPLY STRATEGY",C'184,103,22');
    LiqLibraryWidget("FAV",OBJ_BUTTON,x+12,y+70,130,24,g_liqLibraryFavorites?"FAVORITES ON":"FAVORITES OFF",button);
    LiqWindowControls(x,y,w,button);
-   LiqLibraryWidget("SELECTED",OBJ_LABEL,x+12,y+152,w-24,20,"Selected: "+StringSubstr(g_liqLibraryName,0,50),bg);
-   if(!g_liqLibraryOpen)TCalCsvLauncher(PFX,x+12,y+181,1.0,DASH_Z+60,true);
+   LiqLibraryWidget("FILTER_R_LABEL",OBJ_LABEL,x+12,y+158,34,20,"R =",bg);
+   LiqLibraryWidget("FILTER_R",OBJ_EDIT,x+50,y+152,80,24,g_liqLibraryFilterRText,C'38,46,60');
+   ObjectSetString(0,LiqLibraryObject("FILTER_R"),OBJPROP_TOOLTIP,"Exact saved target R architecture, not audit Net R. Blank = all. Fixed/custom R supported; dynamic targets do not have one fixed ratio.");
+   LiqLibraryWidget("FILTER_APPLY",OBJ_BUTTON,x+138,y+152,58,24,"APPLY",g_liqLibraryFilterREnabled?C'30,150,95':button);
+   LiqLibraryWidget("FILTER_CLEAR",OBJ_BUTTON,x+202,y+152,66,24,"CLEAR",C'80,80,80');
+   LiqLibraryWidget("FILTER_MODE",OBJ_BUTTON,x+12,y+180,148,24,"MODE: "+(g_liqLibraryFilterMode==0?"ALL":g_liqLibraryFilterMode==1?"LEGACY":"INDEPENDENT"),g_liqLibraryFilterMode==0?button:C'30,150,95');
+   ObjectSetString(0,LiqLibraryObject("FILTER_MODE"),OBJPROP_TOOLTIP,"Cycle ALL / LEGACY / INDEPENDENT using saved strategy settings. Search only; trading mode is unchanged.");
+   LiqLibraryWidget("SELECTED",OBJ_LABEL,x+170,y+184,w-182,20,"Selected: "+StringSubstr(g_liqLibraryName,0,MathMax(1,(w-250)/7)),bg);
+   if(!g_liqLibraryOpen)TCalCsvLauncher(PFX,x+12,y+211,1.0,DASH_Z+60,true);
    if(!g_liqLibraryOpen)
    {
-      LiqLibraryWidget("BAL_LABEL",OBJ_LABEL,x+12,y+226,180,20,"BALANCE (0=ACCOUNT)",bg);
-      LiqLibraryWidget("BAL_VALUE",OBJ_EDIT,x+198,y+220,100,24,DoubleToString(g_nativeRiskBalance,2),C'38,46,60');
-      LiqLibraryWidget("BAL_APPLY",OBJ_BUTTON,x+306,y+220,100,24,"APPLY BAL",button);
+      LiqLibraryWidget("BAL_LABEL",OBJ_LABEL,x+12,y+256,180,20,"BALANCE (0=ACCOUNT)",bg);
+      LiqLibraryWidget("BAL_VALUE",OBJ_EDIT,x+198,y+250,100,24,DoubleToString(g_nativeRiskBalance,2),C'38,46,60');
+      LiqLibraryWidget("BAL_APPLY",OBJ_BUTTON,x+306,y+250,100,24,"APPLY BAL",button);
       double budget=NativeBalanceEnabled()?NativeBalanceBudget(RiskPerTradePct()):AccountInfoDouble(ACCOUNT_EQUITY)*RiskPerTradePct()/100.0;
-      LiqLibraryWidget("BAL_BUDGET",OBJ_LABEL,x+12,y+254,w-24,20,"NATIVE 1R BUDGET: "+DoubleToString(budget,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",bg);
+      LiqLibraryWidget("BAL_BUDGET",OBJ_LABEL,x+12,y+284,w-24,20,"NATIVE 1R BUDGET: "+DoubleToString(budget,2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",bg);
       ObjectSetString(0,LiqLibraryObject("BAL_VALUE"),OBJPROP_TOOLTIP,"Native percentage-risk reference capital; 0 restores account sizing. Future entries only. Risk controls remain separate from saved strategies.");
 #ifdef LN_SOL_ADV_NAS_READY
-      LiqMarginDraw(x+12,y+275,w-24,bg);
+      LiqMarginDraw(x+12,y+305,w-24,bg);
 #endif
    }
    else {string balanceKeys[]={"BAL_LABEL","BAL_VALUE","BAL_APPLY","BAL_BUDGET","MARGIN_TITLE","MARGIN_BUY","MARGIN_SELL","MARGIN_MIN","MARGIN_MIN_SL","MARGIN_MIN_CAPITAL","MARGIN_NOTE"};for(int b=0;b<ArraySize(balanceKeys);b++)ObjectDelete(0,LiqLibraryObject(balanceKeys[b]));}
-   LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+303+marginSpace,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
-   LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+330+marginSpace,w-190,24,g_liqLibraryName,C'38,46,60');
-   LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+330+marginSpace,158,24,"SAVE STRATEGY",button);
-   LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+368+marginSpace,w-24,20,StringSubstr(g_liqLibraryStatus+" | "+g_swRefreshStatus,0,75),bg);
+   LiqLibraryWidget("SAVE_TITLE",OBJ_LABEL,x+12,y+333+marginSpace,w-24,20,"SAVE CURRENT STRATEGY (APPLY edits first)",bg);
+   LiqLibraryWidget("NAME",OBJ_EDIT,x+12,y+360+marginSpace,w-190,24,g_liqLibraryName,C'38,46,60');
+   LiqLibraryWidget("SAVE",OBJ_BUTTON,x+w-170,y+360+marginSpace,158,24,"SAVE STRATEGY",button);
+   LiqLibraryWidget("STATUS",OBJ_LABEL,x+12,y+398+marginSpace,w-24,20,StringSubstr(g_liqLibraryStatus+" | "+g_swRefreshStatus,0,75),bg);
    if(g_liqLibraryOpen)
    {
-      int py=y+180;
+      int py=y+210;
       LiqLibraryWidget("POP_BG",OBJ_RECTANGLE_LABEL,x+12,py,w-24,164,"",C'20,27,39');
       LiqLibraryWidget("PREV",OBJ_BUTTON,x+18,py+3,30,22,"<",button);
       LiqLibraryWidget("NEXT",OBJ_BUTTON,x+52,py+3,30,22,">",button);
@@ -525,6 +583,24 @@ bool LiqLibraryEvent(int id,string name,long mx=0,double my=0)
    {bool window=StringFind(action,"SW_WINDOW_")==0;int key=(int)StringToInteger(StringSubstr(action,window?10:8));
     if(window&&key>=0&&key<9)g_swWeeks=SwWeeks(key);else if(!window)SwSortCycle(key);
     g_liqLibraryPage=0;LiqLibraryScan();LiqLibraryDraw();ChartRedraw(0);return true;}
+   if(action=="FILTER_APPLY"||action=="FILTER_CLEAR"||action=="FILTER_MODE")
+   {
+      if(action=="FILTER_APPLY")
+      {
+         bool enabled=false;double value=0.0;
+         if(!LiqLibraryParseFilterR(g_liqLibraryFilterRText,enabled,value))
+         {g_liqLibraryStatus="Invalid R: enter a positive number or leave blank";LiqLibraryDraw();ChartRedraw(0);return true;}
+         g_liqLibraryFilterREnabled=enabled;g_liqLibraryFilterR=value;
+         g_liqLibraryStatus="Search R filter applied; strategy settings unchanged";
+      }
+      else if(action=="FILTER_MODE")g_liqLibraryFilterMode=(g_liqLibraryFilterMode+1)%3;
+      else
+      {
+         g_liqLibraryFilterREnabled=false;g_liqLibraryFilterR=0.0;g_liqLibraryFilterRText="";g_liqLibraryFilterMode=0;
+         ObjectSetString(0,LiqLibraryObject("FILTER_R"),OBJPROP_TEXT,"");
+      }
+      g_liqLibraryPage=0;g_liqLibraryOpen=true;LiqLibraryScan();LiqLibraryDraw();ChartRedraw(0);return true;
+   }
    if(StringFind(action,"NAV_")==0)
    {
       if(action=="NAV_LIBRARY")g_liqLibraryPanel=!g_liqLibraryPanel;
