@@ -93,13 +93,27 @@ void OrbUserReload(bool force=false)
    FileFindClose(find);
 }
 
+string OrbBuiltinSymbolWindowKey(const OrbStrategyPreset &p,string symbol,bool currentSchema=true)
+{return SwSettingsKey((currentSchema?"ORB_BUILTIN_WINDOW_2_FILL_HORIZON|":"ORB_BUILTIN_WINDOW_1|")+symbol+"|"+OrbCustomInputSignature()+"|"+OrbCustomPresetDump(p));}
 string OrbBuiltinWindowKey(const OrbStrategyPreset &p,bool currentSchema=true)
-{return SwSettingsKey((currentSchema?"ORB_BUILTIN_WINDOW_2_FILL_HORIZON|":"ORB_BUILTIN_WINDOW_1|")+_Symbol+"|"+OrbCustomInputSignature()+"|"+OrbCustomPresetDump(p));}
+{return OrbBuiltinSymbolWindowKey(p,_Symbol,currentSchema);}
 void OrbBuiltinLoadWindowMetrics(OrbStrategyPreset &p)
 {
-   SwMetric m;
-   if(!SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p),g_swWeeks,m)
-      &&(!g_swFrozen||!SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p,false),g_swWeeks,m)))
+   SwMetric m;p.metricAuditSymbol="";
+   bool ready=SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p),g_swWeeks,m)
+      ||(g_swFrozen&&SwReadView("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinWindowKey(p,false),g_swWeeks,m));
+   if(ready)p.metricAuditSymbol=_Symbol;
+   // ALL-pairs search is independent of the display chart. Never accept a raw
+   // stored hash: verify the full preset/input/broker key for its audit symbol.
+   if(!ready&&!g_swFrozen&&p.family!=ORB_PRESET_FAMILY_ANY)
+      for(int i=0;i<SymbolsTotal(false);i++)
+      {
+         string symbol=SymbolName(i,false);
+         if(symbol==_Symbol||OrbUserSymbolFamily(symbol)!=p.family)continue;
+         if(SwRead("OrbStrategyUserLibrary\\WindowMetrics",p.id,OrbBuiltinSymbolWindowKey(p,symbol),g_swWeeks,m))
+         {ready=true;p.metricAuditSymbol=symbol;break;}
+      }
+   if(!ready)
    {p.metric1yReady=false;return;}
    p.metric1yReady=true;p.metric1yAsOf=TimeToString(m.asOf,TIME_DATE|TIME_MINUTES);
    p.metric1yTotal=m.total;p.metric1yWins=m.wins;p.metric1yLosses=m.losses;
@@ -245,7 +259,9 @@ bool OrbUserSaveLocked(string name)
    {g_userStrategyNote="Saved, but selection could not be persisted. Select from SEARCH.";return false;}
    GlobalVariablesFlush();g_strategyPresetIndex=index;g_strategyCandidateIndex=index;
    OrbStrategyLoadFavorites();OrbStrategyPresetBuildMatches("");
-   g_userStrategyNote="SAVED: "+name+" | computing 1Y metrics";
+   if(!g_histAuditRunning&&!g_histRedrawQueued&&g_userCompletedReady&&g_userCompletedSettings==OrbUserAuditIdentity())
+   {g_swWeeks=g_userCompletedWeeks;g_swFrozen=false;g_swLegacyArchive=false;}
+   g_userStrategyNote="SAVED: "+name+" | storing completed audit windows";
    OrbUserEnsureMetrics();
    return true;
 }

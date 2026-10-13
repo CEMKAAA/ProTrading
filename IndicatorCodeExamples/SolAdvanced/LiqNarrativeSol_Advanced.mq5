@@ -2961,6 +2961,7 @@ void RecalculateHistoricalStats(bool rebuildSignals = true)
    g_auditMacroPending = false;
    g_auditGeneration++;
    BeginHistoricalAuditProgress();
+   LiqWindowAuditStarted();
    LnQuoteReset();
    ulong stageStarted = GetTickCount64();
    datetime cutoff = TimeCurrent() - HistDays() * 86400;

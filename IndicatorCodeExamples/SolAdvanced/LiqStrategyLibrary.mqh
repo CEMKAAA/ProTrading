@@ -142,7 +142,37 @@ bool LiqLibrarySave(string name)
    if(g_target==ERL_RR_CUSTOM)payload+="\n"+DoubleToString(g_customTargetR,8);
 #endif
    payload+="\n"+TCalStrategyText();
-   return LiqLibraryAtomicWrite(LiqLibraryPath(name),payload+"\nSHA256="+LiqLibraryHash(payload));
+   string path=LiqLibraryPath(name);
+   SwMetric previous[9];string previousKey="";
+   string previousText="",previousName="";double previousValues[];
+   if(LiqLibraryUnpack(path,previousName,previousValues)&&LiqLibraryRead(path,previousText))
+   {
+      int end=StringFind(previousText,"\nSHA256=");string lines[];
+      int n=StringSplit(StringSubstr(previousText,0,end),'\n',lines);
+      // The saved audit window is metadata, not a change in signal/exit logic.
+      if(n>27&&ArraySize(previousValues)==count)
+      {
+         lines[27]=DoubleToString(values[21],16);string same="";
+         for(int i=0;i<n;i++)same+=(i>0?"\n":"")+lines[i];
+         if(same==payload)
+         {
+            previousKey=LiqWindowKey(path);
+            for(int i=0;i<9;i++)SwRead(LiqWindowFolder(),path,previousKey,SwWeeks(i),previous[i]);
+         }
+      }
+   }
+   if(!LiqLibraryAtomicWrite(path,payload+"\nSHA256="+LiqLibraryHash(payload)))return false;
+   g_liqLibrarySelected=path;g_liqLibraryName=name;g_liqWindowAppliedFingerprint=LiqWindowRuntimeFingerprint();
+   string newKey=LiqWindowKey(path);
+   if(previousKey!=""&&previousKey!=newKey)
+      for(int i=0;i<9;i++)if(previous[i].ready)
+      {
+         SwMetric m=previous[i];
+         SwWrite(LiqWindowFolder(),path,newKey,SwWeeks(i),m.total,m.wins,m.losses,m.open,m.flat,m.netR,m.minCum,m.asOf);
+      }
+   if(LiqWindowPersistCompleted()&&g_swCompletedLast>=0)
+   {g_swWeeks=SwWeeks(g_swCompletedLast);g_swFrozen=false;g_swLegacyArchive=false;}
+   return true;
 }
 bool LiqLibraryCanApply(bool requireFlat=true)
 {
@@ -511,6 +541,10 @@ void LiqLibraryRedrawPreserve()
 bool LiqLibraryDashboard()
 {
    if(IsTesterMode()||!InpShowDashboard)return false;
+   static ulong metricPollAt=0;ulong now=GetTickCount64();
+   if(g_liqLibraryOpen&&!g_swFrozen&&!g_histAuditRunning&&!g_auditMacroPending
+      &&(metricPollAt==0||now-metricPollAt>=5000))
+   {metricPollAt=now;LiqLibraryScan();}
    if(!g_liqLibraryStarted){g_liqLibraryPanel=LiqLibraryWide();g_liqLibraryStarted=true;}
    LiqLibraryNavigation();
    if(g_liqLibraryPanel||g_liqLibraryRPicker)LiqLibraryDraw();

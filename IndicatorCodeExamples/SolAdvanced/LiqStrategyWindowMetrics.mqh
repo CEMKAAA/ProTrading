@@ -1,12 +1,15 @@
 #ifndef LIQ_STRATEGY_WINDOW_METRICS_MQH
 #define LIQ_STRATEGY_WINDOW_METRICS_MQH
 string g_liqWindowAppliedFingerprint="";
+string g_liqWindowAuditFingerprint="";
+int g_liqWindowAuditWeeks=0;
 string LiqWindowFolder(){return LiqLibraryFolder()+"\\WindowMetrics";}
 string LiqWindowRuntimeFingerprint()
 {
-   double values[];int n=LiqLibraryCapture(values);string out=LiqLibraryInputContract()+TCalStrategyText()+LnNasPack(g_lnNas)+DoubleToString(g_customTargetR,12);
+   double values[];int n=LiqLibraryCapture(values);string out=LiqLibraryInputContract()+TCalStrategyText()+LnNasPack(g_lnNas);
+   if(g_target==ERL_RR_CUSTOM)out+="|CUSTOM_R="+DoubleToString(g_customTargetR,12);
    if(g_lnNas.gate!=0||g_lnNas.exitMode!=0)out+="|NAS_TF="+(string)(int)_Period;
-   for(int i=0;i<n;i++)out+="|"+DoubleToString(values[i],16);return SwHash(out);
+   for(int i=0;i<n;i++)if(i!=21)out+="|"+DoubleToString(values[i],16);return SwHash(out);
 }
 string LiqWindowKey(string path)
 {
@@ -40,15 +43,29 @@ string LiqWindowCaption(string path,string name)
    if(g_swFrozen)mode=m.snapshotIndependent?"IND":"LEG";
    return name+" | "+SwWindow(g_swWeeks)+" N "+(string)m.total+" "+mode+" | WR "+DoubleToString(SwWr(m),1)+"% | "+DoubleToString(m.netR,2)+"R"+SwAsOfCaption(TimeToString(m.asOf,TIME_DATE|TIME_MINUTES));
 }
+void LiqWindowAuditStarted()
+{
+   g_liqWindowAuditFingerprint=LiqWindowRuntimeFingerprint();g_liqWindowAuditWeeks=g_histWeeks;
+}
+bool LiqWindowPersistCompleted()
+{
+   string identity=LiqWindowRuntimeFingerprint();
+   if(g_liqLibrarySelected==""||g_liqWindowAppliedFingerprint==""||g_liqWindowAppliedFingerprint!=identity)return false;
+   bool stored=SwPersistCompleted(LiqWindowFolder(),g_liqLibrarySelected,LiqWindowKey(g_liqLibrarySelected),identity);
+   if(stored){LiqLibraryScan();g_liqLibraryStatus="Completed audit windows saved: "+g_liqLibraryName;}
+   return stored;
+}
 void LiqWindowAuditCompleted()
 {
-   if(g_liqLibrarySelected==""||g_liqWindowAppliedFingerprint==""||g_liqWindowAppliedFingerprint!=LiqWindowRuntimeFingerprint()||g_hist.invalid>0)return;
+   if(g_hist.invalid>0||g_liqWindowAuditFingerprint==""||g_liqWindowAuditFingerprint!=LiqWindowRuntimeFingerprint()
+      ||g_liqWindowAuditWeeks!=g_histWeeks||!SwValidWindow(g_histWeeks))return;
    datetime cutoff=TimeCurrent()-g_histWeeks*7*86400;
    if(SeriesInfoInteger(_Symbol,g_entryTf,SERIES_FIRSTDATE)<=0||SeriesInfoInteger(_Symbol,g_entryTf,SERIES_FIRSTDATE)>cutoff
       ||SeriesInfoInteger(_Symbol,g_htf,SERIES_FIRSTDATE)<=0||SeriesInfoInteger(_Symbol,g_htf,SERIES_FIRSTDATE)>cutoff
       ||SeriesInfoInteger(_Symbol,PERIOD_M1,SERIES_FIRSTDATE)<=0||SeriesInfoInteger(_Symbol,PERIOD_M1,SERIES_FIRSTDATE)>cutoff)return;
    int flat=MathMax(0,g_hist.total-g_hist.wins-g_hist.losses-g_hist.open);
-   SwWrite(LiqWindowFolder(),g_liqLibrarySelected,LiqWindowKey(g_liqLibrarySelected),g_histWeeks,g_hist.total,g_hist.wins,g_hist.losses,g_hist.open,flat,g_hist.netR,g_directionMinCum,TimeCurrent());
+   if(SwRememberCompleted(g_liqWindowAuditFingerprint,g_histWeeks,g_hist.total,g_hist.wins,g_hist.losses,g_hist.open,flat,g_hist.netR,g_directionMinCum,TimeCurrent()))
+      LiqWindowPersistCompleted();
 }
 void LiqWindowSort()
 {

@@ -262,7 +262,9 @@ bool OrbUserSaveLocked(string name)
    {g_userStrategyNote="Saved, but selection could not be persisted. Select from SEARCH.";return false;}
    GlobalVariablesFlush();g_strategyPresetIndex=index;g_strategyCandidateIndex=index;
    OrbStrategyLoadFavorites();OrbStrategyPresetBuildMatches("");
-   g_userStrategyNote="SAVED: "+name+" | computing 1Y metrics";
+   if(!g_histAuditRunning&&!g_histRedrawQueued&&g_userCompletedReady&&g_userCompletedSettings==OrbUserAuditIdentity())
+   {g_swWeeks=g_userCompletedWeeks;g_swFrozen=false;g_swLegacyArchive=false;}
+   g_userStrategyNote="SAVED: "+name+" | storing completed audit windows";
    OrbUserEnsureMetrics();
    return true;
 }

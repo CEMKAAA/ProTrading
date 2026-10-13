@@ -1,0 +1,128 @@
+[
+    {
+        "family":  "orb",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "sha256":  "F3541C0902D87F766EB44F9C0ED336CD9960377520E484F805151DE432950993"
+    },
+    {
+        "family":  "orb",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "sha256":  "2E7E5CF925355ED6FB07F7E8637F26607BEF879A39D8A53B8EBFF7F5ACD68C0A"
+    },
+    {
+        "family":  "orb",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyPresetLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyPresetLibrary.mqh",
+        "sha256":  "F08CDAB877223A1B4ADE4CD10C2CA98CC757CB1313A190CB9DDB14D7734EEEA0"
+    },
+    {
+        "family":  "orb",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "2BF7C93D115562CCF0A82720E5C9269CE0ECE34273B28EC1E87C3F1620CAD83E"
+    },
+    {
+        "family":  "orb",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "774F5F78BBEF22C8B27F1E85CB5DAB6AC12780AACFD83AD7342DD853D8F82CDD"
+    },
+    {
+        "family":  "orb",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\StrategyWindowMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\StrategyWindowMetrics.mqh",
+        "sha256":  "DEE98B47B9A2EBFDC7D5E60A9553E59037D8213FB2307C859B5B8EB27F6426BC"
+    },
+    {
+        "family":  "macross",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.mq5",
+        "sha256":  "D75A353A66B5F17DF335234A24DA38CB43C4F1A23F28051580FE92F6A64AC80F"
+    },
+    {
+        "family":  "macross",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5",
+        "sha256":  "739B92327E6BB259207EB003CD4A3649C685E5623D513C7FD04E18ECC3F70F9C"
+    },
+    {
+        "family":  "macross",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "B9F59B84657A0F02C68EB9FA34FC997F1C3C5EE1100AB503660BA96D686AAE2E"
+    },
+    {
+        "family":  "macross",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "629CAD9D9172220D56CF8B5B4ACAD5059FAE2601A3994F4DC3A1341C07D68770"
+    },
+    {
+        "family":  "macross",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\StrategyWindowMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\StrategyWindowMetrics.mqh",
+        "sha256":  "DEE98B47B9A2EBFDC7D5E60A9553E59037D8213FB2307C859B5B8EB27F6426BC"
+    },
+    {
+        "family":  "sol",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "6C92F02DEE293F6325C0C5B138D3C4B0CB47C728EA7FA6C0675D48395758E699"
+    },
+    {
+        "family":  "sol",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "3B54A5F33BA5F3F8C01D487E6C82F03F455AE0F40F1BF6754B34B1AB09C13AC4"
+    },
+    {
+        "family":  "sol",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "sha256":  "1B99BFFD8419DCF0C7B2D7F84D5C68955E6E3F698C631ED65A9825EE5FF8D135"
+    },
+    {
+        "family":  "sol",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqStrategyWindowMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyWindowMetrics.mqh",
+        "sha256":  "4A81372815946D099E232749D12DF6AEC5FE35D87CE08DEAD3CD5940A2FE594D"
+    },
+    {
+        "family":  "sol",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\StrategyWindowMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\StrategyWindowMetrics.mqh",
+        "sha256":  "DEE98B47B9A2EBFDC7D5E60A9553E59037D8213FB2307C859B5B8EB27F6426BC"
+    },
+    {
+        "family":  "entrylab",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.mq5",
+        "sha256":  "5F78B97A1322F7628FD5749E8739B598292763D10C0AACC71D16A8CCEC6B7D2C"
+    },
+    {
+        "family":  "entrylab",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.ex5",
+        "sha256":  "033B333643E1E29D166102BFF97B82E033A2B3D91E3AA61CD0923B659E0C3DB4"
+    },
+    {
+        "family":  "entrylab",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "A1A2BCBAC0E46C640A5AFA84C0BB6AE385A25E3D4CD378A6D94E17D1116E0AA3"
+    },
+    {
+        "family":  "entrylab",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "568C6A2660364EA189EA5307F39D0653ABDADAD97A2A8911F99028CDBD51F3DB"
+    },
+    {
+        "family":  "entrylab",
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\StrategyWindowMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\StrategyWindowMetrics.mqh",
+        "sha256":  "DEE98B47B9A2EBFDC7D5E60A9553E59037D8213FB2307C859B5B8EB27F6426BC"
+    }
+]

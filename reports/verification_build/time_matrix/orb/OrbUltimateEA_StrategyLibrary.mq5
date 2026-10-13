@@ -480,6 +480,7 @@ int    g_strategyVisibleCount = 0;
 datetime g_strategyApplyFlashUntil = 0;
 string g_strategyFilterNetText = "";
 string g_strategyFilterPair = "";
+int    g_strategyFilterPositionMode = 0; // 0 ALL, 1 LEGACY, 2 INDEPENDENT; search only.
 string g_strategyFilterGeometryText = "";
 bool   g_strategyFilterGeometryEnabled = false;
 double g_strategyFilterGeometry = 0.0;
@@ -2796,6 +2797,15 @@ void OrbStrategyWindowControls(int x,int y)
 {
    CreateButton("BTN_SW_SOURCE",x+138,y+5,240,20,SwSourceCaption(),g_swFrozen?C'184,103,22':C'38,101,176');
    ObjectSetString(0,PREFIX+"BTN_SW_SOURCE",OBJPROP_TOOLTIP,"View only: CURRENT -> verified MEGA 2 -> original MEGA 1 (old calculation). Does not apply strategy settings. Compare identical profiles/endpoints; legacy corrections are not alpha decay.");
+   TCalCsvLauncher(PREFIX,OrbLibraryX(x+420),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
+   // Keep the export path below the header, out of the source selector and search popup.
+   string csvLabels[]={"CSV_FOLDER_ROOT","CSV_FOLDER_SUFFIX"};
+   for(int line=0;line<2;line++)
+   {
+      string obj=TCalId(csvLabels[line]);
+      if(g_strategyPopupOpen)ObjectDelete(0,obj);
+      else {ObjectSetInteger(0,obj,OBJPROP_XDISTANCE,OrbLibraryX(x+12));ObjectSetInteger(0,obj,OBJPROP_YDISTANCE,OrbLibraryY(y+184+line*10));}
+   }
    for(int i=0;i<9;i++)CreateButton("BTN_SW_WINDOW_"+(string)i,x+12+i*65,y+102,61,20,SwWindow(SwWeeks(i)),g_swWeeks==SwWeeks(i)?C'184,103,22':C'38,101,176');
    for(int i=0;i<5;i++)CreateButton("BTN_SW_SORT_"+(string)i,x+12+i*118,y+126,114,20,SwSortCaption(i),g_swDirection[i]==0?C'80,80,80':C'30,150,95');
 }
@@ -2806,6 +2816,7 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
    string suffix=" | "+SwWindow(g_swWeeks)+" N "+(string)p.metric1yTotal+" "+OrbStrategyWindowMode(p)+" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
       +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
       +" | WR "+DoubleToString(p.metric1yWr,1)+"%"+SwAsOfCaption(p.metric1yAsOf);
+   if(!OrbUserPreset(p)&&p.metricAuditSymbol!=""&&p.metricAuditSymbol!=_Symbol)suffix=" ["+p.metricAuditSymbol+"]"+suffix;
    int maxChars=66;
    int nameChars=MathMax(8,maxChars-StringLen(suffix));
    string shortName=p.name;
@@ -2816,14 +2827,18 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
 bool OrbStrategyPresetPassesMetricFilters(const OrbStrategyPreset &p)
 {
    if(g_strategyFilterPair!=""&&OrbStrategyPresetPair(p)!=g_strategyFilterPair)return false;
+   int slot=OrbUserSlot(p.id);
+   bool independent=slot>=0&&g_userStrategies[slot].positions.independent;
+   if(g_strategyFilterPositionMode==1&&independent)return false;
+   if(g_strategyFilterPositionMode==2&&!independent)return false;
    if(g_strategyFilterGeometryEnabled)
    {
       // Geometry, not realized net R; non-fixed targets have no single preset ratio.
       if(p.targetMode!=ORB_TARGET_R_LEG)return false;
       double r=p.targetLeg==(int)ORB_TARGET_CUSTOM?OrbUserCustomR(p):LegR(p.targetLeg);
       if(!MathIsValidNumber(r)||r<=0.0)return false;
-      if(p.invertMode)r=1.0/r;
-      if(MathAbs(r-g_strategyFilterGeometry)>0.000001)return false;
+      // The selected architecture stays the same when trade direction is inverted.
+      if(MathAbs(r-g_strategyFilterGeometry)>1e-8*MathMax(MathAbs(r),MathAbs(g_strategyFilterGeometry)))return false;
    }
    if(!g_strategyFilterNetEnabled&&!g_strategyFilterWrEnabled&&!g_strategyFilterMinCumEnabled)return true;
    if(!p.metric1yReady)return false;
@@ -5533,8 +5548,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    if(res.invalidReason=="INVERSE_GAP_BLOCK")return res;
    if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
    if(g_rtInvertMode){res.valid=false;res.invalidReason="INVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
-   if(g_orbPositions.reverse&&forcedExitTime>sigTime)
-   {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
+   bool exactForcedExit=g_orbPositions.reverse&&forcedExitTime>sigTime;
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
    ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
@@ -5583,6 +5597,10 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    for(int i=1;i<c;i++) // skip signal bar itself
    {
       if(r[i].time>tradeEnd)break;
+      // Ordinary bar-policy TP/SL closures before the reverse deadline remain
+      // valid. The deadline bar cannot establish an exact timed exit or ordering.
+      if(exactForcedExit&&r[i].time+sec>forcedExitTime)
+      {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
       if(forcedExitTime>sigTime && r[i].time>=forcedExitTime)
       {
          double forcedPrice=0.0;datetime resolvedAt=forcedExitTime;
@@ -5734,6 +5752,8 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
          }
       }
    }
+   if(exactForcedExit&&res.outcome=="open"&&tradeEnd>=forcedExitTime)
+   {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
    if(res.outcome=="open"&&scheduledEndReached&&(g_rtExitMode==ORB_EXIT_EOD_ONLY||g_rtTargetMode==ORB_TARGET_EOD)&&c>1){res.outcome="EOD_EXIT";res.exitPrice=r[c-1].close;res.exitTime=r[c-1].time;}
    else if(res.outcome=="open"&&g_rtExitMode==ORB_EXIT_BROKER_TIME&&brokerExitAt>0&&tradeEnd>=brokerExitAt&&c>1){res.outcome="BROKER_TIME_EXIT";res.exitPrice=r[c-1].close;res.exitTime=r[c-1].time;}
 
@@ -7716,7 +7736,6 @@ void UpdateDashboard()
    OrbStrategyPresetSyncSelection();
    OrbMlDraw();
    OrbUserDraw();OrbPositionDraw();RenderNativeBalance();RenderNativeMarginPreview(InpDashboardX+644,InpDashboardY+496,false,!g_orbMoneyRisk); OrbClockUiDraw();
-   TCalCsvLauncher(PREFIX,OrbLibraryX(x+12),OrbLibraryY(y+5),g_libraryDashScale,DASH_Z+3);
    CreateLabel("DASH_PRESET_TITLE",x+12,y+34,"STRATEGIES",C'255,187,92',8);
    CreateEdit("EDIT_PRESET_SEARCH",x+94,y+30,286,20,g_strategySearch);
    CreateButton("BTN_PRESET_SEARCH",x+386,y+30,76,20,"SEARCH",C'38,101,176');
@@ -7730,7 +7749,7 @@ void UpdateDashboard()
    CreateEdit("EDIT_PRESET_WR",x+202,y+54,48,18,g_strategyFilterWrText);
    CreateLabel("DASH_PRESET_MC_L",x+258,y+59,"MC >=",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_MC",x+298,y+54,52,18,g_strategyFilterMinCumText);
-   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled||g_strategyFilterGeometryEnabled||g_strategyFilterPair!="";
+   bool metricFilterActive=g_strategyFilterNetEnabled||g_strategyFilterWrEnabled||g_strategyFilterMinCumEnabled||g_strategyFilterGeometryEnabled||g_strategyFilterPair!=""||g_strategyFilterPositionMode!=0;
    CreateButton("BTN_PRESET_FILTER",x+358,y+54,92,18,"APPLY FILTER",metricFilterActive?C'30,150,95':C'38,101,176');
    CreateButton("BTN_PRESET_FILTER_CLEAR",x+456,y+54,62,18,"CLEAR",C'80,80,80');
    CreateLabel("DASH_PRESET_FILTER_COUNT",x+526,y+59,IntegerToString(ArraySize(g_strategyMatches))+"/"+IntegerToString(OrbStrategyPresetCount()),
@@ -7739,15 +7758,17 @@ void UpdateDashboard()
       g_strategyFavoritesOnly?C'184,103,22':C'38,101,176');
    CreateLabel("DASH_PRESET_GEOMETRY_L",x+146,y+83,"TP/SL R =",C'134,158,182',7);
    CreateEdit("EDIT_PRESET_GEOMETRY",x+218,y+78,76,20,g_strategyFilterGeometryText);
-   ObjectSetString(0,PREFIX+"EDIT_PRESET_GEOMETRY",OBJPROP_TOOLTIP,"Exact target/SL ratio after inversion; blank = all. Use APPLY FILTER.");
+   ObjectSetString(0,PREFIX+"EDIT_PRESET_GEOMETRY",OBJPROP_TOOLTIP,"Saved target R architecture, not audit Net R. Inversion does not change this filter. Blank = all; APPLY FILTER commits the value.");
    CreateButton("BTN_PRESET_SYMBOL",x+304,y+78,140,20,"PAIR: "+(g_strategyFilterPair==""?"ALL":g_strategyFilterPair),
       g_strategyFilterPair==""?C'38,101,176':C'30,150,95');
    ObjectSetString(0,PREFIX+"BTN_PRESET_SYMBOL",OBJPROP_TOOLTIP,"Cycle ALL and every pair present in saved and built-in strategies. Library filter only.");
    ObjectDelete(0,PREFIX+"DASH_PRESET_FAV_HINT");
    CreateButton("BTN_LEADERBOARD",x+454,y+78,152,20,"LEADERBOARD",C'38,101,176');
    OrbStrategyWindowControls(x,y);
-   CreateLabel("DASH_PRESET_CURRENT",x+12,y+154,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
-   CreateLabel("DASH_PRESET_PICK",x+12,y+170,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
+   CreateButton("BTN_PRESET_POSITION_MODE",x+12,y+150,140,20,"MODE: "+(g_strategyFilterPositionMode==0?"ALL":g_strategyFilterPositionMode==1?"LEGACY":"INDEPENDENT"),g_strategyFilterPositionMode==0?C'38,101,176':C'30,150,95');
+   ObjectSetString(0,PREFIX+"BTN_PRESET_POSITION_MODE",OBJPROP_TOOLTIP,"Cycle ALL / LEGACY / INDEPENDENT using saved strategy settings. Does not change trading mode or audit results.");
+   CreateLabel("DASH_PRESET_CURRENT",x+162,y+154,"CURRENT: "+OrbStrategyPresetCurrentName(),C'184,196,210',7);
+   CreateLabel("DASH_PRESET_PICK",x+162,y+170,"PICK: "+OrbStrategyPresetCandidateName(),C'184,196,210',7);
 
    x=InpDashboardX;
    int rootY=InpDashboardY;
@@ -7900,7 +7921,7 @@ void UpdateDashboard()
    CreateButton("BTN_BRIDGE_PUB",x+424,y+490,58,18,g_orbBridgeEnabled?"PUB ON":"PUB OFF",g_orbBridgeEnabled?C'30,150,95':C'80,80,80');
    CreateButton("BTN_BRIDGE_ONLY",x+486,y+490,62,18,g_orbBridgeOnly?"ONLY ON":"ONLY OFF",g_orbBridgeOnly?C'120,88,25':C'80,80,80');
    CreateButton("BTN_BRIDGE_NATIVE",x+552,y+490,52,18,g_orbNativeWithBridgeOnly?"NAT ON":"NAT OFF",g_orbNativeWithBridgeOnly?C'184,103,22':C'80,80,80');
-   CreateButton("BTN_UTC_SESSION",x+424,y+513,82,18,g_rtUtcMidnightSession?"UTC00 ON":"UTC00 OFF",g_rtUtcMidnightSession?C'30,150,95':C'80,80,80');
+   CreateButton("BTN_UTC_SESSION",x+544,y+513,74,18,g_rtUtcMidnightSession?"UTC00 ON":"UTC00 OFF",g_rtUtcMidnightSession?C'30,150,95':C'80,80,80');
    bool winApplied=(g_entryWindowApplyFlashUntil>TimeLocal());
    CreateButton("BTN_ENTRY_WINDOW",x+12,y+536,74,18,g_rtEntryWindow?"WIN ON":"WIN OFF",g_rtEntryWindow?C'30,150,95':C'80,80,80');
    CreateEdit("EDIT_ENTRY_WIN_START",x+92,y+536,52,18,ClockMinutesText(g_rtEntryWindowStartMin));
@@ -9742,7 +9763,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 void OnTimer()
 {
    AxTimer();
-   if(!IsTesterMode()&&SwRefreshPoll("orb")){OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
+   if(!IsTesterMode())
+   {
+      static ulong metricPollAt=0;ulong metricNow=GetTickCount64();
+      bool changed=SwRefreshPoll("orb");
+      bool viewDue=g_strategyPopupOpen&&!g_swFrozen&&!g_histAuditRunning&&!g_histRedrawQueued
+         &&(metricPollAt==0||metricNow-metricPollAt>=5000);
+      if(changed||viewDue)
+      {metricPollAt=metricNow;OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
+   }
    ulong nowMs=GetTickCount64();
    bool auditBusy=(g_histAuditRunning||g_histRedrawQueued);
    bool coreDue=(!auditBusy||g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
@@ -9896,6 +9925,15 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
       UpdateDashboard();ChartRedraw(0);return;
    }
 
+   if(sparam==PREFIX+"BTN_PRESET_POSITION_MODE")
+   {
+      g_strategyFilterPositionMode=(g_strategyFilterPositionMode+1)%3;
+      g_strategySearchPage=0;
+      OrbStrategyPresetBuildMatches(ObjectGetString(0,PREFIX+"EDIT_PRESET_SEARCH",OBJPROP_TEXT));
+      g_strategyPopupOpen=true;
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      UpdateDashboard();ChartRedraw(0);return;
+   }
    if(sparam==PREFIX+"BTN_PRESET_FILTER")
    {
       if(!OrbStrategyApplyMetricFilters())
@@ -9918,6 +9956,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
    if(sparam==PREFIX+"BTN_PRESET_FILTER_CLEAR")
    {
       g_strategyFilterPair="";
+      g_strategyFilterPositionMode=0;
       g_strategyFilterNetText="";g_strategyFilterWrText="";g_strategyFilterMinCumText="";
       g_strategyFilterGeometryText="";g_strategyFilterGeometryEnabled=false;g_strategyFilterGeometry=0.0;
       g_strategyFilterNetEnabled=false;g_strategyFilterWrEnabled=false;g_strategyFilterMinCumEnabled=false;

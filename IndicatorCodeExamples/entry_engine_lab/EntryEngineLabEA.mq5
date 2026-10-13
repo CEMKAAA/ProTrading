@@ -10058,7 +10058,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 void OnTimer()
 {
    AxTimer();
-   if(!IsTesterMode()&&SwRefreshPoll("entrylab")){OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
+   if(!IsTesterMode())
+   {
+      static ulong metricPollAt=0;ulong metricNow=GetTickCount64();
+      bool changed=SwRefreshPoll("entrylab");
+      bool viewDue=g_strategyPopupOpen&&!g_swFrozen&&!g_histAuditRunning&&!g_histRedrawQueued
+         &&(metricPollAt==0||metricNow-metricPollAt>=5000);
+      if(changed||viewDue)
+      {metricPollAt=metricNow;OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
+   }
    ulong nowMs=GetTickCount64();
    bool coreDue=(g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);
    bool dc=false;

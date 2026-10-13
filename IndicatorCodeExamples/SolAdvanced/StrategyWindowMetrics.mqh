@@ -160,4 +160,38 @@ int SwCompare(const SwMetric &a,const SwMetric &b)
    }
    return 0;
 }
+// Keep at most nine completed summaries for the current exact setup. This also
+// supports audit-before-save without rerunning or inventing shorter windows.
+SwMetric g_swCompletedWindows[9];
+string g_swCompletedIdentity="";
+int g_swCompletedLast=-1;
+bool SwRememberCompleted(string identity,int weeks,int total,int wins,int losses,int open,int flat,
+                         double netR,double minCum,datetime asOf)
+{
+   if(identity==""||!SwValidWindow(weeks)||asOf<=0||total<0||wins<0||losses<0||open<0||flat<0
+      ||wins+losses+open+flat!=total||!MathIsValidNumber(netR)||!MathIsValidNumber(minCum)||minCum>1e-8)return false;
+   if(g_swCompletedIdentity!=identity)
+   {
+      for(int i=0;i<9;i++)ZeroMemory(g_swCompletedWindows[i]);
+      g_swCompletedIdentity=identity;g_swCompletedLast=-1;
+   }
+   for(int i=0;i<9;i++)if(SwWeeks(i)==weeks)
+   {
+      SwMetric m;ZeroMemory(m);m.ready=true;m.total=total;m.wins=wins;m.losses=losses;m.open=open;
+      m.flat=flat;m.netR=netR;m.minCum=minCum;m.asOf=asOf;
+      g_swCompletedWindows[i]=m;g_swCompletedLast=i;return true;
+   }
+   return false;
+}
+bool SwPersistCompleted(string folder,string id,string settings,string identity)
+{
+   if(identity==""||identity!=g_swCompletedIdentity||g_swCompletedLast<0)return false;
+   bool saved=false;
+   for(int i=0;i<9;i++)
+   {
+      SwMetric m=g_swCompletedWindows[i];if(!m.ready)continue;
+      if(SwWrite(folder,id,settings,SwWeeks(i),m.total,m.wins,m.losses,m.open,m.flat,m.netR,m.minCum,m.asOf))saved=true;
+   }
+   return saved;
+}
 #endif

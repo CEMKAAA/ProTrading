@@ -2816,6 +2816,7 @@ string OrbStrategyPresetMetricCaption(const OrbStrategyPreset &p)
    string suffix=" | "+SwWindow(g_swWeeks)+" N "+(string)p.metric1yTotal+" "+OrbStrategyWindowMode(p)+" | R "+OrbStrategyMetricSigned(p.metric1yNetR,2)
       +" | MC "+OrbStrategyMetricSigned(p.metric1yMinCumR,2)
       +" | WR "+DoubleToString(p.metric1yWr,1)+"%"+SwAsOfCaption(p.metric1yAsOf);
+   if(!OrbUserPreset(p)&&p.metricAuditSymbol!=""&&p.metricAuditSymbol!=_Symbol)suffix=" ["+p.metricAuditSymbol+"]"+suffix;
    int maxChars=66;
    int nameChars=MathMax(8,maxChars-StringLen(suffix));
    string shortName=p.name;
@@ -5547,8 +5548,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    if(res.invalidReason=="INVERSE_GAP_BLOCK")return res;
    if(g_auditTickReadFailures!=tickReadFailures){res.valid=false;res.invalidReason="TICK_HISTORY_PENDING";res.netR=0;res.isWin=false;return res;}
    if(g_rtInvertMode){res.valid=false;res.invalidReason="INVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
-   if(g_orbPositions.reverse&&forcedExitTime>sigTime)
-   {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
+   bool exactForcedExit=g_orbPositions.reverse&&forcedExitTime>sigTime;
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
    ResetLastError();
    MqlRates r[];int c=CopyRates(_Symbol,entryTf,sigTime,tradeEnd,r);
@@ -5597,6 +5597,10 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    for(int i=1;i<c;i++) // skip signal bar itself
    {
       if(r[i].time>tradeEnd)break;
+      // Ordinary bar-policy TP/SL closures before the reverse deadline remain
+      // valid. The deadline bar cannot establish an exact timed exit or ordering.
+      if(exactForcedExit&&r[i].time+sec>forcedExitTime)
+      {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
       if(forcedExitTime>sigTime && r[i].time>=forcedExitTime)
       {
          double forcedPrice=0.0;datetime resolvedAt=forcedExitTime;
@@ -5748,6 +5752,8 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
          }
       }
    }
+   if(exactForcedExit&&res.outcome=="open"&&tradeEnd>=forcedExitTime)
+   {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
    if(res.outcome=="open"&&scheduledEndReached&&(g_rtExitMode==ORB_EXIT_EOD_ONLY||g_rtTargetMode==ORB_TARGET_EOD)&&c>1){res.outcome="EOD_EXIT";res.exitPrice=r[c-1].close;res.exitTime=r[c-1].time;}
    else if(res.outcome=="open"&&g_rtExitMode==ORB_EXIT_BROKER_TIME&&brokerExitAt>0&&tradeEnd>=brokerExitAt&&c>1){res.outcome="BROKER_TIME_EXIT";res.exitPrice=r[c-1].close;res.exitTime=r[c-1].time;}
 
@@ -9757,7 +9763,15 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 void OnTimer()
 {
    AxTimer();
-   if(!IsTesterMode()&&SwRefreshPoll("orb")){OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
+   if(!IsTesterMode())
+   {
+      static ulong metricPollAt=0;ulong metricNow=GetTickCount64();
+      bool changed=SwRefreshPoll("orb");
+      bool viewDue=g_strategyPopupOpen&&!g_swFrozen&&!g_histAuditRunning&&!g_histRedrawQueued
+         &&(metricPollAt==0||metricNow-metricPollAt>=5000);
+      if(changed||viewDue)
+      {metricPollAt=metricNow;OrbUserReload(true);if(g_strategyPopupOpen)OrbStrategyPresetBuildMatches(g_strategySearch);}
+   }
    ulong nowMs=GetTickCount64();
    bool auditBusy=(g_histAuditRunning||g_histRedrawQueued);
    bool coreDue=(!auditBusy||g_histTimerCoreLastMs==0||nowMs-g_histTimerCoreLastMs>=200);

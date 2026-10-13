@@ -70,6 +70,7 @@ struct OrbStrategyPreset
    double nasFlowVolumeMultiplier;
    bool metric1yReady;
    string metric1yAsOf;
+   string metricAuditSymbol;
    int metric1yTotal;
    int metric1yWins;
    int metric1yLosses;
@@ -98,7 +99,7 @@ void OrbPresetDefaults(OrbStrategyPreset &p)
    p.nasSensitivity=4;p.nasLookbackMinutes=120;p.nasExitWaitMinutes=0;
    p.nasStateVolumeFilter=false;p.nasStateVolumeMultiplier=1.0;
    p.nasFlowVolumeFilter=false;p.nasFlowVolumeMultiplier=1.0;
-   p.metric1yReady=false;p.metric1yAsOf="";p.metric1yTotal=0;p.metric1yWins=0;p.metric1yLosses=0;
+   p.metric1yReady=false;p.metric1yAsOf="";p.metricAuditSymbol="";p.metric1yTotal=0;p.metric1yWins=0;p.metric1yLosses=0;
    p.metric1yNetR=0.0;p.metric1yMinCumR=0.0;p.metric1yWr=0.0;
 }
 

@@ -47,17 +47,23 @@ void OrbUserLoadMetrics(int slot)
     g_userStrategies[slot].preset.metric1yNetR=m.netR;g_userStrategies[slot].preset.metric1yMinCumR=m.minCum;g_userStrategies[slot].preset.metric1yWr=SwWr(m);return;}
    // Legacy aggregate files remain archived, but are not verified window evidence.
 }
+string OrbUserAuditIdentity()
+{
+   return OrbUserRuntimeMetricKey()+"|TCAL="+TCalStrategyText()+"|GAP="+DoubleToString(g_rtAdvancedReverseMaxCostPct,8);
+}
 bool OrbUserPersistCompletedMetrics()
 {
    if(g_mcOf.mode!=0&&g_mcOfDataIncomplete)return false;
    OrbStrategyPreset p;
    if(!g_userCompletedReady||!OrbStrategyPresetLoad(g_strategyPresetIndex,p)||!OrbUserPreset(p)||!OrbUserMatches(p)
-      ||g_userCompletedSettings!=OrbUserRuntimeMetricKey())return false;
+      ||g_userCompletedSettings!=OrbUserAuditIdentity())return false;
    int savedSlot=OrbUserSlot(p.id);if(savedSlot<0)return false;
    // Runtime stability is checked above; persist under the same immutable identity SEARCH reads.
    string windowKey=OrbUserWindowKey(g_userStrategies[savedSlot]);
-   if(!SwWrite("EntryEngineLabStrategyLibrary\\WindowMetrics",p.id,windowKey,g_userCompletedWeeks,g_userCompletedTotal,g_userCompletedW,g_userCompletedL,
-      g_userCompletedOpen,g_userCompletedFlat,g_userCompletedR,g_userCompletedMc,g_userCompletedAt))return false;
+   bool stored=SwPersistCompleted("EntryEngineLabStrategyLibrary\\WindowMetrics",p.id,windowKey,g_userCompletedSettings);
+   if(!stored)stored=SwWrite("EntryEngineLabStrategyLibrary\\WindowMetrics",p.id,windowKey,g_userCompletedWeeks,g_userCompletedTotal,g_userCompletedW,g_userCompletedL,
+      g_userCompletedOpen,g_userCompletedFlat,g_userCompletedR,g_userCompletedMc,g_userCompletedAt);
+   if(!stored){g_userStrategyNote="Audit complete, but window metrics write failed";return false;}
    if(g_userCompletedWeeks!=52){OrbUserReload(true);OrbStrategyPresetBuildMatches(g_strategySearch);g_userStrategyNote="SAVED "+SwWindow(g_userCompletedWeeks)+": "+p.name;return true;}
    double wr=g_userCompletedW+g_userCompletedL>0?100.0*g_userCompletedW/(g_userCompletedW+g_userCompletedL):0;
    string payload="ORB_USER_METRICS1\n"+p.id+"\n"+g_userCompletedSettings+"\n"+(string)(long)g_userCompletedAt+"\n52\n"
@@ -78,15 +84,17 @@ void OrbUserEnsureMetrics()
    if(!g_histAuditRunning&&!g_histRedrawQueued&&OrbUserPersistCompletedMetrics())return;
    SetHistoricalWeeks(g_swWeeks);QueueHistoricalRedraw(0);
 }
-void OrbUserAuditStarted(){g_userAuditSettings=OrbUserRuntimeMetricKey();}
+void OrbUserAuditStarted(){g_userAuditSettings=OrbUserAuditIdentity();}
 void OrbUserAuditCompleted()
 {
    if(g_mlHistoryFiltered)return; // Never overwrite base metrics with model-filtered results.
-   if(!SwValidWindow(g_rtHistoricalWeeks)||g_histInvalid>0||g_histCoveragePending||g_userAuditSettings!=OrbUserRuntimeMetricKey())return;
+   if(!SwValidWindow(g_rtHistoricalWeeks)||g_histInvalid>0||g_histCoveragePending||g_userAuditSettings!=OrbUserAuditIdentity())return;
    g_userCompletedSettings=g_userAuditSettings;g_userCompletedReady=true;g_userCompletedAt=g_histRunNow;
    g_userCompletedWeeks=g_rtHistoricalWeeks;g_userCompletedOpen=g_histOpen;g_userCompletedFlat=g_histFlat;
    g_userCompletedTotal=g_histTotal;g_userCompletedW=g_histWins;g_userCompletedL=g_histLosses;
    g_userCompletedR=g_histNetR;g_userCompletedMc=g_histMinCumulativeR;
+   SwRememberCompleted(g_userCompletedSettings,g_userCompletedWeeks,g_userCompletedTotal,g_userCompletedW,g_userCompletedL,
+      g_userCompletedOpen,g_userCompletedFlat,g_userCompletedR,g_userCompletedMc,g_userCompletedAt);
    OrbUserPersistCompletedMetrics();
 }
 #endif

@@ -1,0 +1,22 @@
+[
+    {
+        "family":  "orb",
+        "checks":  71,
+        "failed":  0
+    },
+    {
+        "family":  "macross",
+        "checks":  71,
+        "failed":  0
+    },
+    {
+        "family":  "sol",
+        "checks":  115,
+        "failed":  0
+    },
+    {
+        "family":  "entrylab",
+        "checks":  71,
+        "failed":  0
+    }
+]
