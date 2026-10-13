@@ -13,6 +13,7 @@ struct OrbUserRecord
    double advancedReverseMaxCostPct;
    McOfConfig orderFlow;
    string timeMatrix;
+   bool targetCostEnabled;double targetCostMaxPct;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -57,7 +58,9 @@ void OrbUserReload(bool force=false)
       record.independent=false;record.maxSeries=1;record.reverseExit=false;record.reverseWait=0;
       record.advancedReverse=false;
       record.advancedReverseMaxCostPct=100.0;
-      string meta[];int parts=StringSplit(v[5],'|',meta);
+      string legacyMeta=v[5];
+      if(!TpCostStripMeta(legacyMeta,record.targetCostEnabled,record.targetCostMaxPct))continue;
+      string meta[];int parts=StringSplit(legacyMeta,'|',meta);
       if(parts<1||parts>8)continue;
       record.timeMatrix=TCalStrategyOffText();
       McOfConfigRead("0,24,32,0.70000000,1.00000000,0.10000000",record.orderFlow);
@@ -170,6 +173,7 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    g_labPreviewOnly=false;
    if(LabPolicyEnabled()){g_rtPipSlMode=true;if(g_labEngine.pipSl)g_rtPipSlPips=g_labEngine.pipSlPips;}
    g_maReverseExit=g_userStrategies[i].reverseExit;g_maReverseWait=g_userStrategies[i].reverseWait;MaExitSave();
+   if(!TpCostSet(g_userStrategies[i].targetCostEnabled,g_userStrategies[i].targetCostMaxPct))return false;
    g_rtAdvancedReverse=g_userStrategies[i].advancedReverse;
    g_rtAdvancedReverseMaxCostPct=g_userStrategies[i].advancedReverseMaxCostPct;
    g_mcOf=g_userStrategies[i].orderFlow;McOfReset();
@@ -191,6 +195,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
    if((int)NasConfirmationTf()!=g_userStrategies[i].chartTf)return false;
    if(g_maIndependent!=g_userStrategies[i].independent||g_maMaxConsecutive!=g_userStrategies[i].maxSeries)return false;
    if(g_maReverseExit!=g_userStrategies[i].reverseExit||g_maReverseWait!=g_userStrategies[i].reverseWait)return false;
+   if(g_tpCostEnabled!=g_userStrategies[i].targetCostEnabled||MathAbs(g_tpCostMaxPct-g_userStrategies[i].targetCostMaxPct)>1e-8)return false;
    if(g_rtAdvancedReverse!=g_userStrategies[i].advancedReverse)return false;
    if(MathAbs(g_rtAdvancedReverseMaxCostPct-g_userStrategies[i].advancedReverseMaxCostPct)>0.000001)return false;
    if(McOfConfigText(g_mcOf)!=McOfConfigText(g_userStrategies[i].orderFlow))return false;
@@ -245,6 +250,7 @@ bool OrbUserSaveLocked(string name)
       +"|MAADVCOST1="+DoubleToString(g_rtAdvancedReverseMaxCostPct,6),runtime=OrbCustomRuntimeDump();
    if(g_rtMaCrossMode==MA_CROSS_LAB_RULES){if(!LabValidEngine(g_labEngine)){g_userStrategyNote="Invalid entry engine";return false;}signature+="|LABENGINE1="+LabEngineIdentity();}
    string tokens[];StringSplit(runtime,'\n',tokens);
+   if(g_tpCostEnabled||g_tpCostMaxPct!=20.0)signature+="|"+TpCostPack(g_tpCostEnabled,g_tpCostMaxPct);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
    if(updateSlot>=0)p.id=updateId;
    int saved=-1;

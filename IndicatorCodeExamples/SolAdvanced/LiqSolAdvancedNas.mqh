@@ -351,7 +351,8 @@ int LnNasAuditCap(int index)
    for(int i=0;i<index;i++)
    {
       if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="MAX_OPEN"
-         ||g_histSignalInvalidReason[i]=="MAX_SAME_OPEN"||g_histSignalInvalidReason[i]=="LEGACY_ACTIVE"||g_histSignalInvalidReason[i]=="DAILY_QUOTA")continue;
+         ||g_histSignalInvalidReason[i]=="MAX_SAME_OPEN"||g_histSignalInvalidReason[i]=="LEGACY_ACTIVE"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"
+         ||TpCostIsReject(g_histSignalInvalidReason[i]))continue;
       bool valid=g_histSignalValid[i],closed=g_histSignalClosed[i];
       datetime exited=g_histSignalExitTime[i];
       if(!valid)return -1;

@@ -184,7 +184,7 @@ void AxCollectSol()
    for(int i=0;i<ArraySize(g_histSignals);i++)
    {
       string reason=g_histSignalInvalidReason[i];
-      if(reason=="TIME_MATRIX"||reason=="DAILY_QUOTA"||reason=="MAX_OPEN"||reason=="MAX_SAME_OPEN"||reason=="LEGACY_ACTIVE"||reason=="INVERSE_GAP_BLOCK")continue;
+      if(reason=="TIME_MATRIX"||reason=="DAILY_QUOTA"||reason=="MAX_OPEN"||reason=="MAX_SAME_OPEN"||reason=="LEGACY_ACTIVE"||reason=="INVERSE_GAP_BLOCK"||TpCostIsReject(reason))continue;
       ErlSignal sig=g_histSignals[i];AxTrade t;ZeroMemory(t);
       t.signalTime=sig.entryTime;t.availableTime=sig.availableTime;t.entryTime=sig.availableTime;
       t.entryClock="SCHEDULED_AVAILABLE_TIME";t.localTime=t.entryTime;
@@ -202,6 +202,7 @@ void AxCollectSol()
       t.plannedEntry=sig.entry;t.plannedSl=sig.sl;t.plannedTp=sig.tp1;t.regionHigh=sig.fvgHigh;t.regionLow=sig.fvgLow;
       t.regime=-1;t.rf=-1;t.context=sig.reason+" | sweep="+AxNumber(sig.sweepLevel)+" | external_target="+AxNumber(sig.externalTarget);
       if(StringFind(t.reason,"M1_MODELED_")==0)t.context+=" exit_price_basis=M1_OPEN_SPREAD_MODEL_NOT_TICK_EXACT";
+      if(g_tpCostEnabled)t.context+=" "+TpCostPack(g_tpCostEnabled,g_tpCostMaxPct);
       AxCapture(t);
    }
 }

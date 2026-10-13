@@ -27,11 +27,12 @@ string MaTimedReverseMetricMeta(bool enabled,int waitMinutes){return enabled&&wa
 string OrbUserRuntimeMetricKey()
 {
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
-   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),(g_rtMaCrossMode==MA_CROSS_LAB_RULES?LabEngineIdentity():"")+OrbCustomInputSignature()+MaEntryMetricMeta(g_maIndependent,g_maMaxConsecutive)+"|MAEXIT2="+(string)g_maReverseExit+","+(string)g_maReverseWait+MaTimedReverseMetricMeta(g_maReverseExit,g_maReverseWait)+McOfIdentity(),OrbCustomRuntimeDump(),p,g_rtAdvancedReverse,g_rtAdvancedReverseMaxCostPct);
+   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),(g_rtMaCrossMode==MA_CROSS_LAB_RULES?LabEngineIdentity():"")+OrbCustomInputSignature()+MaEntryMetricMeta(g_maIndependent,g_maMaxConsecutive)+"|MAEXIT2="+(string)g_maReverseExit+","+(string)g_maReverseWait+MaTimedReverseMetricMeta(g_maReverseExit,g_maReverseWait)+McOfIdentity()+TpCostIdentity(),OrbCustomRuntimeDump(),p,g_rtAdvancedReverse,g_rtAdvancedReverseMaxCostPct);
 }
 string OrbUserWindowKey(const OrbUserRecord &r,bool currentSchema=true)
 {
-   string ofKey=r.orderFlow.mode==0?"":"|ORDERFLOW_QUOTE_V1="+McOfConfigText(r.orderFlow);
+   string ofKey=(r.orderFlow.mode==0?"":"|ORDERFLOW_QUOTE_V1="+McOfConfigText(r.orderFlow))
+      +TpCostIdentity(r.targetCostEnabled,r.targetCostMaxPct);
    return SwSettingsKey(OrbUserMetricKey(r.symbol,r.chartTf,r.entryEngine+r.inputSignature+MaEntryMetricMeta(r.independent,r.maxSeries)
       +"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait+MaTimedReverseMetricMeta(r.reverseExit,r.reverseWait)+ofKey,r.runtime,r.preset,r.advancedReverse,r.advancedReverseMaxCostPct,currentSchema)
       +"|TCAL="+r.timeMatrix+"|GAP="+DoubleToString(r.advancedReverseMaxCostPct,8));

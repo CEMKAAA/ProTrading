@@ -10,6 +10,7 @@ string LiqWindowRuntimeFingerprint()
 {
    double values[];int n=LiqLibraryCapture(values);string out=LiqLibraryInputContract()+TCalStrategyText()+LnNasPack(g_lnNas);
    out+=LiqTimedExitMetricMeta(g_lnNas);
+   out+=TpCostIdentity();
    if(g_target==ERL_RR_CUSTOM)out+="|CUSTOM_R="+DoubleToString(g_customTargetR,12);
    if(g_lnNas.gate!=0||g_lnNas.exitMode!=0)out+="|NAS_TF="+(string)(int)_Period;
    for(int i=0;i<n;i++)if(i!=21)out+="|"+DoubleToString(values[i],16);return SwHash(out);

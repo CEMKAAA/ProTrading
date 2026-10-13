@@ -560,6 +560,8 @@ bool SimulateTradeTicksAdvanced(datetime sigTime,datetime tradeEnd,double entry,
    res.targetLeg=targetLeg;res.hcLeg=hcLeg;res.valid=true;res.invalidReason="";res.modeledReverseExit=false;
    res.entrySpreadPoints=(firstTick.ask-firstTick.bid)/point;
    res.simEntry=entry;res.entryTime=fillTime;res.simSl=sl;res.simTarget=fixedTarget?targetPrice:0.0;
+   if(!OrbTargetCostAllow(entry,sl,targetPrice,fixedTarget,res.entrySpreadPoints,hcLeg,res.invalidReason))
+   {res.valid=false;return true;}
    double tps[6];tps[0]=tp1;tps[1]=tp2;tps[2]=tp3;tps[3]=tp4;tps[4]=tp5;tps[5]=tp6;
 
    long cursor=MathMax(fromMs,(long)firstTick.time_msc);

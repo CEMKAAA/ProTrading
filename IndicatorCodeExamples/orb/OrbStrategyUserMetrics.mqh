@@ -22,13 +22,13 @@ string OrbUserRuntimeMetricKey()
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
    double saved=g_orbStrategyTimezone;g_orbStrategyTimezone=0;string signature=OrbCustomInputSignature();g_orbStrategyTimezone=saved;
    signature+=OrbClockMetricMeta(OrbBrokerOffsetHours(),(int)OrbClockProfile(),(int)OrbClockBrokerSeason(),(int)OrbClockExchangeSeason(),g_orbClockSession);
-   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),signature+OrbPositionMetricMeta(g_orbPositions),OrbCustomRuntimeDump(),p);
+   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),signature+OrbPositionMetricMeta(g_orbPositions)+TpCostIdentity(),OrbCustomRuntimeDump(),p);
 }
 string OrbUserWindowKey(const OrbUserRecord &r,bool currentSchema=true)
 {
    return SwSettingsKey(OrbUserMetricKey(r.symbol,r.chartTf,r.inputSignature
       +OrbClockMetricMeta(r.brokerOffset,r.clockProfile,r.brokerSeason,r.exchangeSeason,r.clockSession)
-      +OrbPositionMetricMeta(r.positions),r.runtime,r.preset,currentSchema)+"|TCAL="+r.timeMatrix
+      +OrbPositionMetricMeta(r.positions)+TpCostIdentity(r.targetCostEnabled,r.targetCostMaxPct),r.runtime,r.preset,currentSchema)+"|TCAL="+r.timeMatrix
       +"|GAP="+DoubleToString(r.inverseMaxGapPct,8));
 }
 void OrbUserLoadMetrics(int slot)

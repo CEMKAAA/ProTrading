@@ -79,6 +79,8 @@ bool LiqLibraryUnpack(string path,string &name,double &values[],bool checkInputs
    string payload=StringSubstr(text,0,end);
    if(StringSubstr(text,end+8)!=LiqLibraryHash(payload))return false;
    int n=StringSplit(payload,'\n',lines);
+   bool costEnabled=false;double costMaximum=20;
+   if(!TpCostStripLines(lines,costEnabled,costMaximum))return false;n=ArraySize(lines);
    double current[];int count=LiqLibraryCapture(current);
    int storedCount=n>5 ? (int)StringToInteger(lines[5]) : 0;
    if(storedCount!=count&&storedCount!=count-1)return false;
@@ -142,6 +144,7 @@ bool LiqLibrarySave(string name)
    if(g_target==ERL_RR_CUSTOM)payload+="\n"+DoubleToString(g_customTargetR,8);
 #endif
    payload+="\n"+TCalStrategyText();
+   if(g_tpCostEnabled||g_tpCostMaxPct!=20.0)payload+="\n"+TpCostPack(g_tpCostEnabled,g_tpCostMaxPct);
    string path=LiqLibraryPath(name);
    SwMetric previous[9];string previousKey="";
    string previousText="",previousName="";double previousValues[];
@@ -199,6 +202,7 @@ bool LiqLibraryApply(string path)
    if(!LiqLibraryUnpack(path,name,values))
    {g_liqLibraryStatus="Not applied: incompatible Inputs or damaged preset";return false;}
    string timeMatrix=TCalStrategyOffText();
+   bool costEnabled=false;double costMaximum=20.0;
 #ifdef LN_SOL_ADV_NAS_READY
    LnNasPolicy policy;LnNasDefaults(policy);
    double customR=0.0;
@@ -210,6 +214,9 @@ bool LiqLibraryApply(string path)
          int end=StringFind(record,"\nSHA256=");
          if(end<0){g_liqLibraryStatus="Damaged filter strategy";return false;}
          int count=StringSplit(StringSubstr(record,0,end),'\n',lines);
+         if(!TpCostStripLines(lines,costEnabled,costMaximum))
+         {g_liqLibraryStatus="Damaged target cost policy";return false;}
+         count=ArraySize(lines);
          if(count>0&&lines[0]=="LIQ_STRATEGY_NAS_V1"
             &&!LnNasUnpack(lines[count-1],policy))
          {g_liqLibraryStatus="Damaged filter strategy";return false;}
@@ -258,6 +265,7 @@ bool LiqLibraryApply(string path)
    {g_liqLibraryStatus="Time matrix settings could not be saved";return false;}
 #endif
    LiqLibraryAssign(values);
+   if(!TpCostSet(costEnabled,costMaximum)){g_liqLibraryStatus="Target cost settings could not be saved";return false;}
 #ifdef LN_SOL_ADV_NAS_READY
    g_customTargetR=customR;
 #endif
@@ -433,7 +441,7 @@ void LiqLibraryDraw()
 {
    int x=LiqLibraryLeft(),y=42,w=LiqLibraryWidth();color bg=C'24,30,42',button=C'38,101,176';
    if(g_liqLibraryRPicker||g_liqLibraryOpen)
-   {ObjectDelete(0,TCalId("CSV_RIGHT"));ObjectDelete(0,TCalId("CSV_FOLDER_ROOT"));ObjectDelete(0,TCalId("CSV_FOLDER_SUFFIX"));}
+   {TpCostHide(PFX);ObjectDelete(0,TCalId("CSV_RIGHT"));ObjectDelete(0,TCalId("CSV_FOLDER_ROOT"));ObjectDelete(0,TCalId("CSV_FOLDER_SUFFIX"));}
    if(g_liqLibraryRPicker)
    {
       x=8;w=(int)MathMax(280,MathMin(650,ChartGetInteger(0,CHART_WIDTH_IN_PIXELS)-16));
@@ -493,6 +501,7 @@ void LiqLibraryDraw()
       ObjectSetString(0,LiqLibraryObject("BAL_VALUE"),OBJPROP_TOOLTIP,"Native percentage-risk reference capital; 0 restores account sizing. Future entries only. Risk controls remain separate from saved strategies.");
 #ifdef LN_SOL_ADV_NAS_READY
       LiqMarginDraw(x+12,y+305,w-24,bg);
+      TpCostDraw(PFX,x+12,y+426,MathMin(1.0,(w-24)/514.0),DASH_Z+60);
 #endif
    }
    else {string balanceKeys[]={"BAL_LABEL","BAL_VALUE","BAL_APPLY","BAL_BUDGET","MARGIN_TITLE","MARGIN_BUY","MARGIN_SELL","MARGIN_MIN","MARGIN_MIN_SL","MARGIN_MIN_CAPITAL","MARGIN_NOTE"};for(int b=0;b<ArraySize(balanceKeys);b++)ObjectDelete(0,LiqLibraryObject(balanceKeys[b]));}

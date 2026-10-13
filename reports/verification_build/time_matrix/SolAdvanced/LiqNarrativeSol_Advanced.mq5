@@ -9,6 +9,7 @@
 
 #include <Trade/Trade.mqh>
 #include "NativeRiskBalance.mqh"
+#include "TargetCostGate.mqh"
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "LiqNarrativeMacroRegime.mqh"
 #include "TradeDayCalendarPublisher.mqh"
@@ -862,7 +863,7 @@ string SimCacheKey(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, ERL
       + "|SP" + DoubleToString(g_btSpreadPts, 2)
       + "|SLIP" + DoubleToString(g_btSlippagePts, 2)
       + "|COMM" + DoubleToString(g_btCommissionPerLot, 4)
-      + "|INV" + (g_invertMode ? "LEVEL_SWAP_1" : "0") + "|INV_GAP" + DoubleToString(g_inverseMaxGapPct,4);
+      + "|INV" + (g_invertMode ? "LEVEL_SWAP_1" : "0") + "|INV_GAP" + DoubleToString(g_inverseMaxGapPct,4)+TpCostIdentity();
 }
 
 bool SimCacheGet(const string key, double &r, bool &closed, bool &won, bool &valid)
@@ -2410,6 +2411,11 @@ double ApplyForcedSignalExit(int dir, double exitPx, double simEntry, double sim
    pnlR -= commissionR;
    return pnlR;
 }
+double SolTargetCostBudget(double entry,double tp,double half,ERL_HC_MODE hc)
+{
+   if(tp<=0)return 0;
+   return hc!=ERL_HC_OFF&&half>0?0.5*MathAbs(half-entry)+0.5*MathAbs(tp-entry):MathAbs(tp-entry);
+}
 
 double TargetPriceForSimulation(const ErlSignal &sig, ERL_RR_MODE target, ERL_TARGET_MODEL targetModel, double simEntry, double simRisk)
 {
@@ -2670,6 +2676,9 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                g_lastSimEntryTime=sig.availableTime;g_lastSimEntrySpread=effectiveSpreadPts;g_lastSimEntryBasis=g_btSpreadPts>0?"CONFIGURED_BAR_SPREAD":"HISTORICAL_BAR_SPREAD";
    CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
                g_lastSimEntryTime=(datetime)g_lnQuoteTicks[first].time;g_lastSimEntrySpread=(g_lnQuoteTicks[first].ask-g_lnQuoteTicks[first].bid)/point;g_lastSimEntryBasis="ENTRY_BID_ASK_QUOTE";
+               if(!TpCostAllow(_Symbol,SolTargetCostBudget(simEntry,tp,half,activeHc),g_lastSimEntrySpread,
+                  g_btSlippagePts,g_btCommissionPerLot,g_lastSimInvalidReason))
+               {valid=false;return 0.0;}
                halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
                pnlR = 0.0;
                tickInitialized = true;
@@ -2777,6 +2786,11 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    }
    g_lastSimEntryTime=sig.availableTime;g_lastSimEntrySpread=effectiveSpreadPts;g_lastSimEntryBasis=g_btSpreadPts>0?"CONFIGURED_BAR_SPREAD":"HISTORICAL_BAR_SPREAD";
    CaptureLastSimulationGeometry(simDir, simEntry, activeSl, tp, half);
+   if(g_tpCostEnabled&&g_simRates[entryIdx].spread<=0&&g_btSpreadPts<=0)
+   {valid=false;g_lastSimInvalidReason="COST_TP_DATA";return 0.0;}
+   if(!TpCostAllow(_Symbol,SolTargetCostBudget(simEntry,tp,half,activeHc),effectiveSpreadPts,
+      g_btSlippagePts,g_btCommissionPerLot,g_lastSimInvalidReason))
+   {valid=false;return 0.0;}
    halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
    pnlR = 0.0;
 
@@ -2938,6 +2952,7 @@ SimStats CalculateStats(ErlSignal &signals[], const ErlSignal &exitSignals[], ER
       bool closed = false, won = false, valid = false;
       datetime nextSignalTime = NextOppositeSignalTime(exitSignals, signals[i].availableTime, signals[i].dir);
       double r = SimulateSignal(signals[i], target, hc, targetModel, entryTf, nextSignalTime, closed, won, valid);
+      if(!valid&&TpCostIsReject(g_lastSimInvalidReason))continue;
       st.total++;
       if(!valid)
       {
@@ -3119,6 +3134,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
 
    ZeroMemory(g_hist);
    g_histModeledReverseExits=0;
+   g_tpCostRejected=0;
    TCalReset();
    for(int bucket = 0; bucket < LIQ_MACRO_REGIME_COUNT; ++bucket)
    {
@@ -3198,7 +3214,8 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       g_histSignalExecHalf[i] = g_lastSimExecHalf;
       g_histSignalExitTime[i] = g_lastSimExitTime;
       g_histSignalExitReason[i] = g_lastSimExitReason;
-      if(!valid && g_lastSimInvalidReason=="INVERSE_GAP_BLOCK")continue;
+      if(!valid && (g_lastSimInvalidReason=="INVERSE_GAP_BLOCK"||TpCostIsReject(g_lastSimInvalidReason)))
+      {if(TpCostIsReject(g_lastSimInvalidReason))g_tpCostRejected++;continue;}
       g_hist.total++;
       if(!valid) { g_hist.invalid++; continue; }
       g_hist.netR += r;
@@ -4270,7 +4287,7 @@ void DrawHistoricalSignals(bool resetObjects = true)
    int count = ArraySize(g_histSignals);
    for(int i = 0; i < count; ++i)
    {
-      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"||g_histSignalInvalidReason[i]=="INVERSE_GAP_BLOCK")continue;
+      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"||g_histSignalInvalidReason[i]=="INVERSE_GAP_BLOCK"||TpCostIsReject(g_histSignalInvalidReason[i]))continue;
       ErlSignal displaySig = g_histSignals[i];
       string invertDetail = "";
       bool geometryOk = true;
@@ -5032,6 +5049,9 @@ bool OpenSignalAccepted(const ErlSignal &sig)
    double orderTp = reverseExitMode ? 0.0 : tp;
    ERL_HC_MODE effectiveHc = reverseExitMode ? ERL_HC_OFF : EffectiveHalfModeForSignal(execSig, g_hc, g_target, g_targetModel);
    double bridgeHalf = effectiveHc == ERL_HC_OFF ? 0.0 : HalfTrigger(execSig, effectiveHc);
+   if(!TpCostAllow(_Symbol,SolTargetCostBudget(execSig.entry,orderTp,bridgeHalf,effectiveHc),
+      (tick.ask-tick.bid)/SymbolInfoDouble(_Symbol,SYMBOL_POINT),g_btSlippagePts,g_btCommissionPerLot,g_lastBlock))
+   {g_lastStatus=g_lastBlock;AuditWrite("target_cost_block",sig.id,execSig.dir,execSig.entry,orderSl,orderTp,0,g_tpCostStatus);return false;}
    string bridgeHalfLabel = (effectiveHc == ERL_HC_OFF || bridgeHalf <= 0.0) ? "off" : HcLabel(effectiveHc);
    bool nativeEntry=!g_fileBridgeOnlyMode||g_nativeTradeWithBridgeOnly;
    double lot=0.0;
@@ -5965,7 +5985,7 @@ void RunValidationInternalAudit()
    if(!InpValidationInternalAuditRows) return;
    for(int i = 0; i < ArraySize(g_histSignals); ++i)
    {
-      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"||g_histSignalInvalidReason[i]=="INVERSE_GAP_BLOCK")continue;
+      if(g_histSignalInvalidReason[i]=="TIME_MATRIX"||g_histSignalInvalidReason[i]=="DAILY_QUOTA"||g_histSignalInvalidReason[i]=="INVERSE_GAP_BLOCK"||TpCostIsReject(g_histSignalInvalidReason[i]))continue;
       string result = !g_histSignalValid[i] ? "INVALID" : (!g_histSignalClosed[i] ? "OPEN" : (g_histSignalWon[i] ? "WIN" : "LOSS"));
       ErlSignal auditSig = g_histSignals[i];
       string invertDetail = "";
@@ -6061,7 +6081,7 @@ int OnInit()
    g_fileBridgeOnlyMode = InpFileBridgeOnlyMode;
    g_nativeTradeWithBridgeOnly = InpNativeTradeWithBridgeOnlyDefault;
    g_allowDuplicateEntries = InpAllowDuplicateEntriesDefault;
-   g_riskPerTradePct = ClampRiskPerTradePct(InpRiskPerTradePct);NativeBalanceLoad("SolAdvanced");
+   g_riskPerTradePct = ClampRiskPerTradePct(InpRiskPerTradePct);NativeBalanceLoad("SolAdvanced");TpCostLoad("SolAdvanced");
    g_histWeeks = ClampHistWeeks(InpHistoricalWeeks > 0 ? InpHistoricalWeeks : (int)MathCeil((double)MathMax(1, InpHistoricalDays) / 7.0));
    g_btWeeks = InpBacktestWeeks;
    g_btFillMode = InpBacktestFillMode;
@@ -6234,6 +6254,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    }
 
+   if(TpCostUiEvent(id,sparam,PFX)){RefreshAfterConfigChange(false);if(g_liqLibraryPanel)LiqLibraryDraw();ChartRedraw(0);return;}
    if(Clicked(sparam, "BTN_DASH_TOGGLE"))
    {
       g_dashboardCollapsed = !g_dashboardCollapsed;

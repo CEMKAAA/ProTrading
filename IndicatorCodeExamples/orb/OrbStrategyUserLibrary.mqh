@@ -14,6 +14,7 @@ struct OrbUserRecord
    string timeMatrix;
    double inverseMaxGapPct;
    OrbPositionPolicy positions;
+   bool targetCostEnabled;double targetCostMaxPct;
 };
 OrbUserRecord g_userStrategies[];
 bool g_userLoaded=false;
@@ -55,7 +56,9 @@ void OrbUserReload(bool force=false)
       if(!OrbCustomRuntimeRead(v,6+ORB_CUSTOM_PRESET_TOKENS,false))continue;
       OrbUserRecord record;record.valid=true;record.preset=p;record.symbol=v[3];record.chartTf=(int)tf;
       if(record.preset.family==ORB_PRESET_FAMILY_ANY)record.preset.family=OrbUserSymbolFamily(record.symbol);
-      string clockMeta[];int metaCount=StringSplit(v[5],'|',clockMeta);
+      string legacyMeta=v[5];
+      if(!TpCostStripMeta(legacyMeta,record.targetCostEnabled,record.targetCostMaxPct))continue;
+      string clockMeta[];int metaCount=StringSplit(legacyMeta,'|',clockMeta);
       record.inputSignature=clockMeta[0];record.brokerOffset=0;
       record.clockProfile=0;record.brokerSeason=0;record.exchangeSeason=0;record.clockSession=0;
       record.timeMatrix=TCalStrategyOffText();
@@ -170,6 +173,7 @@ bool OrbUserApply(const OrbStrategyPreset &p)
    // Keep saved NAS sampling independent of the display chart.
    g_rtNasTf=(ENUM_TIMEFRAMES)g_userStrategies[i].chartTf;
    if(!SetRuntimeInverseMaxGapPct(g_userStrategies[i].inverseMaxGapPct))return false;
+   if(!TpCostSet(g_userStrategies[i].targetCostEnabled,g_userStrategies[i].targetCostMaxPct))return false;
    g_orbPositions=g_userStrategies[i].positions;
    for(int r=0;r<ORB_REGIME_COUNT;r++)g_regimeAllowed[r]=OrbPresetRegimeAllowed(p,r);
    g_orbRfEnabled=p.rfMaster;
@@ -187,6 +191,7 @@ bool OrbUserMatches(const OrbStrategyPreset &p)
    if(OrbCustomRuntimeDump()!=g_userStrategies[i].runtime||g_orbRfEnabled!=p.rfMaster)return false;
    if(MathAbs(g_rtInverseMaxGapPct-g_userStrategies[i].inverseMaxGapPct)>0.000001)return false;
    if(OrbPositionPack(g_orbPositions)!=OrbPositionPack(g_userStrategies[i].positions))return false;
+   if(g_tpCostEnabled!=g_userStrategies[i].targetCostEnabled||MathAbs(g_tpCostMaxPct-g_userStrategies[i].targetCostMaxPct)>1e-8)return false;
    if(!TCalStrategyMatchesText(g_userStrategies[i].timeMatrix))return false;
    for(int r=0;r<ORB_REGIME_COUNT;r++)if(g_regimeAllowed[r]!=OrbPresetRegimeAllowed(p,r))return false;
    for(int r=0;r<ORB_RF_COUNT;r++)if(g_orbRfBlocked[r]!=OrbPresetRfBlocked(p,r))return false;
@@ -234,6 +239,7 @@ bool OrbUserSaveLocked(string name)
       +"|"+OrbPositionPack(g_orbPositions),runtime=OrbCustomRuntimeDump();
    g_orbStrategyTimezone=savedClock;
    string tokens[];StringSplit(runtime,'\n',tokens);
+   if(g_tpCostEnabled||g_tpCostMaxPct!=20.0)signature+="|"+TpCostPack(g_tpCostEnabled,g_tpCostMaxPct);
    if(!OrbCustomRuntimeRead(tokens,0,false)){g_userStrategyNote="Runtime validation failed";return false;}
    if(updateSlot>=0)p.id=updateId;
    int saved=-1;

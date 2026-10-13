@@ -9,6 +9,7 @@
 #property version "1.00"
 #include <Trade/Trade.mqh>
 #include "NativeRiskBalance.mqh"
+#include "TargetCostGate.mqh"
 #include "LiqNarrativeSol_RegimeV3.mqh"
 #include "TradeDayCalendarPublisher.mqh"
 #include "NasUltimate_Core.mqh"
@@ -2660,6 +2661,7 @@ bool OrbStrategyPresetApplyValues(const OrbStrategyPreset &p)
    if(GlobalVariableSet(RuntimeAdvancedReverseKey(),0.0)<=0)return false;
    if(!SetRuntimeAdvancedReverseMaxCostPct(100.0))return false;
    if(!TCalStrategyApplyText(TCalStrategyOffText()))return false;
+   if(!TpCostSet(false,20.0))return false;
    g_rtNasTf=PERIOD_CURRENT;
    g_rtCustomR=0.0;
    g_rtSignalTf=p.signalTf;g_rtDelayMin=p.delayMinutes;g_rtUseDelay=p.delayMinutes>0;
@@ -2690,6 +2692,7 @@ bool OrbStrategyPresetMatchesRuntime(const OrbStrategyPreset &p)
 {
    if(OrbUserPreset(p))return OrbUserMatches(p);
    if(g_rtAdvancedReverse)return false;
+   if(g_tpCostEnabled)return false;
    if(MathAbs(g_rtAdvancedReverseMaxCostPct-100.0)>0.000001)return false;
    if(!TCalStrategyMatchesText(TCalStrategyOffText()))return false;
    if(g_rtSignalTf!=p.signalTf||g_rtDelayMin!=p.delayMinutes||g_rtUseDelay!=(p.delayMinutes>0))return false;
@@ -3045,6 +3048,19 @@ double BtCostR(double risk,bool includeSpread=true,bool includeSlippage=true)
 {
    return BtCostRForSpread(risk,includeSpread?g_btSpreadPts:0.0,includeSlippage);
 }
+double OrbTargetCostBudget(double entry,double sl,double tp,bool fixedTarget,int hcLeg)
+{
+   if(!fixedTarget||tp<=0)return 0;
+   double risk=MathAbs(entry-sl),budget=MathAbs(tp-entry);
+   if(InpExecutionMode==ORB_EXEC_PARTIAL_3LEG)return risk*(LegR(1)+LegR(2)+LegR(3))/3.0;
+   if(hcLeg>0)budget=0.5*risk*LegR(hcLeg)+0.5*budget;
+   return budget;
+}
+bool OrbTargetCostAllow(double entry,double sl,double tp,bool fixedTarget,double spreadPoints,int hcLeg,string &reason)
+{
+   return TpCostAllow(_Symbol,OrbTargetCostBudget(entry,sl,tp,fixedTarget,hcLeg),
+      spreadPoints,g_btSlippagePts,g_btCommissionPerLot,reason);
+}
 bool BtTpFirst(bool isBuy,double openPx,double sl,double tp)
 {
    // OHLC bars cannot reveal intrabar ordering. Apply the configured policy
@@ -3399,6 +3415,7 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
 {
    // NAT controls new native entries independently of bridge routing.
    if(!g_orbNativeWithBridgeOnly){detail="native_off";return false;}
+   if(!OrbTargetCostAllow(entry,sl,tp,tp>0,CurrentSpreadPoints(),RuntimeHalfBeLeg(),detail))return false;
    ENUM_ORDER_TYPE type=dir=="BUY"?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    bool ok=trade.PositionOpen(_Symbol,type,lot,entry,sl,tp,comment);
    uint rc=trade.ResultRetcode();
@@ -3448,6 +3465,7 @@ bool SendOrbOrder(string dir,double lot,double entry,double sl,double tp,string 
       return false;
    }
    if(!g_orbNativeWithBridgeOnly){detail=firstFail+" native_off_retry_blocked";return false;}
+   if(!OrbTargetCostAllow(entry,sl,tp,tp>0,CurrentSpreadPoints(),RuntimeHalfBeLeg(),detail))return false;
    bool naked=trade.PositionOpen(_Symbol,type,lot,entry,0,0,comment+"|naked");
    uint nakedRc=trade.ResultRetcode();
    if(!(naked&&(nakedRc==TRADE_RETCODE_DONE||nakedRc==TRADE_RETCODE_DONE_PARTIAL||nakedRc==TRADE_RETCODE_PLACED)))
@@ -5446,6 +5464,8 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
    res.entryTime=fillTime;
    res.simSl=sl;
    res.simTarget=fixedTarget?targetPrice:0.0;
+   if(!OrbTargetCostAllow(entry,sl,targetPrice,fixedTarget,res.entrySpreadPoints,hcLeg,res.invalidReason))
+   {res.valid=false;return true;}
    double tps[6];tps[0]=tp1;tps[1]=tp2;tps[2]=tp3;tps[3]=tp4;tps[4]=tp5;tps[5]=tp6;
    for(int i=first;i<scanAfter;i++)
    {
@@ -5706,6 +5726,10 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    res.entrySpreadPoints=EMPTY_VALUE; // Bar fallback has no observed entry quote.
    res.simSl=NormalizePrice(sl);
    res.simTarget=fixedTarget?targetPrice:0.0;
+   if(g_tpCostEnabled&&r[fillBarIndex].spread<=0&&g_btSpreadPts<=0)
+   {res.valid=false;res.invalidReason="COST_TP_DATA";return res;}
+   if(!OrbTargetCostAllow(entry,sl,targetPrice,fixedTarget,historicalSpreadPts,hcLeg,res.invalidReason))
+   {res.valid=false;return res;}
 
    bool exactTimedReverse=g_maReverseExit&&g_maReverseWait>0&&forcedExitTime>sigTime&&forcedExitOutcome=="MA_REVERSE_EXIT";
    bool reverseM1Model=exactTimedReverse&&g_rtExitMode==ORB_EXIT_FIXED_TARGET&&!g_rtTimeExit;
@@ -5975,7 +5999,7 @@ HistResult OrbMemoLifecycle(datetime entryTime,datetime sessionEnd,datetime now,
    if(g_rtInvertMode)key+="|INV_LEVEL_SWAP_1";
    key+="|entryDirection="+(string)g_entryDirection+"|dailyLoss="+(string)g_dailyMaxLosses+"|dailyWin="+(string)g_dailyTargetWins+"|dailyStart="+(string)g_dailyStartMinute;
    key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
-   key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
+   key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);key+=TpCostIdentity();
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
    key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
    key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
@@ -6441,7 +6465,7 @@ int ProcessHistoricalPrepDay(const int back)
    if(g_rtInvertMode)key+="|INV_LEVEL_SWAP_1";
    key+="|entryDirection="+(string)g_entryDirection+"|dailyLoss="+(string)g_dailyMaxLosses+"|dailyWin="+(string)g_dailyTargetWins+"|dailyStart="+(string)g_dailyStartMinute;
    key+="|g_rtAdvancedReverse="+(string)g_rtAdvancedReverse;
-   key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);
+   key+="|g_rtAdvancedReverseMaxCostPct="+AuditMemoPrice(g_rtAdvancedReverseMaxCostPct);key+=TpCostIdentity();
    key+="|g_rtUtcMidnightSession="+(string)g_rtUtcMidnightSession;
    key+="|g_rtNasConfirmation="+(string)g_rtNasConfirmation;
    key+="|g_rtNasStateGate="+(string)g_rtNasStateGate;
@@ -6895,7 +6919,7 @@ void OrbResetHistoricalStats()
    g_histAuditProcessedDays=0;
    g_histAuditProgressPct=0.0;
    g_histTotal=0;g_histWins=0;g_histLosses=0;g_histOpen=0;g_histFlat=0;g_histInvalid=0;g_histModeledReverseExits=0;
-   g_histFirstInvalidReason="";
+   g_histFirstInvalidReason="";g_tpCostRejected=0;
    g_histStopLossExits=0;g_histNasOppositeExits=0;g_histNewDayReverseExits=0;
    g_histNetR=0.0;g_histWonR=0.0;g_histLostR=0.0;g_histNetMoney=0.0;
    g_histMinCumulativeR=0.0;g_histMinCumulativeMoney=0.0;
@@ -7081,8 +7105,9 @@ void ProcessHistoricalCalcDay(const int back)
          g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
          return;
       }
-   if(sim.invalidReason=="INVERSE_GAP_BLOCK")
+   if(sim.invalidReason=="INVERSE_GAP_BLOCK"||TpCostIsReject(sim.invalidReason))
    {
+      if(TpCostIsReject(sim.invalidReason))g_tpCostRejected++;
       g_histFiltered++;
       g_orbHigh=saveOrbH;g_orbLow=saveOrbL;g_orbStartServer=saveOs;g_orbEndServer=saveOe;g_tradeEndServer=saveTe;
       return;
@@ -7163,6 +7188,7 @@ void ProcessHistoricalCalcDay(const int back)
       csv.regionHigh=hi;csv.regionLow=lo;csv.regime=regimeBucket;csv.rf=rfIndex;
       csv.context=modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail;
       if(sim.modeledReverseExit)csv.context+=" exit_price_basis=M1_OPEN_SPREAD_MODEL_NOT_TICK_EXACT";
+      if(g_tpCostEnabled)csv.context+=" "+TpCostPack(g_tpCostEnabled,g_tpCostMaxPct);
       AxCapture(csv);
       g_histTotal++;
       if(finalOutcome&&sim.modeledReverseExit)g_histModeledReverseExits++;
@@ -7999,6 +8025,7 @@ void RenderNativeBalance()
    CreateEdit("EDIT_NATIVE_BALANCE",x+158,y,108,22,DoubleToString(g_nativeRiskBalance,2));
    CreateButton("BTN_NATIVE_BALANCE",x+274,y,98,22,"APPLY BAL",C'38,101,176');
    CreateLabel("DASH_NATIVE_BUDGET",x,y+29,"NATIVE 1R BUDGET: "+DoubleToString(RiskBudgetMoney(),2)+" "+AccountInfoString(ACCOUNT_CURRENCY)+" | listener % unchanged",C'80,255,180',8);
+   TpCostDraw(PREFIX,OrbLibraryX(x),OrbLibraryY(InpDashboardY+574),g_libraryDashScale,DASH_Z+3);
    ObjectSetString(0,PREFIX+"EDIT_NATIVE_BALANCE",OBJPROP_TOOLTIP,"Native MT5 percentage-risk reference capital in account currency. 0 restores the existing account basis. MONEY mode takes priority. Future entries only; risk settings stay separate from strategies.");
 }
 void UpdateDashboard()
@@ -9203,6 +9230,9 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       }
       planTp=tp3;
       planHalf=g_rtBEOnTp1?tp1:0.0;
+      string costReason="";
+      if(!OrbTargetCostAllow(entry,sl,planTp,true,CurrentSpreadPoints(),0,costReason))
+      {g_lastExecStatus=costReason;Audit("target_cost_block",execDir,0,entry,sl,planTp,g_tpCostStatus);return false;}
       // Live chart geometry belongs to the accepted signal, not to a later I/O or order result.
        datetime executedAt=TimeCurrent();
        StoreOrbBridgePlan(isBuy?1:-1,executedAt,entry,sl,planTp,planHalf);
@@ -9229,6 +9259,9 @@ bool ExecuteOrbEntry(string dir,datetime signalBar,double signalClose,string ent
       planTp=tp;
       int bridgeHcLeg=RuntimeHalfBeLeg();
       if(bridgeHcLeg>0)planHalf=PriceAtLeg(isBuy,entry,risk,bridgeHcLeg);
+      string costReason="";
+      if(!OrbTargetCostAllow(entry,sl,tp,tp>0,CurrentSpreadPoints(),bridgeHcLeg,costReason))
+      {g_lastExecStatus=costReason;Audit("target_cost_block",execDir,0,entry,sl,tp,g_tpCostStatus);return false;}
       // Live chart geometry belongs to the accepted signal, not to a later I/O or order result.
        datetime executedAt=TimeCurrent();
        StoreOrbBridgePlan(isBuy?1:-1,executedAt,entry,sl,tp,planHalf);
@@ -9902,7 +9935,7 @@ int OnInit()
    g_rtFilteredWindowReverseExit=InpFilteredWindowReverseExitDefault;
    g_rtPostTradeDispBlockExit=InpExitOnPostTradeSameDirectionDispBlockDefault;
    g_ftmoMode=InpFtmoModeDefault;g_riskLotOnlyMode=(!g_ftmoMode&&InpRiskLotOnlyModeDefault);g_runtimeMagic=0;
-   LoadRuntimeRiskPct();NativeBalanceLoad("macrossover_orb");
+   LoadRuntimeRiskPct();NativeBalanceLoad("macrossover_orb");TpCostLoad("macrossover_orb");
    LoadRuntimeInvertMode();
    LoadRuntimeAdvancedReverse();
    LoadRuntimeMaCrossMode();
@@ -10137,6 +10170,7 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
          return;
       }
    }
+   if(TpCostUiEvent(id,sparam,PREFIX)){CancelHistoricalAuditBuild();QueueHistoricalRedraw(0);UpdateDashboard();ChartRedraw(0);return;}
    if(id==CHARTEVENT_OBJECT_CLICK&&sparam==PREFIX+"BTN_PRESET_CLOSE")
    {
       g_strategyPopupOpen=false;

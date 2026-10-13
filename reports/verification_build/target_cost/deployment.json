@@ -1,0 +1,152 @@
+﻿[
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.mq5",
+        "sha256":  "40CBD9F5042CAC4969CE65E6BE7F6923C2B48D54E06C956877FA5EE94F44108B",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\MaCrossOverOrbEA.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\MaCrossOverOrbEA.ex5",
+        "sha256":  "5BFD62DCFEC92E467DEACFBF94CC078D3CD71286C2A32C8620B5B5C5F0CD54FE",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\TargetCostGate.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\TargetCostGate.mqh",
+        "sha256":  "A0E5F77D1606146F0231D3E60226190D5FC817A6EC8721CB5E79F0029365CA43",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbAdvancedAuditEngine.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "4E10C1A2FB79901C926A2C03B74A607280BEF33AD213AFE7CBAC122D5F095CB7",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "E813094A44E660D5DC926735123C0C82BC6173DE355ED3126639E46003D27394",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\macrossover_orb\\OrbStrategyUserMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\MaCrossOverOrb\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "0691F63CD95A7BA25C03009D0C3FC33A80C18557679D19FA5F8234689DE54A92",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.mq5",
+        "sha256":  "59AD020D455B20D33B034BD1178CD1B34ED7C14DB09981DD9BB43837A36C77D2",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\EntryEngineLabEA.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\EntryEngineLabEA.ex5",
+        "sha256":  "A79C61F24BEBD7141BA5566D214ACB46D90368EF9AC75A7B92CEF53813430799",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\TargetCostGate.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\TargetCostGate.mqh",
+        "sha256":  "A0E5F77D1606146F0231D3E60226190D5FC817A6EC8721CB5E79F0029365CA43",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbAdvancedAuditEngine.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "9AD9992AA7D68B684BC2A799E0C652121F85A546E6F194139702AC3475BEC917",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "4AB7A074BE29BD6B7A1A2E1C0EDDCBBCE403DCFC78A4A482D9E4921F55E24CF1",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\entry_engine_lab\\OrbStrategyUserMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\EntryEngineLab\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "60DF4A9E1B21E49B4A4F4A7B2FB71E4CEE8EA1E9304FA02821E5BECB067C4EE9",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "sha256":  "4101E2A2C04DB405C8A3B354E90FE16387730DCE6898BD6C51202CD57602758E",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "sha256":  "F75BC3A311118E0BD3B87D216A70581A8C8EFEC964C6E9957CFDBD6C9EB607BE",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\TargetCostGate.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\TargetCostGate.mqh",
+        "sha256":  "A0E5F77D1606146F0231D3E60226190D5FC817A6EC8721CB5E79F0029365CA43",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbAdvancedAuditEngine.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "E29CDF350D156B08A04F229F31528253F3A1723B3144573A98BA0A29A43962CB",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserLibrary.mqh",
+        "sha256":  "21E8FC5C9D58AE6DF3865697308211541272AB0D73F4DACDC317971077753450",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbStrategyUserMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbStrategyUserMetrics.mqh",
+        "sha256":  "AA8B8ECF956341820C68655EDB23DB96E60F305B0B608C680C23B7EBD37DD86F",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.mq5",
+        "sha256":  "98B9C3174F0F3768DDA7292F8796A2BF212FAEF470A24980B9A88EE17610198F",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqNarrativeSol_Advanced.ex5",
+        "sha256":  "97CD56D08726AF8BB5AC659ED4256BEC86421949E476EAA01276FE9BBC241AC4",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\TargetCostGate.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\TargetCostGate.mqh",
+        "sha256":  "A0E5F77D1606146F0231D3E60226190D5FC817A6EC8721CB5E79F0029365CA43",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyLibrary.mqh",
+        "sha256":  "1B3AB6DBEC4E6A6C97ADCAB21DAB4C3B245BB6B7F3874A0EBED5F84311442FCA",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqStrategyWindowMetrics.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqStrategyWindowMetrics.mqh",
+        "sha256":  "6FE6A8BC03918E80840EE2F8B13B8443003369D82510D34921A6640EDCF015BB",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\LiqSolAdvancedNas.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\LiqSolAdvancedNas.mqh",
+        "sha256":  "2872D8679F572A87CE41EE8FE4BEE000C62E1DCB11D5623A9B1FC9E3F82EF617",
+        "verified":  true
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\SolAdvanced\\AuditTradeCsvAdapter.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\SolAdvanced\\AuditTradeCsvAdapter.mqh",
+        "sha256":  "39D03402AD8F8F1C3A03B8E0AB8B8317CD100A8209A6E1EC4F11E7909BF189E1",
+        "verified":  true
+    }
+]
