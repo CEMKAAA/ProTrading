@@ -1,6 +1,5 @@
-#define METRICS_STRATEGY_NAME "gbpusdFirst"
+#define METRICS_STRATEGY_NAME "gbpusdFirstMaRev48Hours"
 #define METRICS_OUTPUT "StrategyMetricsGbpReverse.csv"
-#define METRICS_REVERSE_48H
 #property strict
 #ifndef METRICS_STRATEGY_NAME
 #define METRICS_STRATEGY_NAME "0.20RStarJp225DailyNextDayOff"
@@ -44,6 +43,9 @@ void OnStart()
    {FileWrite(out,p.name,_Symbol,0,0,0,0,0,0,0,0,0,false,0,"EXACT_SAVED_SETUP_APPLY_FAILED");FileClose(out);return;}
    g_rtEaEnabled=false;g_orbBridgeEnabled=false;g_orbNativeWithBridgeOnly=false;g_auditRuntime=false;
    g_mlEnabled=false;g_swFrozen=false;g_histRedrawQueued=false;g_metricsAuditClock=TimeCurrent();
+#ifdef METRICS_ADVANCED
+   g_rtAdvancedAuditEngine=true;
+#endif
 #ifdef METRICS_REVERSE_48H
    g_orbPositions.reverse=true;g_orbPositions.waitMinutes=2880;
    g_strategyPresetIndex=-1; // Changed geometry/exit policy must not overwrite the original saved setup.
@@ -70,9 +72,12 @@ void OnStart()
       bool exact=ready&&m.total==g_histTotal&&m.wins==g_histWins&&m.losses==g_histLosses
          &&m.open==g_histOpen&&m.flat==g_histFlat&&MathAbs(m.netR-g_histNetR)<1e-9
          &&MathAbs(m.minCum-g_histMinCumulativeR)<1e-9&&m.asOf==g_histRunNow;
+      string detail=g_histCoverageDetail;
+      if(g_histModeledReverseExits>0)detail+="M1_MODEL="+(string)g_histModeledReverseExits+";NOT_TICK_EXACT";
       FileWrite(out,p.name,_Symbol,windows[w],g_histTotal,g_histWins,g_histLosses,g_histOpen,g_histFlat,g_histInvalid,
-         DoubleToString(g_histNetR,12),DoubleToString(g_histMinCumulativeR,12),exact,(long)g_histRunNow,g_histCoverageDetail);
-#ifdef METRICS_REVERSE_48H
+         DoubleToString(g_histNetR,12),DoubleToString(g_histMinCumulativeR,12),exact,(long)g_histRunNow,detail);
+      if(g_histInvalid>0)
+      {
       int shown=0;
       for(int i=0;i<ArraySize(g_axTrades)&&shown<3;i++)if(!g_axTrades[i].valid)
       {
@@ -80,7 +85,7 @@ void OnStart()
          Print("REVERSE_DATA ",windows[w],"W signal=",TimeToString(t.signalTime)," available=",TimeToString(t.availableTime),
             " reason=",t.reason," context=",t.context," entry=",t.entry," sl=",t.sl," tp=",t.tp);shown++;
       }
-#endif
+      }
       FileFlush(out);Print("NAMED_AUDIT ",windows[w],"W ",g_histWins,"/",g_histLosses," exact_saved=",exact);
 #ifndef METRICS_REVERSE_48H
       if(!exact)break;

@@ -542,6 +542,7 @@ string   g_imbContext = "";
 int    g_histTotal = 0, g_histWins = 0, g_histLosses = 0;
 int    g_histOpen = 0, g_histFlat = 0, g_histInvalid = 0;
 int    g_histStopLossExits = 0, g_histNasOppositeExits = 0, g_histNewDayReverseExits = 0;
+int    g_histModeledReverseExits = 0;
 double g_histNetR = 0.0, g_histWonR = 0.0, g_histLostR = 0.0;
 double g_histNetMoney = 0.0;
 double g_histMinCumulativeR = 0.0;
@@ -4860,6 +4861,7 @@ struct HistResult
    datetime exitTime; // first terminal event time
    bool valid;        // false means required market data/geometry was unavailable
    string invalidReason;
+   bool modeledReverseExit; // M1 open/spread model, never an observed tick fill
 };
 
 struct OrbWindowSignal
@@ -4980,6 +4982,7 @@ double g_histRunPoint=0.0;
 
 void WriteInternalSimAudit(string source,datetime sigTime,datetime simEnd,string dir,double plannedEntry,double plannedSl,const HistResult &sim,string detail)
 {
+   if(sim.modeledReverseExit)detail+=" exit_price_basis=M1_OPEN_SPREAD_MODEL_NOT_TICK_EXACT";
    if(!g_auditRuntime||!InpAuditHistoricalSimulationCsv) return;
    string fileName="ORB15_InternalSimAudit_v2_"+AuditDateStr()+".csv";
    bool exists=FileIsExist(fileName);
@@ -5230,6 +5233,7 @@ bool SimulateTradeTicks(datetime sigTime,datetime tradeEnd,double entry,double s
                         int halfBeLeg,bool scheduledEndReached,HistResult &res,
                         datetime forcedExitTime=0,string forcedExitOutcome="")
 {
+   res.modeledReverseExit=false;
    if(!InpBacktestUseTickReplay || !g_btNativeParity) return false;
    if(g_rtExitMode!=ORB_EXIT_FIXED_TARGET&&g_rtExitMode!=ORB_EXIT_EOD_ONLY&&g_rtExitMode!=ORB_EXIT_BROKER_TIME) return false;
    ENUM_TIMEFRAMES entryTf=RuntimeEntryTf();
@@ -5512,6 +5516,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    res.maxTp=0;res.outcome="open";res.netR=0;res.isWin=false;
    res.simEntry=entry;res.entryTime=0;res.entrySpreadPoints=EMPTY_VALUE;res.simSl=sl;res.simTarget=0;res.costR=0;
    res.exitMode=RuntimeExitLabel();res.exitPrice=0;res.exitTime=0;
+   res.modeledReverseExit=false;
    res.valid=false;res.invalidReason="NO_MARKET_DATA";
    res.targetLeg=RuntimeTargetLeg();res.hcLeg=ClampHalfBeLeg(halfBeLeg,res.targetLeg);
    if(g_rtAdvancedAuditEngine)
@@ -5591,20 +5596,47 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    res.simSl=NormalizePrice(sl);
    res.simTarget=fixedTarget?targetPrice:0.0;
 
+   // Keep ordinary bar replay unchanged; use M1 only at the reverse boundary.
+   bool reverseM1Model=exactForcedExit&&g_rtExitMode==ORB_EXIT_FIXED_TARGET&&!g_rtTimeExit;
+   bool reverseMinuteScan=false;
+
    double effSl=sl;bool beApplied=false;
    double bestHigh=entry,bestLow=entry;
    datetime brokerExitAt=(g_rtExitMode==ORB_EXIT_BROKER_TIME?BrokerTimeExitFor(sigTime):0);
    for(int i=1;i<c;i++) // skip signal bar itself
    {
       if(r[i].time>tradeEnd)break;
+      if(reverseM1Model&&!reverseMinuteScan&&r[i].time+sec>forcedExitTime)
+      {
+         MqlRates minutes[];ResetLastError();
+         int copied=CopyRates(_Symbol,PERIOD_M1,r[i].time,tradeEnd,minutes);
+         int error=GetLastError();
+         // A higher-timeframe open can precede its first quoted minute. Accept
+         // that gap only within this bar and with the same recorded opening price.
+         if(error!=0||copied<1||minutes[0].time<r[i].time||minutes[0].time>=r[i].time+sec
+            ||(minutes[0].time>r[i].time&&NormalizeTradePrice(minutes[0].open)!=NormalizeTradePrice(r[i].open)))
+         {res.valid=false;res.invalidReason="REVERSE_M1_HISTORY_REQUIRED";res.netR=0;res.isWin=false;return res;}
+         ArraySwap(r,minutes);c=copied;sec=60;reverseMinuteScan=true;i=-1;
+         continue;
+      }
       // Ordinary bar-policy TP/SL closures before the reverse deadline remain
       // valid. The deadline bar cannot establish an exact timed exit or ordering.
-      if(exactForcedExit&&r[i].time+sec>forcedExitTime)
+      if(exactForcedExit&&r[i].time+sec>forcedExitTime
+         &&(!reverseM1Model||r[i].time<forcedExitTime))
       {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
       if(forcedExitTime>sigTime && r[i].time>=forcedExitTime)
       {
          double forcedPrice=0.0;datetime resolvedAt=forcedExitTime;
-         ResolveHistoricalForcedExitPrice(forcedExitTime,isBuy,r[i].open,(double)r[i].spread,forcedPrice,resolvedAt);
+         if(reverseM1Model)
+         {
+            double point=SymbolInfoDouble(_Symbol,SYMBOL_POINT);
+            double spread=MathMax(0.0,r[i].spread>0?(double)r[i].spread:g_btSpreadPts);
+            if(point<=0.0||r[i].open<=0.0)
+            {res.valid=false;res.invalidReason="REVERSE_M1_QUOTE_INVALID";res.netR=0;res.isWin=false;return res;}
+            forcedPrice=NormalizeTradePrice(r[i].open+(isBuy?0.0:spread*point));
+            resolvedAt=r[i].time;res.modeledReverseExit=true;
+         }
+         else ResolveHistoricalForcedExitPrice(forcedExitTime,isBuy,r[i].open,(double)r[i].spread,forcedPrice,resolvedAt);
          bool forcedSlHit=isBuy?(forcedPrice<=effSl):(forcedPrice>=effSl);
          bool forcedTargetHit=fixedTarget&&(isBuy?(forcedPrice>=targetPrice):(forcedPrice<=targetPrice));
          if(forcedSlHit)
@@ -5630,6 +5662,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
          res.exitTime=resolvedAt;
          break;
       }
+      if(reverseMinuteScan&&r[i].time+sec>tradeEnd)break; // Never inspect future minute extrema.
       bool slHit=isBuy?(r[i].low<=effSl):(r[i].high>=effSl);
 
       int hitLeg=0;
@@ -5752,7 +5785,7 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
          }
       }
    }
-   if(exactForcedExit&&res.outcome=="open"&&tradeEnd>=forcedExitTime)
+   if(exactForcedExit&&!reverseM1Model&&res.outcome=="open"&&tradeEnd>=forcedExitTime)
    {res.valid=false;res.invalidReason="REVERSE_TICKS_REQUIRED";res.netR=0;res.isWin=false;return res;}
    if(res.outcome=="open"&&scheduledEndReached&&(g_rtExitMode==ORB_EXIT_EOD_ONLY||g_rtTargetMode==ORB_TARGET_EOD)&&c>1){res.outcome="EOD_EXIT";res.exitPrice=r[c-1].close;res.exitTime=r[c-1].time;}
    else if(res.outcome=="open"&&g_rtExitMode==ORB_EXIT_BROKER_TIME&&brokerExitAt>0&&tradeEnd>=brokerExitAt&&c>1){res.outcome="BROKER_TIME_EXIT";res.exitPrice=r[c-1].close;res.exitTime=r[c-1].time;}
@@ -5788,7 +5821,10 @@ HistResult SimulateTrade(datetime sigTime,datetime tradeEnd,double entry,double 
    }
    // Tick history is not available for every historical interval. In OHLC
    // fallback use that entry bar's recorded spread, never today's snapshot.
-   res.costR=BtCostRForSpread(risk,historicalSpreadPts);
+   // Modeled SELL market exits already include the exit ask spread in exitPrice.
+   // Keep ordinary bar-policy TP/SL costs unchanged; do not charge that spread twice.
+   double costSpread=res.modeledReverseExit&&!isBuy&&IsSimMarketExitOutcome(res.outcome)?0.0:historicalSpreadPts;
+   res.costR=BtCostRForSpread(risk,costSpread);
    res.netR-=res.costR;
    res.isWin=res.netR>0;
    return res;
@@ -6760,6 +6796,7 @@ void OrbResetHistoricalStats()
    g_histAuditProgressPct=0.0;
    g_histTotal=0;g_histWins=0;g_histLosses=0;g_histOpen=0;g_histFlat=0;g_histInvalid=0;
    g_histStopLossExits=0;g_histNasOppositeExits=0;g_histNewDayReverseExits=0;
+   g_histModeledReverseExits=0;
    g_histNetR=0.0;g_histWonR=0.0;g_histLostR=0.0;g_histNetMoney=0.0;
    g_histMinCumulativeR=0.0;g_histMinCumulativeMoney=0.0;
    g_histPeakCumulativeR=0.0;g_histMaxPeakDrawdownR=0.0;g_histMaxPeakDrawdownMoney=0.0;
@@ -6959,6 +6996,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
          +(nasOppositeExitAt>0?" nas_opposite_exit_at="+FmtTime(nasOppositeExitAt)+" "+nasOppositeDetail:"")
          +(newDayReverseExitAt>0?" new_day_reverse_exit_at="+FmtTime(newDayReverseExitAt)+" "+newDayReverseDetail:""));
       bool finalOutcome=(sim.valid&&sim.outcome!="open");
+      if(finalOutcome&&sim.modeledReverseExit)g_histModeledReverseExits++;
       bool referenceFinal=referenceSim.valid&&referenceSim.outcome!="open";
       if(referenceFinal&&regimeBucket>=0&&regimeBucket<ORB_REGIME_COUNT)
       {
@@ -7004,6 +7042,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       csv.plannedEntry=entry;csv.plannedSl=sl;csv.plannedTp=tp1;
       csv.regionHigh=hi;csv.regionLow=lo;csv.regime=regimeBucket;csv.rf=rfIndex;
       csv.context=modernDetail+" "+entryDetail+" "+regimeDetail+" "+invertDetail;
+      if(sim.modeledReverseExit)csv.context+=" exit_price_basis=M1_OPEN_SPREAD_MODEL_NOT_TICK_EXACT";
       AxCapture(csv);
       g_histTotal++;
       double statR=finalOutcome?sim.netR:0.0;
@@ -7121,6 +7160,7 @@ if(daySt.day_of_week==0||daySt.day_of_week==6)return;
       if(modernDetail!="")txt+=" "+modernDetail;
       txt+=" "+EntryModeLabel(g_rtEntryMode);
       if(!sim.valid&&sim.invalidReason!="")txt+=" "+sim.invalidReason;
+      if(sim.modeledReverseExit)txt+=" M1 MODEL";
       color txtClr=!sim.valid?C'170,180,195':(!finalOutcome?clrKhaki:(sim.netR>1e-8?clrPaleGreen:(sim.netR<-1e-8?clrLightSalmon:clrLightSteelBlue)));
       double txtP=isBuy?arwP-pad*0.65:arwP+pad*0.65;
       DrawSignalText(base+"TXT",visualT,txtP,txt,txtClr);
@@ -7181,6 +7221,7 @@ void FinalizeHistoricalAudit()
    double wr=resolved>0?(double)g_histWins/(double)resolved*100.0:0;
    g_histStatLine=IntegerToString(g_histTotal)+" sig | "+IntegerToString(g_histWins)+"W "+IntegerToString(g_histLosses)+"L "+IntegerToString(g_histOpen)+"O "+IntegerToString(g_histFlat)+"F"+(g_histInvalid>0?" "+IntegerToString(g_histInvalid)+" DATA":"")+" | WR "+DoubleToString(wr,1)+"% | Exit SL="+IntegerToString(g_histStopLossExits)+" NAS-X="+IntegerToString(g_histNasOppositeExits)+" DAY-REV="+IntegerToString(g_histNewDayReverseExits)+" | Net "+DoubleToString(g_histNetR,1)+"R | $ "+(g_histNetMoney>=0?"+":"")+DoubleToString(g_histNetMoney,2)+" | MinCum "+DoubleToString(g_histMinCumulativeR,2)+"R/$"+DoubleToString(g_histMinCumulativeMoney,2)+" | PeakDD "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2);
    g_histStatLine+=" | "+OrbMlHistorySummary();
+   if(g_histModeledReverseExits>0)g_histStatLine+=" | M1 MODELED EXIT "+(string)g_histModeledReverseExits+" (not tick-exact)";
    if(g_histFiltered>0)g_histStatLine+=" | "+IntegerToString(g_histFiltered)+" filt";
    if(g_histDrawnWindowCount>0)g_histStatLine+=" | "+IntegerToString(g_histDrawnWindowCount)+" window ("+IntegerToString(g_histRejectedWindowRaw)+" raw)";
    Print("ORB15v3 ======= HIST RESULT: ",g_histStatLine," checked=",g_histChecked," drawn=",g_histDrawn,
@@ -7967,6 +8008,8 @@ void UpdateDashboard()
       +" | PeakDD: "+DoubleToString(g_histMaxPeakDrawdownR,2)+"R/$"+DoubleToString(g_histMaxPeakDrawdownMoney,2)
       +" | Avg W/L: +"+DoubleToString(g_histWins>0?g_histWonR/(double)g_histWins:0,2)+"/-"+DoubleToString(g_histLosses>0?g_histLostR/(double)g_histLosses:0,2)+"R"
       +" | PF "+DoubleToString(pf,2)+(g_histInvalid>0?" | DATA "+IntegerToString(g_histInvalid):"")+(g_histFlat>0?" | FLAT "+IntegerToString(g_histFlat):"");
+   if(g_histModeledReverseExits>0)
+      auditStat2="M1 MODEL "+(string)g_histModeledReverseExits+" exits / NOT TICK-EXACT | "+auditStat2;
    color auditStatColor=pnlClr;
    if(g_mlHistoryFiltered)
    {

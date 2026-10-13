@@ -1,0 +1,17 @@
+[
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.mq5",
+        "sha256":  "4052FBB6CFC2066F64D2FB094326E528DC9769D4DA65B795D8DC8AE3CF4ABC3E"
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbUltimateEA_StrategyLibrary.ex5",
+        "sha256":  "6D638EBEF2A27E171F594BF199F68360306CA5E55024B463919B3267A3F26A0E"
+    },
+    {
+        "source":  "C:\\Users\\Cem\\Desktop\\projeler\\YapayZekaUygulamalari\\ProTradingSystem\\IndicatorCodeExamples\\orb\\OrbAdvancedAuditEngine.mqh",
+        "destination":  "C:\\MT5\\DEMO\\MQL5\\Experts\\orb\\OrbAdvancedAuditEngine.mqh",
+        "sha256":  "270F9E0D182CDBA96541997F996B92E45B5AE712036AD4455403EED75DCF8B5E"
+    }
+]
