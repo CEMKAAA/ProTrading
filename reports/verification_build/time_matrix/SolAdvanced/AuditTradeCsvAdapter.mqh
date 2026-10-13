@@ -201,6 +201,7 @@ void AxCollectSol()
       t.reason=t.valid?g_histSignalExitReason[i]:reason;
       t.plannedEntry=sig.entry;t.plannedSl=sig.sl;t.plannedTp=sig.tp1;t.regionHigh=sig.fvgHigh;t.regionLow=sig.fvgLow;
       t.regime=-1;t.rf=-1;t.context=sig.reason+" | sweep="+AxNumber(sig.sweepLevel)+" | external_target="+AxNumber(sig.externalTarget);
+      if(StringFind(t.reason,"M1_MODELED_")==0)t.context+=" exit_price_basis=M1_OPEN_SPREAD_MODEL_NOT_TICK_EXACT";
       AxCapture(t);
    }
 }

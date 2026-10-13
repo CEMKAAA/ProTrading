@@ -228,7 +228,8 @@ int LnQuoteLoad(ulong from,ulong limit,int &first,int &after,ulong &end)
          {
             // Preserve the reference reader's range and fallback policy.
             end=MathMin(limit,from+3600000-1);readFrom=from;readTo=end;
-            g_lnQuoteReads++;count=CopyTicksRange(_Symbol,g_lnQuoteTicks,COPY_TICKS_ALL,readFrom,readTo);
+            ResetLastError();g_lnQuoteReads++;count=CopyTicksRange(_Symbol,g_lnQuoteTicks,COPY_TICKS_ALL,readFrom,readTo);
+            if(GetLastError()!=0)count=-1;
             complete=false;
          }
          if(count<0){ArrayFree(g_lnQuoteTicks);ArrayFree(g_lnQuoteBlocks);first=0;after=0;return -1;}

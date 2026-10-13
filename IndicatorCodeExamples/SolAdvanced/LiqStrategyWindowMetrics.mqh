@@ -4,9 +4,12 @@ string g_liqWindowAppliedFingerprint="";
 string g_liqWindowAuditFingerprint="";
 int g_liqWindowAuditWeeks=0;
 string LiqWindowFolder(){return LiqLibraryFolder()+"\\WindowMetrics";}
+string LiqTimedExitMetricMeta(const LnNasPolicy &p)
+{return p.exitMode!=0||(p.reverseExit&&p.reverseWaitMinutes>0)?"|SOL_TIMED_EXIT_M1_1":"";}
 string LiqWindowRuntimeFingerprint()
 {
    double values[];int n=LiqLibraryCapture(values);string out=LiqLibraryInputContract()+TCalStrategyText()+LnNasPack(g_lnNas);
+   out+=LiqTimedExitMetricMeta(g_lnNas);
    if(g_target==ERL_RR_CUSTOM)out+="|CUSTOM_R="+DoubleToString(g_customTargetR,12);
    if(g_lnNas.gate!=0||g_lnNas.exitMode!=0)out+="|NAS_TF="+(string)(int)_Period;
    for(int i=0;i<n;i++)if(i!=21)out+="|"+DoubleToString(values[i],16);return SwHash(out);
@@ -26,6 +29,7 @@ string LiqWindowKey(string path)
       // variants separate rather than overwrite a different chart's evidence.
       if(at<count&&LnNasUnpack(lines[at],policy)&&(policy.gate!=0||policy.exitMode!=0))
          text+="|NAS_TF="+(string)(int)_Period;
+      if(at<count&&LnNasUnpack(lines[at],policy))text+=LiqTimedExitMetricMeta(policy);
    }
    return SwSettingsKey(text+"|"+LiqLibraryInputContract());
 }

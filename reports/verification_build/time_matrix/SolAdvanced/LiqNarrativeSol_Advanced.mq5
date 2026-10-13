@@ -384,6 +384,7 @@ double           g_histSignalExecTp[];
 double           g_histSignalExecHalf[];
 datetime         g_histSignalExitTime[];
 string           g_histSignalExitReason[];
+int              g_histModeledReverseExits=0;
 SimCacheEntry    g_simCache[];
 int              g_simCacheSlots[];
 MqlRates         g_simRates[];
@@ -2599,7 +2600,8 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    if(InpBacktestUseTickReplay)
    {
       datetime tickStart = sig.availableTime;
-      datetime tickEnd = maxTime > 0 ? maxTime : TimeCurrent();
+      // The market may be closed at maxTime; exit at its first later quote.
+      datetime tickEnd = maxTime>0&&!LnNasNeedsExactTicks(sig,maxTime)?maxTime:TimeCurrent();
       if(tickEnd > tickStart)
       {
 
@@ -2613,7 +2615,9 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          {
             if(g_lnQuoteAcceleration&&tickInitialized)
             {
-               cursor=LnQuoteSkipRange(cursor,tickLimit,simDir,activeSl,tp,half,!halfDone,reverseExitMode,lastTickAt,lastClosePx);
+               ulong skipLimit=maxTime>0?MathMin(tickLimit,(ulong)maxTime*1000-1):tickLimit;
+               if(cursor<=skipLimit)
+                  cursor=LnQuoteSkipRange(cursor,skipLimit,simDir,activeSl,tp,half,!halfDone,reverseExitMode,lastTickAt,lastClosePx);
                if(cursor>tickLimit)break;
             }
             ulong chunkEnd = cursor + 3600000 - 1;
@@ -2625,7 +2629,9 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
             else
             {
                g_lnQuoteReady=false;
+               ResetLastError();
                copied=CopyTicksRange(_Symbol,g_lnQuoteTicks,COPY_TICKS_ALL,cursor,chunkEnd);
+               if(GetLastError()!=0)copied=-1;
                rangeAfter=MathMax(0,copied);
             }
             if(copied < 0) break;
@@ -2672,7 +2678,8 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
             {
                if(g_lnQuoteAcceleration)
                {
-                  int next=LnQuoteSkip(k,rangeAfter,simDir,activeSl,tp,half,!halfDone,reverseExitMode);
+                  int safeAfter=maxTime>0?MathMin(rangeAfter,LnQuoteBound((ulong)maxTime*1000,false)):rangeAfter;
+                  int next=LnQuoteSkip(k,safeAfter,simDir,activeSl,tp,half,!halfDone,reverseExitMode);
                   if(next>k)
                   {
                      int last=g_lnQuoteBlocks[k/LN_QUOTE_BLOCK].lastValid;
@@ -2726,6 +2733,13 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
                   CaptureLastSimulationExit("TICK_TP", (datetime)g_lnQuoteTicks[k].time);
                   return pnlR;
                }
+               if(maxTime>0&&lastTickAt>=maxTime)
+               {
+                  pnlR=ApplyForcedSignalExit(simDir,closePx,simEntry,simRisk,halfDone,activeHc,pnlR,commissionR);
+                  closed=true;won=pnlR>0.0;
+                  CaptureLastSimulationExit("TICK_REVERSE_EXIT",lastTickAt);
+                  return pnlR;
+               }
             }
          }
          if(tickInitialized && maxTime > 0 && lastTickAt >= maxTime)
@@ -2733,7 +2747,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
             pnlR = ApplyForcedSignalExit(simDir, lastClosePx, simEntry, simRisk, halfDone, activeHc, pnlR, commissionR);
             closed = true;
             won = pnlR > 0.0;
-            CaptureLastSimulationExit("TICK_REVERSE_EXIT", maxTime);
+            CaptureLastSimulationExit("TICK_REVERSE_EXIT", lastTickAt);
             return pnlR;
          }
          else if(tickInitialized && maxTime <= 0 && lastTickAt >= tickEnd - tfSeconds)
@@ -2747,10 +2761,10 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    // Tick coverage was unavailable/incomplete and no terminal event was
    // observed. Restart the deterministic OHLC fallback from its own entry
    // geometry; never carry a partial tick HC/BE state into the bar replay.
-   if(g_invertMode || LnNasNeedsExactTicks(sig,maxTime))
+   if(g_invertMode)
    {
       valid=false;closed=false;won=false;
-      g_lastSimInvalidReason=g_invertMode ? "INVERSE_TICKS_REQUIRED" : "NAS_EXIT_TICKS_MISSING";
+      g_lastSimInvalidReason="INVERSE_TICKS_REQUIRED";
       return 0.0;
    }
    simEntry = barSimEntry;
@@ -2766,21 +2780,61 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
    halfDone = (activeHc == ERL_HC_OFF || half <= 0.0);
    pnlR = 0.0;
 
+   bool exactExit=LnNasNeedsExactTicks(sig,maxTime);
+   bool reverseM1Model=exactExit&&g_lnNas.exitMode==0&&g_lnNas.reverseExit
+      &&g_lnNas.reverseWaitMinutes>0&&!reverseExitMode;
+   bool minuteScan=false;
+   MqlRates minutes[];ArraySetAsSeries(minutes,true);
    for(int i = entryIdx; i >= 0; --i)
    {
-      if(maxTime > 0 && g_simRates[i].time >= maxTime)
+      MqlRates bar;
+      if(minuteScan)bar=minutes[i];else bar=g_simRates[i];
+      if(bar.time>TimeCurrent())break;
+      if(exactExit&&!minuteScan&&bar.time+tfSeconds>maxTime)
       {
-         pnlR = ApplyForcedSignalExit(simDir, g_simRates[i].open, simEntry, simRisk, halfDone, activeHc, pnlR, commissionR);
+         if(!reverseM1Model)
+         {valid=false;g_lastSimInvalidReason="NAS_EXIT_TICKS_MISSING";return 0.0;}
+         // Only refine the deadline bucket, not the entire trade lifespan.
+         datetime through=(datetime)MathMin((long)TimeCurrent(),MathMax((long)bar.time+tfSeconds,(long)maxTime+7*86400));
+         ResetLastError();int copied=CopyRates(_Symbol,PERIOD_M1,bar.time,through,minutes);
+         int error=GetLastError();
+         if(error!=0||copied<1||minutes[copied-1].time<bar.time||minutes[copied-1].time>=bar.time+tfSeconds
+            ||(minutes[copied-1].time>bar.time&&NormTradePrice(minutes[copied-1].open)!=NormTradePrice(bar.open)))
+         {valid=false;g_lastSimInvalidReason="REVERSE_M1_HISTORY_REQUIRED";return 0.0;}
+         minuteScan=true;tfSeconds=60;i=copied;continue;
+      }
+      if(exactExit&&bar.time<maxTime&&bar.time+tfSeconds>maxTime)
+      {valid=false;g_lastSimInvalidReason="REVERSE_TICKS_REQUIRED";return 0.0;}
+      if(maxTime > 0 && bar.time >= maxTime)
+      {
+         string reason="BAR_REVERSE_EXIT";double closePx=bar.open;
+         if(minuteScan)
+         {
+            if(closePx<=0){valid=false;g_lastSimInvalidReason="REVERSE_M1_QUOTE_INVALID";return 0.0;}
+            // Sol's existing bar-entry model already incorporates spread.
+            if(!halfDone&&half>0&&(simDir>0?closePx>=half:closePx<=half))
+            {pnlR+=MathAbs(half-simEntry)/simRisk*0.5;activeSl=simEntry;halfDone=true;}
+            bool stopHit=simDir>0?closePx<=activeSl:closePx>=activeSl;
+            bool targetHit=tp>0&&(simDir>0?closePx>=tp:closePx<=tp);
+            if(stopHit){closePx=activeSl;reason="M1_MODELED_SL";}
+            else if(targetHit){closePx=tp;reason="M1_MODELED_TP";}
+            else
+            {
+               reason="M1_MODELED_REVERSE_EXIT";
+            }
+         }
+         pnlR = ApplyForcedSignalExit(simDir, closePx, simEntry, simRisk, halfDone, activeHc, pnlR, commissionR);
          closed = true;
          won = pnlR > 0.0;
-         CaptureLastSimulationExit("BAR_REVERSE_EXIT", maxTime);
+         CaptureLastSimulationExit(reason,minuteScan?bar.time:maxTime);
          return pnlR;
       }
+      if(minuteScan&&bar.time+60>TimeCurrent())break;
       if(delayedNasEntry&&!reverseExitMode)
       {
-         bool hitSl=simDir>0?g_simRates[i].low<=activeSl:g_simRates[i].high>=activeSl;
-         bool hitTp=tp>0.0&&(simDir>0?g_simRates[i].high>=tp:g_simRates[i].low<=tp);
-         bool hitHalf=!halfDone&&half>0.0&&(simDir>0?g_simRates[i].high>=half:g_simRates[i].low<=half);
+         bool hitSl=simDir>0?bar.low<=activeSl:bar.high>=activeSl;
+         bool hitTp=tp>0.0&&(simDir>0?bar.high>=tp:bar.low<=tp);
+         bool hitHalf=!halfDone&&half>0.0&&(simDir>0?bar.high>=half:bar.low<=half);
          if(hitSl&&(hitTp||hitHalf))
          {
             valid=false;closed=false;won=false;
@@ -2790,7 +2844,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
       }
       if(!reverseExitMode && !halfDone)
       {
-         bool hitHalf = simDir > 0 ? g_simRates[i].high >= half : g_simRates[i].low <= half;
+         bool hitHalf = simDir > 0 ? bar.high >= half : bar.low <= half;
          if(hitHalf)
          {
             double halfR = MathAbs(half - simEntry) / simRisk;
@@ -2800,10 +2854,10 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          }
       }
 
-      double openRef = (i == entryIdx ? simEntry : g_simRates[i].open);
-      bool barHitTp = !reverseExitMode && tp > 0.0 && (simDir > 0 ? g_simRates[i].high >= tp : g_simRates[i].low <= tp);
-      bool barHitSl = !reverseExitMode && (simDir > 0 ? g_simRates[i].low <= activeSl : g_simRates[i].high >= activeSl);
-      int res = reverseExitMode ? 0 : ResolveSameBar(g_simRates[i], simDir, openRef, tp, activeSl);
+      double openRef = (bar.time==g_simRates[entryIdx].time ? simEntry : bar.open);
+      bool barHitTp = !reverseExitMode && tp > 0.0 && (simDir > 0 ? bar.high >= tp : bar.low <= tp);
+      bool barHitSl = !reverseExitMode && (simDir > 0 ? bar.low <= activeSl : bar.high >= activeSl);
+      int res = reverseExitMode ? 0 : ResolveSameBar(bar, simDir, openRef, tp, activeSl);
       if(res > 0)
       {
          double targetR = MathAbs(tp - simEntry) / simRisk;
@@ -2811,7 +2865,7 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          pnlR -= commissionR;
          closed = true;
          won = pnlR > 0.0;
-         CaptureLastSimulationExit(barHitTp && barHitSl ? "BAR_BOTH_TP_POLICY" : "BAR_TP", g_simRates[i].time);
+         CaptureLastSimulationExit(barHitTp && barHitSl ? "BAR_BOTH_TP_POLICY" : "BAR_TP", bar.time);
          return pnlR;
       }
       if(res < 0)
@@ -2821,11 +2875,13 @@ double SimulateSignal(const ErlSignal &sig, ERL_RR_MODE target, ERL_HC_MODE hc, 
          pnlR -= commissionR;
          closed = true;
          won = pnlR > 0.0;
-         CaptureLastSimulationExit(barHitTp && barHitSl ? "BAR_BOTH_SL_POLICY" : "BAR_SL", g_simRates[i].time);
+         CaptureLastSimulationExit(barHitTp && barHitSl ? "BAR_BOTH_SL_POLICY" : "BAR_SL", bar.time);
          return pnlR;
       }
    }
-   CaptureLastSimulationExit("BAR_OPEN", g_simRates[0].time);
+   if(minuteScan&&maxTime>0&&TimeCurrent()>=maxTime&&minutes[0].time+60<TimeCurrent())
+   {valid=false;g_lastSimInvalidReason="REVERSE_M1_HISTORY_REQUIRED";return 0.0;}
+   CaptureLastSimulationExit("BAR_OPEN",g_simRates[0].time);
    return pnlR;
 }
 datetime NextSignalTime(const ErlSignal &signals[], int index)
@@ -3062,6 +3118,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
    ArrayResize(g_histSignalExitReason, ArraySize(g_histSignals));
 
    ZeroMemory(g_hist);
+   g_histModeledReverseExits=0;
    TCalReset();
    for(int bucket = 0; bucket < LIQ_MACRO_REGIME_COUNT; ++bucket)
    {
@@ -3147,6 +3204,7 @@ void CompleteHistoricalAuditAfterMacro(const ErlSignal &exitSignals[], ulong sta
       g_hist.netR += r;
       g_directionMinCum=MathMin(g_directionMinCum,g_hist.netR);
       if(!closed) { g_hist.open++; continue; }
+      if(StringFind(g_histSignalExitReason[i],"M1_MODELED_")==0)g_histModeledReverseExits++;
       DailyQuotaSchedule(g_histSignalExitTime[i],MathAbs(r)<=1e-8?0:(won?1:-1));
       TCalRecordOutcome(AxEntryAt(g_histSignalEntryTime[i],g_histSignals[i].availableTime),won);
       RegimeV3Snapshot macroState;
@@ -5707,7 +5765,8 @@ void UpdateDashboard()
       C'90,178,255', 7);
    LabelObj("DASH_AUD2", x + 16, sec2 + 106,
       "Won +" + DoubleToString(g_hist.wonR, 2) + "R | Lost -" + DoubleToString(g_hist.lostR, 2) + "R | Avg "
-      + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade", muted, 8);
+      + DoubleToString((g_hist.total - g_hist.invalid) > 0 ? g_hist.netR / (g_hist.total - g_hist.invalid) : 0.0, 3) + "R/trade"
+      + (g_histModeledReverseExits>0?" | M1 MODEL "+(string)g_histModeledReverseExits+" / NOT TICK-EXACT":""), muted, 8);
    LabelObj("DASH_DIRECTION_LOSSES",x+16,sec2+130,"MinCum "+DoubleToString(g_directionMinCum,2)+"R | "+DirectionLossText(),muted,8);
    int lossX=x+480,lossY=sec2+128,lossW=124,lossH=20;
    LiqFitBox(lossX,lossY,lossW,lossH);LossHoursLauncher(PFX,lossX,lossY);

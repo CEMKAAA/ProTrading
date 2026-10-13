@@ -23,16 +23,17 @@ string OrbUserMetricKey(const string symbol,int tf,const string inputs,const str
    return OrbMlSha256(ORB_ML_SOURCE+(currentSchema?"|AUDIT_FILL_HORIZON2|MA_SERVER_ORIGIN1|":"")+symbol+(string)tf+"MA_EXIT_FILTERED3_LAB_POLICY2"+inverseRevision+inputs+runtime+switches);
 }
 string MaEntryMetricMeta(bool independent,int maximum){if(independent)return "|MAENTRY2_TOTAL_OPEN="+(string)maximum;return maximum==1?"":"|MAENTRY1=0,"+(string)maximum;}
+string MaTimedReverseMetricMeta(bool enabled,int waitMinutes){return enabled&&waitMinutes>0?"|MA_TIMED_REVERSE_M1_1":"";}
 string OrbUserRuntimeMetricKey()
 {
    OrbStrategyPreset p;OrbCustomCapturePreset(p);
-   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),(g_rtMaCrossMode==MA_CROSS_LAB_RULES?LabEngineIdentity():"")+OrbCustomInputSignature()+MaEntryMetricMeta(g_maIndependent,g_maMaxConsecutive)+"|MAEXIT2="+(string)g_maReverseExit+","+(string)g_maReverseWait+McOfIdentity(),OrbCustomRuntimeDump(),p,g_rtAdvancedReverse,g_rtAdvancedReverseMaxCostPct);
+   return OrbUserMetricKey(_Symbol,(int)NasConfirmationTf(),(g_rtMaCrossMode==MA_CROSS_LAB_RULES?LabEngineIdentity():"")+OrbCustomInputSignature()+MaEntryMetricMeta(g_maIndependent,g_maMaxConsecutive)+"|MAEXIT2="+(string)g_maReverseExit+","+(string)g_maReverseWait+MaTimedReverseMetricMeta(g_maReverseExit,g_maReverseWait)+McOfIdentity(),OrbCustomRuntimeDump(),p,g_rtAdvancedReverse,g_rtAdvancedReverseMaxCostPct);
 }
 string OrbUserWindowKey(const OrbUserRecord &r,bool currentSchema=true)
 {
    string ofKey=r.orderFlow.mode==0?"":"|ORDERFLOW_QUOTE_V1="+McOfConfigText(r.orderFlow);
    return SwSettingsKey(OrbUserMetricKey(r.symbol,r.chartTf,r.entryEngine+r.inputSignature+MaEntryMetricMeta(r.independent,r.maxSeries)
-      +"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait+ofKey,r.runtime,r.preset,r.advancedReverse,r.advancedReverseMaxCostPct,currentSchema)
+      +"|MAEXIT2="+(string)r.reverseExit+","+(string)r.reverseWait+MaTimedReverseMetricMeta(r.reverseExit,r.reverseWait)+ofKey,r.runtime,r.preset,r.advancedReverse,r.advancedReverseMaxCostPct,currentSchema)
       +"|TCAL="+r.timeMatrix+"|GAP="+DoubleToString(r.advancedReverseMaxCostPct,8));
 }
 void OrbUserLoadMetrics(int slot)
